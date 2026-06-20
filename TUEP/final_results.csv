@@ -1,0 +1,2 @@
+model,total,epilepsy_correct,epilepsy_incorrect,no_epilepsy_correct,no_epilepsy_incorrect,accuracy
+gemini-3.5-flash,2808,496,1748,495,69,0.3529202279202279

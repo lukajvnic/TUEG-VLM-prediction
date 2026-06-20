@@ -1,0 +1,25 @@
+dataset: TUEP
+model: gemini-3.5-flash
+provider: google_genai
+
+# -1 for all data
+limit: 5
+
+TUEP:
+  prompt: "Classify these EEG spectrograms as either epileptic or non-epileptic. Provide a text rationale explaining your decision."
+  data-directory: data
+TUAB:
+  prompt: "Classify these EEG spectrograms as belonging to either a normal or abnormal brain. Provide a text rationale explaining your decision."
+  data-directory: data
+TUEV:
+  prompt: "Select all of the following event categories that appear in the EEG spectrograms: ARTF, BCKG, EYEM, GPED, PLED, or SPSW. Provide a text rationale explaining your decision."
+  data-directory: data
+TUAR:
+  prompt: "Select all of the following artifact categories that appear in the EEG spectrograms: BCKG, CHEW, ELEC, ELPP, EYEM, MUSC, or SHIV. Provide a text rationale explaining your decision."
+  data-directory: data
+TUSZ:
+  prompt: "Select all of the following seizure/background categories that appear in the EEG spectrograms: ABSZ, BCKG, CPSZ, FNSZ, GNSZ, MYSZ, SPSZ, TCSZ, or TNSZ. Provide a text rationale explaining your decision."
+  data-directory: data
+TUSL:
+  prompt: "Select all of the following labels that appear in the EEG spectrograms: BCKG, SEIZ, or SLOW. Provide a text rationale explaining your decision."
+  data-directory: data

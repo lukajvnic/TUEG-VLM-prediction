@@ -1,0 +1,9 @@
+python-dotenv
+PyYAML
+pydantic
+langchain
+langchain-core
+langchain-google-genai
+mne
+matplotlib
+numpy

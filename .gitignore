@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+
+# Large dataset contents (keep top-level dataset dirs and scripts)
+TUAB/data/
+TUAB/v*/
+TUAR/data/
+TUAR/data-annotated/
+TUAR/v*/
+TUEP/data/
+TUEP/v*/
+TUEV/data/
+TUEV/data-annotated/
+TUEV/v*/
+TUSL/data/
+TUSL/data-annotated/
+TUSL/v*/
+TUSZ/data/
+TUSZ/data-annotated/
+TUSZ/v*/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs / temporary files
+*.log
+*.tmp
+*.swp
