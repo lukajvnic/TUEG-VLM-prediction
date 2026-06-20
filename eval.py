@@ -31,7 +31,7 @@ def get_actual(path):
             break
 
     if dataset is None:
-        return image_path.parent.name
+        return {image_path.parent.name.replace("-", "_").upper()}
 
     relative_path = image_path.relative_to(dataset).as_posix()
     labels_path = dataset / "labels.csv"
@@ -52,10 +52,10 @@ def get_actual(path):
 
 def get_prediction(parsed, dataset: str):
     if dataset == "TUEP":
-        return "epilepsy" if parsed.has_epilepsy else "no-epilepsy"
+        return {"EPILEPSY"} if parsed.has_epilepsy else {"NO_EPILEPSY"}
 
     if dataset == "TUAB":
-        return "abnormal" if parsed.is_abnormal else "normal"
+        return {"ABNORMAL"} if parsed.is_abnormal else {"NORMAL"}
 
     return {
         field_name.removeprefix("has_").upper()
@@ -122,7 +122,19 @@ def archive_results(dataset: str):
 
 def get_batch_paths(config) -> list[Path]:
     dataset = config["dataset"]
-    data_dir = Path(dataset) / config[dataset]["data-directory"]
+    dataset_dir = Path(dataset)
+    labels_path = dataset_dir / "labels.csv"
+
+    if labels_path.exists():
+        paths = []
+        with labels_path.open("r", newline="", encoding="utf-8") as file:
+            for row in csv.DictReader(file):
+                image_path = dataset_dir / row["image_path"]
+                if image_path.is_file():
+                    paths.append(image_path.resolve())
+        return sorted(paths)
+
+    data_dir = dataset_dir / config[dataset]["data-directory"]
     if not data_dir.exists():
         raise FileNotFoundError(f"Data directory not found: {data_dir}")
 
