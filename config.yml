@@ -1,9 +1,15 @@
-dataset: TUEP
-model: gemini-3.5-flash
-provider: google_genai
+dataset: TUEV
+model: qwen2.5vl:7b
+provider: ollama
+
+model-kwargs:
+  base_url: http://localhost:11434
+  temperature: 0
+structured-output:
+  method: json_schema
 
 # -1 for all data
-limit: 5
+limit: 10
 
 TUEP:
   prompt: "Classify these EEG spectrograms as either epileptic or non-epileptic. Provide a text rationale explaining your decision."

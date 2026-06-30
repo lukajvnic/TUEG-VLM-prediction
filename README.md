@@ -14,6 +14,54 @@ columns representing whether or not a given artifact exists in the associated sp
 Before running the evaluation via `eval.py`, customize `config.yml` to specify the model you would like to use, which dataset you would like to evaluate,
 and some other relevant parameters like `limit` which specifies how many images to evaluate.
 
+Install Python dependencies with:
+
+```bash
+pip install -r requirements.txt
+```
+
+### Using Ollama Models
+
+This project can run local Ollama vision models through LangChain. First install and start Ollama, then pull a multimodal/vision model:
+
+```bash
+ollama pull qwen2.5vl:7b
+```
+
+If Ollama is not already running, start the server in another terminal:
+
+```bash
+ollama serve
+```
+
+If you see `bind: address already in use`, Ollama is already running and you can continue.
+
+Configure `config.yml` like this:
+
+```yaml
+dataset: TUEV
+model: qwen2.5vl:7b
+provider: ollama
+
+model-kwargs:
+  base_url: http://localhost:11434
+  temperature: 0
+
+structured-output:
+  method: json_schema
+
+limit: 10
+```
+
+Then run:
+
+```bash
+python3 eval.py
+```
+
+Because `eval.py` sends spectrogram images, use a vision-capable Ollama model such as `qwen2.5vl:7b`, `llama3.2-vision`, or `llava`. Text-only models will not work with the current image input format.
+
+
 ## Additional Resources
 
 Each dataset comes with a `generate-annotated.py` file which generates an equivalent set of `.png` images, except that the artifacts are visually annotated
@@ -30,6 +78,8 @@ This config script outlines some fundamental parameters that can be changed to i
  - `dataset` - Select the dataset to run evaluation on. One of: `TUEP`, `TUAB`, `TUEV`, `TUAR`, `TUSZ`, `TUSL`
  - `model` - Which model to run evaluation through.
  - `provider` - The provider of the above model. Find the list here: https://docs.langchain.com/oss/python/integrations/providers/all_providers
+ - `model-kwargs` - Optional keyword arguments forwarded to LangChain model initialization, such as Ollama's `base_url` or `temperature`.
+ - `structured-output` - Optional keyword arguments forwarded to LangChain's `.with_structured_output()`, such as `method: json_schema` for Ollama.
 
 #### Dataset-specific Parameters 
 

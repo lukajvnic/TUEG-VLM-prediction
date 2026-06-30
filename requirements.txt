@@ -1,9 +1,11 @@
 python-dotenv
 PyYAML
 pydantic
+wandb
 langchain
 langchain-core
 langchain-google-genai
+langchain-ollama
 mne
 matplotlib
 numpy

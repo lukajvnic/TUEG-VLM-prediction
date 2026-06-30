@@ -3,9 +3,11 @@ import csv
 import json
 import mimetypes
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 import yaml
+import wandb
 from dotenv import load_dotenv
 from structure import get_structure
 from langchain.chat_models import init_chat_model
@@ -64,9 +66,10 @@ def get_prediction(parsed, dataset: str):
     }
 
 
-def send(llm, batch: list[tuple[Path, list[HumanMessage]]], dataset: str):
+def send(llm, batch: list[tuple[Path, list[HumanMessage]]], dataset: str, wandb_table=None):
     inputs = [messages for _, messages in batch]
     results = []
+    start_time = time.monotonic()
 
     for completed_count, (index, result) in enumerate(llm.batch_as_completed(inputs), start=1):
         image_path = batch[index][0]
@@ -74,6 +77,27 @@ def send(llm, batch: list[tuple[Path, list[HumanMessage]]], dataset: str):
         raw = result["raw"]
         prediction = get_prediction(parsed, dataset)
         actual = get_actual(image_path)
+        latency = time.monotonic() - start_time
+        error = None
+        output_text = parsed.text_rationale
+        ground_truth_label = ",".join(sorted(actual)) if actual else image_path.parent.name
+
+        wandb.log({
+            "image_index": completed_count,
+            "images_processed": completed_count,
+            "total_images": len(batch),
+            "latency_seconds": latency,
+            "had_error": error is not None,
+        })
+
+        if wandb_table is not None:
+            wandb_table.add_data(
+                str(image_path),
+                ground_truth_label,
+                output_text,
+                latency,
+                error,
+            )
 
         with open(RESULTS_CSV, "a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
@@ -170,13 +194,44 @@ def build_batch(batch_paths, prompt) -> list[tuple[Path, list[HumanMessage]]]:
     return batch
 
 
+def init_model(config, out_struct):
+    model_kwargs = config.get("model-kwargs") or {}
+    structured_output_kwargs = config.get("structured-output") or {}
+
+    return init_chat_model(
+        model=config["model"],
+        model_provider=config["provider"],
+        **model_kwargs,
+    ).with_structured_output(
+        out_struct,
+        include_raw=True,
+        **structured_output_kwargs,
+    )
+
+
+
 def main():
     load_dotenv()
     config = load_config()
 
     out_struct = get_structure(config["dataset"])
-    model = init_chat_model(model=config["model"], model_provider=config["provider"]).with_structured_output(out_struct, include_raw=True)
+    model = init_model(config, out_struct)
     prompt = config[config["dataset"]]["prompt"]
+    image_dir = Path(config["dataset"]) / config[config["dataset"]]["data-directory"]
+
+    wandb.init(
+        project="eeg-vlm-inference",
+        name=f"{config['model'].replace(':', '-')}-baseline",
+        config={
+            "model": config["model"],
+            "prompt": prompt,
+            "image_dir": str(image_dir),
+            "output_path": str(RESULTS_CSV),
+            "num_predict": 500,
+            "stop": ["END"],
+        },
+    )
+
     init_csv()
     seen_paths = get_seen_paths()
     all_batch_paths = get_batch_paths(config)
@@ -190,9 +245,21 @@ def main():
     print(f"Skipping {skipped_count} already-completed item(s).")
     print(f"Sending {len(batch_paths)} item(s).")
 
+    wandb_table = wandb.Table(
+        columns=[
+            "image_path",
+            "ground_truth_label",
+            "model_output",
+            "latency_seconds",
+            "error",
+        ]
+    )
+
     batch = build_batch(batch_paths, prompt)
-    send(model, batch, config["dataset"])
+    send(model, batch, config["dataset"], wandb_table)
     archive_results(config["dataset"])
+    wandb.log({"vlm_outputs": wandb_table})
+    wandb.finish()
 
 
 if __name__ == "__main__":

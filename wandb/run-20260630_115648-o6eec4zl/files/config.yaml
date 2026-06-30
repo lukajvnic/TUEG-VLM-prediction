@@ -1,0 +1,65 @@
+_wandb:
+    value:
+        cli_version: 0.28.0
+        e:
+            2at28cjpcsa13gyafi14i3ngezfy3cv3:
+                apple:
+                    gpuCores: 16
+                    macModel: Mac17,9
+                    memoryGb: 24
+                    name: Apple M5 Pro
+                    pcpuCores: 5
+                    ramTotalBytes: "25769803776"
+                    swapTotalBytes: "3221225472"
+                codePath: eval.py
+                codePathLocal: eval.py
+                cpu_count: 15
+                cpu_count_logical: 15
+                disk:
+                    /:
+                        total: "994610155520"
+                        used: "109315719168"
+                email: l3jovano@uwaterloo.ca
+                executable: /Users/luka/dev/TUEG-VLM-prediction/.venv/bin/python3
+                git:
+                    commit: 3afe0869a329b6f9b2c2f83aefac17d7b299f46d
+                    remote: https://github.com/lukajvnic/TUEG-VLM-prediction.git
+                host: Lukas-MacBook.local
+                memory:
+                    total: "25769803776"
+                os: macOS-26.5.1-arm64-arm-64bit-Mach-O
+                program: /Users/luka/dev/TUEG-VLM-prediction/eval.py
+                python: CPython 3.14.6
+                root: /Users/luka/dev/TUEG-VLM-prediction
+                startedAt: "2026-06-30T15:56:48.829829Z"
+                writerId: 2at28cjpcsa13gyafi14i3ngezfy3cv3
+        m: []
+        python_version: 3.14.6
+        t:
+            "1":
+                - 86
+                - 105
+            "2":
+                - 86
+                - 105
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.14.6
+            "5": 0.28.0
+            "12": 0.28.0
+            "13": darwin-arm64
+image_dir:
+    value: TUEV/data
+model:
+    value: qwen2.5vl:7b
+num_predict:
+    value: 500
+output_path:
+    value: results.csv
+prompt:
+    value: 'Select all of the following event categories that appear in the EEG spectrograms: ARTF, BCKG, EYEM, GPED, PLED, or SPSW. Provide a text rationale explaining your decision.'
+stop:
+    value:
+        - END
