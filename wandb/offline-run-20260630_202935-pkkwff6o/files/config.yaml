@@ -1,0 +1,109 @@
+wandb_version: 1
+
+_wandb:
+  desc: null
+  value:
+    python_version: 3.11.4
+    cli_version: 0.27.2
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1782865826
+    t:
+      1:
+      - 86
+      - 105
+      2:
+      - 86
+      - 105
+      3:
+      - 2
+      - 4
+      - 13
+      - 16
+      - 42
+      4: 3.11.4
+      5: 0.27.2
+      13: linux-x86_64
+    e:
+      et7w9jw0g4px6lt48nfmz60oqpxnhd73:
+        os: Linux-5.14.0-611.55.1.el9_7.x86_64-x86_64-AMD_EPYC_7543_32-Core_Processor-with-glibc2.37
+        python: CPython 3.11.4
+        started_at: '2026-07-01T00:29:35.201308Z'
+        program: /scratch/luka/TUEG-VLM-prediction/eval.py
+        code_path: eval.py
+        code_path_local: eval.py
+        git:
+          remote_url: https://github.com/lukajvnic/TUEG-VLM-prediction.git
+          commit: 32fdba0ea9e684fd51f55faed77a29279c342204
+        root: /scratch/luka/TUEG-VLM-prediction
+        host: ng31402
+        executable: /lustre07/scratch/luka/TUEG-VLM-prediction/.venv/bin/python
+        cpu_count: 64
+        cpu_count_logical: 64
+        disk:
+          /:
+            total: '17179869184'
+            used: '6347530240'
+        memory:
+          total: '1081780334592'
+        slurm:
+          restart_count: '0'
+          job_start_time: '1782865125'
+          job_id: '64462458'
+          job_qos: normal
+          procid: '0'
+          submit_host: narval2
+          job_num_nodes: '1'
+          topology_addr_pattern: switch.switch.node
+          localid: '0'
+          jobid: '64462458'
+          job_nodelist: ng31402
+          job_name: ollama-vlm
+          script_context: prolog_task
+          topology_addr: ihpc207u29.ihpc314u25.ng31402
+          conf: /etc/slurm/slurm.conf
+          tasks_per_node: '1'
+          mem_per_node: '16384'
+          tmpdir: /localscratch/luka.64462458.0
+          job_partition: gpubase_bygpu_b1
+          gpus_on_node: '1'
+          job_cpus_per_node: '1'
+          job_uid: '3161364'
+          submit_dir: /lustre07/scratch/luka/TUEG-VLM-prediction
+          prio_process: '0'
+          nnodes: '1'
+          nodelist: ng31402
+          job_account: def-milad777_gpu
+          job_end_time: '1782868725'
+          cluster_name: narval
+          gtids: '0'
+          oom_kill_step: '0'
+          job_gpus: '1'
+          job_gid: '3161364'
+          cpus_on_node: '1'
+          job_user: luka
+          mpi_type: pmix
+          task_pid: '1118047'
+          nodeid: '0'
+        writer_id: et7w9jw0g4px6lt48nfmz60oqpxnhd73
+model:
+  desc: null
+  value: qwen2.5vl:7b
+prompt:
+  desc: null
+  value: 'Select all of the following event categories that appear in the EEG spectrograms:
+    ARTF, BCKG, EYEM, GPED, PLED, or SPSW. Provide a text rationale explaining your
+    decision.'
+image_dir:
+  desc: null
+  value: TUEV/data
+output_path:
+  desc: null
+  value: results.csv
+num_predict:
+  desc: null
+  value: 500
+stop:
+  desc: null
+  value:
+  - END

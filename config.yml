@@ -8,8 +8,13 @@ model-kwargs:
 structured-output:
   method: json_schema
 
+slurm:
+  gres: "gpu:1"
+  mem: "16G"
+  time: "1:00:00"
+
 # -1 for all data
-limit: 10
+limit: -1
 
 TUEP:
   prompt: "Classify these EEG spectrograms as either epileptic or non-epileptic. Provide a text rationale explaining your decision."
