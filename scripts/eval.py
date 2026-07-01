@@ -2,24 +2,31 @@ import base64
 import csv
 import json
 import mimetypes
-import os
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 import yaml
 import wandb
 from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from scripts.structure import get_structure
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 
 
-RESULTS_CSV = Path("../results.csv")
-RESULTS_DIR = Path("../results")
+CONFIG_PATH = PROJECT_ROOT / "config.yml"
+DATASETS_DIR = PROJECT_ROOT / "datasets"
+RESULTS_CSV = PROJECT_ROOT / "results.csv"
+RESULTS_DIR = PROJECT_ROOT / "results"
 
 
 def load_config():
-    with open("config.yml", "r", encoding="utf-8") as file:
+    with CONFIG_PATH.open("r", encoding="utf-8") as file:
         return yaml.safe_load(file)
 
 
@@ -146,7 +153,7 @@ def archive_results(dataset: str):
 
 def get_batch_paths(config) -> list[Path]:
     dataset = config["dataset"]
-    dataset_dir = Path(dataset)
+    dataset_dir = DATASETS_DIR / dataset
     labels_path = dataset_dir / "labels.csv"
 
     if labels_path.exists():
@@ -211,13 +218,13 @@ def init_model(config, out_struct):
 
 
 def main():
-    load_dotenv()
+    load_dotenv(PROJECT_ROOT / ".env")
     config = load_config()
 
     out_struct = get_structure(config["dataset"])
     model = init_model(config, out_struct)
     prompt = config[config["dataset"]]["prompt"]
-    image_dir = Path(config["dataset"]) / config[config["dataset"]]["data-directory"]
+    image_dir = DATASETS_DIR / config["dataset"] / config[config["dataset"]]["data-directory"]
 
     wandb.init(
         project="eeg-vlm-inference",

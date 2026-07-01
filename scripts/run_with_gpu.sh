@@ -26,7 +26,7 @@ apptainer exec --nv $SCRATCH/ollama/ollama.sif ollama serve > $SCRATCH/ollama/se
 sleep 15
 
 # Run script
-python eval.py
+python scripts/eval.py
 
 # Clean up server
 pkill -f "ollama serve"

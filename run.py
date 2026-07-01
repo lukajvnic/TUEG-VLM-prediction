@@ -2,9 +2,10 @@ import subprocess
 from pathlib import Path
 import yaml
 
-CONFIG_PATH = Path("config.yml")
-SLURM_SCRIPT = Path("scripts/run_with_gpu.sh")
-LOG_DIR = Path("logs")
+PROJECT_ROOT = Path(__file__).resolve().parent
+CONFIG_PATH = PROJECT_ROOT / "config.yml"
+SLURM_SCRIPT = PROJECT_ROOT / "scripts" / "run_with_gpu.sh"
+LOG_DIR = PROJECT_ROOT / "logs"
 
 JOB_NAME = "ollama-vlm"
 ACCOUNT = "def-milad777"

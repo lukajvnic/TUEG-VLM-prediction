@@ -2,19 +2,19 @@ dataset: TUEV
 model: qwen2.5vl:7b
 provider: ollama
 
-model-kwargs:
-  base_url: http://localhost:11434
-  temperature: 0
-structured-output:
-  method: json_schema
+# -1 for all data
+limit: -1
 
 slurm:
   gres: "gpu:1"
   mem: "16G"
   time: "1:00:00"
 
-# -1 for all data
-limit: -1
+model-kwargs:
+  base_url: http://localhost:11434
+  temperature: 0
+structured-output:
+  method: json_schema
 
 TUEP:
   prompt: "Classify these EEG spectrograms as either epileptic or non-epileptic. Provide a text rationale explaining your decision."

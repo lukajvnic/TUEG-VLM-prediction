@@ -6,12 +6,12 @@ setting as neurologists could verify results via the generated text rationale.
 
 ## Getting Started
 
-This repository does not come with the data. To get started, download the dataset you are planning to use via the `download.sh` script, and move it to its
-respective folder. Then run `generate.py` to generate the preprocessed `data` directory and `labels.csv` file. `data` is one directory containing the generated
+This repository does not come with the data. To get started, download the dataset you are planning to use via the `scripts/download.sh` script, and move it to its
+respective folder under `datasets/`. Then run that dataset's `generate.py` to generate the preprocessed `data` directory and `labels.csv` file. `data` is one directory containing the generated
 spectrogram `.png` images, each corresponding to one `.edf` file. `labels.csv` is a spreadsheet that maps input (the `.png` image) to the output, which are boolean
 columns representing whether or not a given artifact exists in the associated spectrogram `.png` image.
 
-Before running the evaluation via `eval.py`, customize `config.yml` to specify the model you would like to use, which dataset you would like to evaluate,
+Before running the evaluation via `scripts/eval.py`, customize `config.yml` to specify the model you would like to use, which dataset you would like to evaluate,
 and some other relevant parameters like `limit` which specifies how many images to evaluate.
 
 Install Python dependencies with:
@@ -56,10 +56,10 @@ limit: 10
 Then run:
 
 ```bash
-python3 eval.py
+python3 scripts/eval.py
 ```
 
-Because `eval.py` sends spectrogram images, use a vision-capable Ollama model such as `qwen2.5vl:7b`, `llama3.2-vision`, or `llava`. Text-only models will not work with the current image input format.
+Because `scripts/eval.py` sends spectrogram images, use a vision-capable Ollama model such as `qwen2.5vl:7b`, `llama3.2-vision`, or `llava`. Text-only models will not work with the current image input format.
 
 
 ## Additional Resources
@@ -88,19 +88,22 @@ These parameters exist under each specific dataset heading.
  - `prompt` - Which prompt to give the model to assist with evaluation.
  - `data-directory` - In which subdirectory the relevant preprocessed data can be found.
 
-### structure.py 
+### scripts/structure.py 
 
 A script that outlines the relevant output structure for the VLM, customized for each dataset. Specifically, it provides a `text_rationale` attribute
-along with a boolean attribute for each possible artifact. Is used by `eval.py`
+along with a boolean attribute for each possible artifact. Is used by `scripts/eval.py`
 
-### eval.py
+### scripts/eval.py
 
 The program runs with the following high-level workflow:
  1. API secrets are loaded from the `.env` file, and config parameters are loaded from `config.yml`
- 2. The output structure is fetched from `structure.py`
+ 2. The output structure is fetched from `scripts/structure.py`
  3. The model is initialized, `.csv` file is created, and prompt is loaded.
  4. A list of all image paths to evaluate is loaded into the program.
  5. A batch is built, which combines spectrogram images with the prompts.
  6. The batch is sent to the model for evaluation. This step takes the longest, and data is recorded as the batch is processed.
  7. The results of the model are saved to the `results` directory
 
+## Running with a GPU
+
+Simply update the `slurm` section in `config.yml` to select GPU, memory, and time allocations, then run `python run.py`
