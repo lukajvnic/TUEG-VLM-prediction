@@ -7,4 +7,4 @@ if [ -z "$1" ]; then
   exit 1
 fi
 
-rsync -auvxL -e "ssh -i ~/.ssh/uw/id_ed25519" "nedc-tuh-eeg@www.isip.piconepress.com:$1" .
+rsync -auvxL -e "ssh -i ~/.ssh/uw/id_ed25519" "nedc-tuh-eeg@www.isip.piconepress.com:$1" ..

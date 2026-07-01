@@ -9,13 +9,13 @@ from pathlib import Path
 import yaml
 import wandb
 from dotenv import load_dotenv
-from structure import get_structure
+from scripts.structure import get_structure
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 
 
-RESULTS_CSV = Path("results.csv")
-RESULTS_DIR = Path("results")
+RESULTS_CSV = Path("../results.csv")
+RESULTS_DIR = Path("../results")
 
 
 def load_config():

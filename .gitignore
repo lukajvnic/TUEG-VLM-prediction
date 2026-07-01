@@ -18,22 +18,22 @@ env/
 .env.*
 
 # Large dataset contents (keep top-level dataset dirs and scripts)
-TUAB/data/
-TUAB/v*/
-TUAR/data/
-TUAR/data-annotated/
-TUAR/v*/
-TUEP/data/
-TUEP/v*/
-TUEV/data/
-TUEV/data-annotated/
-TUEV/v*/
-TUSL/data/
-TUSL/data-annotated/
-TUSL/v*/
-TUSZ/data/
-TUSZ/data-annotated/
-TUSZ/v*/
+*/TUAB/data/
+*/TUAB/v*/
+*/TUAR/data/
+*/TUAR/data-annotated/
+*/TUAR/v*/
+*/TUEP/data/
+*/TUEP/v*/
+*/TUEV/data/
+*/TUEV/data-annotated/
+*/TUEV/v*/
+*/TUSL/data/
+*/TUSL/data-annotated/
+*/TUSL/v*/
+*/TUSZ/data/
+*/TUSZ/data-annotated/
+*/TUSZ/v*/
 *.zip
 
 # OS / editor files
