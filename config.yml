@@ -34,3 +34,321 @@ TUSZ:
 TUSL:
   prompt: "Select all of the following labels that appear in the EEG spectrograms: BCKG, SEIZ, or SLOW. Provide a text rationale explaining your decision."
   data-directory: data
+
+models:
+  "bakllava:7b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+  "deepseek-ocr:3b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "devstral-small-2:24b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "devstral-small-2:24b-cloud":
+    time: "12:00:00"
+    ram: "16G"
+    gpus: 0
+  "gemma3:270m":
+    time: "02:00:00"
+    ram: "16G"
+    gpus: 1
+  "gemma3:1b":
+    time: "02:00:00"
+    ram: "16G"
+    gpus: 1
+  "gemma3:4b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "gemma3:12b":
+    time: "08:00:00"
+    ram: "48G"
+    gpus: 1
+  "gemma3:27b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "gemma4:e2b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "gemma4:e4b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "gemma4:12b":
+    time: "08:00:00"
+    ram: "48G"
+    gpus: 1
+  "gemma4:26b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "gemma4:31b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "glm-ocr:latest":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "granite3.2-vision:2b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "kimi-k2.5:cloud":
+    time: "12:00:00"
+    ram: "16G"
+    gpus: 0
+  "kimi-k2.6:cloud":
+    time: "12:00:00"
+    ram: "16G"
+    gpus: 0
+  "kimi-k2.7-code:cloud":
+    time: "12:00:00"
+    ram: "16G"
+    gpus: 0
+  "llama3.2-vision:11b":
+    time: "08:00:00"
+    ram: "48G"
+    gpus: 1
+  "llama3.2-vision:90b":
+    time: "1-12:00:00"
+    ram: "192G"
+    gpus: 2
+  "llama4:scout":
+    time: "2-00:00:00"
+    ram: "256G"
+    gpus: 4
+  "llama4:maverick":
+    time: "4-00:00:00"
+    ram: "384G"
+    gpus: 4
+  "llama4:16x17b":
+    time: "4-00:00:00"
+    ram: "384G"
+    gpus: 4
+  "llama4:128x17b":
+    time: "7-00:00:00"
+    ram: "512G"
+    gpus: 4
+  "llava:7b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+  "llava:13b":
+    time: "08:00:00"
+    ram: "48G"
+    gpus: 1
+  "llava:34b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "llava:v1.6":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+  "llava-llama3:8b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+  "llava-phi3:3.8b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "medgemma:4b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "medgemma:27b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "medgemma1.5:4b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "minicpm-v:8b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+  "minicpm-v4.5:8b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+  "minicpm-v4.6:1b":
+    time: "02:00:00"
+    ram: "16G"
+    gpus: 1
+  "minimax-m3:cloud":
+    time: "12:00:00"
+    ram: "16G"
+    gpus: 0
+  "ministral-3:3b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "ministral-3:8b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+  "ministral-3:14b":
+    time: "08:00:00"
+    ram: "48G"
+    gpus: 1
+  "mistral-large-3:675b-cloud":
+    time: "12:00:00"
+    ram: "16G"
+    gpus: 0
+  "mistral-medium-3.5:128b":
+    time: "2-00:00:00"
+    ram: "256G"
+    gpus: 4
+  "mistral-small3.1:24b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "mistral-small3.2:24b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "moondream:1.8b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "moondream:v2":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "nemotron3:33b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "qwen2.5vl:3b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "qwen2.5vl:7b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+  "qwen2.5vl:32b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "qwen2.5vl:72b":
+    time: "1-00:00:00"
+    ram: "160G"
+    gpus: 2
+  "qwen3-vl:2b-instruct":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "qwen3-vl:2b-thinking":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "qwen3-vl:4b-instruct":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "qwen3-vl:4b-thinking":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "qwen3-vl:8b-instruct":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+  "qwen3-vl:8b-thinking":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+  "qwen3-vl:30b-a3b-instruct":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "qwen3-vl:30b-a3b-thinking":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "qwen3-vl:32b-instruct":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "qwen3-vl:32b-thinking":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "qwen3-vl:235b-a22b-instruct":
+    time: "3-00:00:00"
+    ram: "384G"
+    gpus: 4
+  "qwen3-vl:235b-a22b-thinking":
+    time: "3-00:00:00"
+    ram: "384G"
+    gpus: 4
+  "qwen3.5:0.8b":
+    time: "02:00:00"
+    ram: "16G"
+    gpus: 1
+  "qwen3.5:2b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "qwen3.5:4b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "qwen3.5:9b":
+    time: "08:00:00"
+    ram: "48G"
+    gpus: 1
+  "qwen3.5:27b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "qwen3.5:35b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "qwen3.5:35b-a3b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "qwen3.5:122b":
+    time: "2-00:00:00"
+    ram: "256G"
+    gpus: 4
+  "qwen3.5:122b-a10b":
+    time: "2-00:00:00"
+    ram: "256G"
+    gpus: 4
+  "qwen3.6:27b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "qwen3.6:35b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "qwen3.6:35b-a3b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+  "translategemma:4b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+  "translategemma:12b":
+    time: "08:00:00"
+    ram: "48G"
+    gpus: 1
+  "translategemma:27b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
