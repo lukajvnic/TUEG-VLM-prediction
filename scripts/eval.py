@@ -233,7 +233,16 @@ def init_model(config, out_struct):
 
 
 def run_evaluation(config):
+    global RESULTS_CSV
+
     print(f"Running {config['dataset']} with model {config['model']}")
+
+    RESULTS_DIR.mkdir(exist_ok=True)
+    run_id = os.environ.get("SLURM_ARRAY_JOB_ID", datetime.now().strftime("%Y%m%d-%H%M%S"))
+    task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
+    if task_id is not None:
+        run_id = f"{run_id}_{task_id}"
+    RESULTS_CSV = RESULTS_DIR / f"{safe_filename_part(config['model'])}-{config['dataset']}-{run_id}.csv"
 
     out_struct = get_structure(config["dataset"])
     model = init_model(config, out_struct)

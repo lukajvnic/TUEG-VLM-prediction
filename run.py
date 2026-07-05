@@ -5,16 +5,8 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = PROJECT_ROOT / "config.yml"
-MODELS_FILE = PROJECT_ROOT / "models.txt"
 SLURM_SCRIPT = PROJECT_ROOT / "scripts" / "run_array.sbatch"
 LOG_DIR = PROJECT_ROOT / "logs"
-
-
-def line_count(path: Path) -> int:
-    if not path.exists():
-        raise SystemExit(f"ERROR: missing {path}")
-    with path.open("r", encoding="utf-8") as file:
-        return sum(1 for _ in file)
 
 
 def load_config() -> dict:
@@ -31,9 +23,17 @@ def main() -> None:
     if not SLURM_SCRIPT.exists():
         raise SystemExit(f"ERROR: missing {SLURM_SCRIPT}")
 
-    n_models = line_count(MODELS_FILE)
-    if n_models < 1:
-        raise SystemExit(f"ERROR: {MODELS_FILE} is empty")
+    models = config.get("models") or {}
+    selected_model = config.get("model")
+    models_to_run = list(models) if selected_model == "all" else [selected_model]
+
+    if not models_to_run or not models_to_run[0]:
+        raise SystemExit("ERROR: config.yml must set model")
+    for model in models_to_run:
+        if model not in models:
+            raise SystemExit(f"ERROR: model {model!r} is not listed under models in config.yml")
+
+    n_models = len(models_to_run)
 
     LOG_DIR.mkdir(exist_ok=True)
     array = f"0-{n_models - 1}%{concurrency}"

@@ -103,7 +103,7 @@ The program runs with the following high-level workflow:
 
 ## Running with Slurm
 
-For many models, put one Ollama model name per line in `models.txt`, then submit the Slurm array job with:
+For many models, add them under `models` in `config.yml`, set `model: all`, then submit the Slurm array job with:
 
 ```bash
 python run.py

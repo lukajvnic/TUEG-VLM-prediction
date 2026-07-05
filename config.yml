@@ -1,5 +1,5 @@
-dataset: TUEV
-model: qwen2.5vl:7b
+dataset: TUEP
+model: all
 array-concurrency: 4
 
 # -1 for all data

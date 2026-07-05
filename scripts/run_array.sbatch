@@ -17,11 +17,7 @@ export WANDB_MODE=offline
 export OLLAMA_MODELS="$SCRATCH/ollama/models"
 export APPTAINERENV_OLLAMA_MODELS="$OLLAMA_MODELS"
 
-MODEL=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" models.txt | tr -d '\r')
-if [[ -z "$MODEL" ]]; then
-    echo "ERROR: empty model for array task $SLURM_ARRAY_TASK_ID" >&2
-    exit 1
-fi
+MODEL=$(python -c 'import os, yaml; c=yaml.safe_load(open("config.yml")); models=list(c["models"]); selected=c.get("model"); run=models if selected == "all" else [selected]; print(run[int(os.environ["SLURM_ARRAY_TASK_ID"])])')
 
 OLLAMA_PORT=$((11434 + SLURM_ARRAY_TASK_ID))
 export OLLAMA_HOST="127.0.0.1:$OLLAMA_PORT"
