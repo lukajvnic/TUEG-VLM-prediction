@@ -41,7 +41,11 @@ def main() -> None:
 
     print(f"Submitting {n_models} model(s): {' '.join(cmd)}")
     result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-    print(result.stdout.strip())
+    output = result.stdout.strip()
+    print(output)
+
+    job_id = output.split()[-1]
+    (LOG_DIR / "last_array_job.txt").write_text(f"{job_id}\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

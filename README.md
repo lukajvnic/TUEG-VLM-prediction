@@ -111,6 +111,14 @@ python run.py
 
 Set `array-concurrency` in `config.yml` to control the Slurm array concurrency cap. For example, `array-concurrency: 4` submits an array like `0-N%4` so at most four models run at once.
 
+Set `eval-retries` in `config.yml` to retry failed model evaluations. Final failures are appended to `logs/failed_models.csv`; other array tasks continue.
+
+Check progress with:
+
+```bash
+python status.py
+```
+
 For a single model from `config.yml`, you can still submit:
 
 ```bash

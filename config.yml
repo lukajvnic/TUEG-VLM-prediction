@@ -1,6 +1,7 @@
 dataset: TUEP
 model: all
 array-concurrency: 4
+eval-retries: 1
 
 # -1 for all data
 limit: -1

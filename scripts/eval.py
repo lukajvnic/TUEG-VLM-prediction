@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 import yaml
@@ -292,18 +293,70 @@ def run_evaluation(config):
     wandb.finish()
 
 
+def slurm_job_id() -> str:
+    return os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "local")
+
+
+def log_success(config):
+    PROJECT_ROOT.joinpath("logs").mkdir(exist_ok=True)
+    with (PROJECT_ROOT / "logs" / "completed_models.csv").open("a", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow([
+            datetime.now().isoformat(),
+            slurm_job_id(),
+            os.environ.get("SLURM_ARRAY_TASK_ID", "single"),
+            config["model"],
+        ])
+
+
+def log_failure(config, error: BaseException):
+    PROJECT_ROOT.joinpath("logs").mkdir(exist_ok=True)
+    with (PROJECT_ROOT / "logs" / "failed_models.csv").open("a", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow([
+            datetime.now().isoformat(),
+            slurm_job_id(),
+            os.environ.get("SLURM_ARRAY_TASK_ID", "single"),
+            config["model"],
+            type(error).__name__,
+            str(error),
+        ])
+
+
+def run_with_retries(config) -> bool:
+    retries = int(config.get("eval-retries", 1))
+
+    for attempt in range(1, retries + 2):
+        try:
+            print(f"Evaluation attempt {attempt}/{retries + 1} for {config['model']}")
+            run_evaluation(config)
+            log_success(config)
+            return True
+        except Exception as error:
+            wandb.finish(exit_code=1)
+            traceback.print_exc()
+            if attempt <= retries:
+                time.sleep(10)
+                continue
+            log_failure(config, error)
+            print(f"ERROR: evaluation failed after {retries + 1} attempt(s): {config['model']}", file=sys.stderr)
+            return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run TUEG VLM evaluation.")
     parser.add_argument("--model", help="Override the model in config.yml.")
     args = parser.parse_args()
 
     config = load_config(args.model)
+    models = list(config.get("models", {})) if config["model"] == "all" else [config["model"]]
+    failed = False
 
-    if config["model"] == "all":
-        for model_name in config.get("models", {}):
-            run_evaluation({**config, "model": model_name})
-    else:
-        run_evaluation(config)
+    for model_name in models:
+        failed = not run_with_retries({**config, "model": model_name}) or failed
+
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
