@@ -5,11 +5,6 @@ provider: ollama
 # -1 for all data
 limit: -1
 
-slurm:
-  gres: "gpu:1"
-  mem: "16G"
-  time: "1:00:00"
-
 model-kwargs:
   base_url: http://localhost:11434
   temperature: 0
@@ -48,10 +43,6 @@ models:
     time: "16:00:00"
     ram: "96G"
     gpus: 1
-  "devstral-small-2:24b-cloud":
-    time: "12:00:00"
-    ram: "16G"
-    gpus: 0
   "gemma3:270m":
     time: "02:00:00"
     ram: "16G"
@@ -100,18 +91,6 @@ models:
     time: "04:00:00"
     ram: "24G"
     gpus: 1
-  "kimi-k2.5:cloud":
-    time: "12:00:00"
-    ram: "16G"
-    gpus: 0
-  "kimi-k2.6:cloud":
-    time: "12:00:00"
-    ram: "16G"
-    gpus: 0
-  "kimi-k2.7-code:cloud":
-    time: "12:00:00"
-    ram: "16G"
-    gpus: 0
   "llama3.2-vision:11b":
     time: "08:00:00"
     ram: "48G"
@@ -184,10 +163,6 @@ models:
     time: "02:00:00"
     ram: "16G"
     gpus: 1
-  "minimax-m3:cloud":
-    time: "12:00:00"
-    ram: "16G"
-    gpus: 0
   "ministral-3:3b":
     time: "04:00:00"
     ram: "24G"
@@ -200,10 +175,6 @@ models:
     time: "08:00:00"
     ram: "48G"
     gpus: 1
-  "mistral-large-3:675b-cloud":
-    time: "12:00:00"
-    ram: "16G"
-    gpus: 0
   "mistral-medium-3.5:128b":
     time: "2-00:00:00"
     ram: "256G"

@@ -104,6 +104,6 @@ The program runs with the following high-level workflow:
  6. The batch is sent to the model for evaluation. This step takes the longest, and data is recorded as the batch is processed.
  7. The results of the model are saved to the `results` directory
 
-## Running with a GPU
+## Running with Slurm
 
-Simply update the `slurm` section in `config.yml` to select GPU, memory, and time allocations, then run `python run.py`
+Set the top-level `model` in `config.yml`, then run `python run.py`. The Slurm GPU, memory, and time allocations are selected automatically from that model's entry under the `models` section in `config.yml`. Set `model: all` to submit one job per model in the `models` section; jobs are chained with Slurm dependencies so they run sequentially.

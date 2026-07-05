@@ -2,6 +2,8 @@ import base64
 import csv
 import json
 import mimetypes
+import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -27,7 +29,13 @@ RESULTS_DIR = PROJECT_ROOT / "results"
 
 def load_config():
     with CONFIG_PATH.open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        config = yaml.safe_load(file)
+
+    eval_model = os.environ.get("EVAL_MODEL")
+    if eval_model:
+        config["model"] = eval_model
+
+    return config
 
 
 def get_actual(path):
@@ -140,13 +148,18 @@ def get_seen_paths() -> set[str]:
         return {row["path"] for row in csv.DictReader(file) if row.get("path")}
 
 
-def archive_results(dataset: str):
+def safe_filename_part(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
+
+
+def archive_results(model: str, dataset: str):
     if not RESULTS_CSV.exists():
         return
 
     RESULTS_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    destination = RESULTS_DIR / f"{dataset}-{timestamp}.csv"
+    safe_model = safe_filename_part(model)
+    destination = RESULTS_DIR / f"{safe_model}-{dataset}-{timestamp}.csv"
     RESULTS_CSV.rename(destination)
     print(f"Moved results to {destination}")
 
@@ -217,9 +230,8 @@ def init_model(config, out_struct):
 
 
 
-def main():
-    load_dotenv(PROJECT_ROOT / ".env")
-    config = load_config()
+def run_evaluation(config):
+    print(f"Running {config['dataset']} with model {config['model']}")
 
     out_struct = get_structure(config["dataset"])
     model = init_model(config, out_struct)
@@ -264,9 +276,20 @@ def main():
 
     batch = build_batch(batch_paths, prompt)
     send(model, batch, config["dataset"], wandb_table)
-    archive_results(config["dataset"])
+    archive_results(config["model"], config["dataset"])
     wandb.log({"vlm_outputs": wandb_table})
     wandb.finish()
+
+
+def main():
+    load_dotenv(PROJECT_ROOT / ".env")
+    config = load_config()
+
+    if config["model"] == "all":
+        for model_name in config.get("models", {}):
+            run_evaluation({**config, "model": model_name})
+    else:
+        run_evaluation(config)
 
 
 if __name__ == "__main__":

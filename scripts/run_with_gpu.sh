@@ -1,9 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=ollama-vlm
 #SBATCH --account=def-milad777
-#SBATCH --gres=gpu:1
-#SBATCH --mem=16G
-#SBATCH --time=1:00:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 

@@ -21,25 +21,41 @@ def load_config() -> dict:
 
 def main() -> None:
     config = load_config()
-    slurm = config.get("slurm", {})
+    models = config["models"]
+    selected_model = config["model"]
+
+    if selected_model == "all":
+        models_to_run = models.items()
+    else:
+        models_to_run = [(selected_model, models[selected_model])]
 
     LOG_DIR.mkdir(exist_ok=True)
 
-    cmd = [
-        "sbatch",
-        f"--job-name={JOB_NAME}",
-        f"--account={ACCOUNT}",
-        f"--gres={slurm['gres']}",
-        f"--mem={slurm['mem']}",
-        f"--time={slurm['time']}",
-        f"--output={STDOUT_PATTERN}",
-        f"--error={STDERR_PATTERN}",
-        str(SLURM_SCRIPT),
-    ]
+    previous_job_id = None
+    for model, settings in models_to_run:
+        cmd = [
+            "sbatch",
+            f"--job-name={JOB_NAME}",
+            f"--account={ACCOUNT}",
+            f"--gres=gpu:{settings['gpus']}",
+            f"--mem={settings['ram']}",
+            f"--time={settings['time']}",
+            f"--output={STDOUT_PATTERN}",
+            f"--error={STDERR_PATTERN}",
+            f"--export=ALL,EVAL_MODEL={model}",
+        ]
 
-    print("Submitting:")
-    print(" ".join(cmd))
-    subprocess.run(cmd, check=True)
+        if previous_job_id:
+            cmd.append(f"--dependency=afterok:{previous_job_id}")
+
+        cmd.append(str(SLURM_SCRIPT))
+
+        print("Submitting:")
+        print(" ".join(cmd))
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        print(result.stdout.strip())
+
+        previous_job_id = result.stdout.strip().split()[-1]
 
 
 if __name__ == "__main__":
