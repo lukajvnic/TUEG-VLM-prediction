@@ -41,8 +41,6 @@ Configure `config.yml` like this:
 ```yaml
 dataset: TUEV
 model: qwen2.5vl:7b
-provider: ollama
-
 model-kwargs:
   base_url: http://localhost:11434
   temperature: 0
@@ -77,8 +75,7 @@ This config script outlines some fundamental parameters that can be changed to i
 
  - `dataset` - Select the dataset to run evaluation on. One of: `TUEP`, `TUAB`, `TUEV`, `TUAR`, `TUSZ`, `TUSL`
  - `model` - Which model to run evaluation through.
- - `provider` - The provider of the above model. Find the list here: https://docs.langchain.com/oss/python/integrations/providers/all_providers
- - `model-kwargs` - Optional keyword arguments forwarded to LangChain model initialization, such as Ollama's `base_url` or `temperature`.
+ - `model-kwargs` - Optional keyword arguments forwarded to Ollama model initialization, such as `base_url` or `temperature`.
  - `structured-output` - Optional keyword arguments forwarded to LangChain's `.with_structured_output()`, such as `method: json_schema` for Ollama.
 
 #### Dataset-specific Parameters 
@@ -96,7 +93,7 @@ along with a boolean attribute for each possible artifact. Is used by `scripts/e
 ### scripts/eval.py
 
 The program runs with the following high-level workflow:
- 1. API secrets are loaded from the `.env` file, and config parameters are loaded from `config.yml`
+ 1. Config parameters are loaded from `config.yml`
  2. The output structure is fetched from `scripts/structure.py`
  3. The model is initialized, `.csv` file is created, and prompt is loaded.
  4. A list of all image paths to evaluate is loaded into the program.
@@ -106,4 +103,22 @@ The program runs with the following high-level workflow:
 
 ## Running with Slurm
 
-Set the top-level `model` in `config.yml`, then run `python run.py`. The Slurm GPU, memory, and time allocations are selected automatically from that model's entry under the `models` section in `config.yml`. Set `model: all` to submit one job per model in the `models` section; jobs are chained with Slurm dependencies so they run sequentially.
+For many models, put one Ollama model name per line in `models.txt`, then submit the Slurm array job with:
+
+```bash
+python run.py
+```
+
+Set `array-concurrency` in `config.yml` to control the Slurm array concurrency cap. For example, `array-concurrency: 4` submits an array like `0-N%4` so at most four models run at once.
+
+For a single model from `config.yml`, you can still submit:
+
+```bash
+sbatch scripts/run_with_gpu.sh
+```
+
+Or pass a model explicitly:
+
+```bash
+sbatch scripts/run_with_gpu.sh qwen2.5vl:7b
+```

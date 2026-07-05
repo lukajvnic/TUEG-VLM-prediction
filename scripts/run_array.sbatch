@@ -1,17 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=ollama-vlm
+#SBATCH --job-name=tueg-vlm-array
 #SBATCH --account=def-milad777
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=logs/%x-%A_%a.out
+#SBATCH --error=logs/%x-%A_%a.err
 
 set -euo pipefail
-
-cd "$SCRATCH/TUEG-VLM-prediction"
-mkdir -p logs
 
 module load apptainer
 source .venv/bin/activate
@@ -19,18 +16,26 @@ source .venv/bin/activate
 export WANDB_MODE=offline
 export OLLAMA_MODELS="$SCRATCH/ollama/models"
 export APPTAINERENV_OLLAMA_MODELS="$OLLAMA_MODELS"
-export OLLAMA_HOST="127.0.0.1:11434"
+
+MODEL=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" models.txt | tr -d '\r')
+if [[ -z "$MODEL" ]]; then
+    echo "ERROR: empty model for array task $SLURM_ARRAY_TASK_ID" >&2
+    exit 1
+fi
+
+OLLAMA_PORT=$((11434 + SLURM_ARRAY_TASK_ID))
+export OLLAMA_HOST="127.0.0.1:$OLLAMA_PORT"
 export OLLAMA_BASE_URL="http://$OLLAMA_HOST"
 export APPTAINERENV_OLLAMA_HOST="$OLLAMA_HOST"
 
-OLLAMA_LOG="logs/ollama-${SLURM_JOB_ID}.log"
+OLLAMA_LOG="logs/ollama-${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}.log"
 OLLAMA_PID=""
 cleanup() {
     [[ -n "$OLLAMA_PID" ]] && kill "$OLLAMA_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
-echo "host=$(hostname) job=$SLURM_JOB_ID model=${1:-config.yml} ollama=$OLLAMA_HOST"
+echo "host=$(hostname) job=$SLURM_JOB_ID task=$SLURM_ARRAY_TASK_ID model=$MODEL ollama=$OLLAMA_HOST"
 nvidia-smi || true
 
 apptainer exec --nv "$SCRATCH/ollama/ollama.sif" ollama serve > "$OLLAMA_LOG" 2>&1 &
@@ -48,8 +53,4 @@ apptainer exec --nv "$SCRATCH/ollama/ollama.sif" ollama list >/dev/null 2>&1 || 
     exit 1
 }
 
-if [[ $# -gt 0 ]]; then
-    python scripts/eval.py --model "$1"
-else
-    python scripts/eval.py
-fi
+python scripts/eval.py --model "$MODEL"

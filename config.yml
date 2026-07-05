@@ -1,6 +1,6 @@
 dataset: TUEV
 model: qwen2.5vl:7b
-provider: ollama
+array-concurrency: 4
 
 # -1 for all data
 limit: -1

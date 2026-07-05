@@ -1,3 +1,4 @@
+import argparse
 import base64
 import csv
 import json
@@ -10,14 +11,13 @@ from datetime import datetime
 from pathlib import Path
 import yaml
 import wandb
-from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.structure import get_structure
-from langchain.chat_models import init_chat_model
+from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
 
 
@@ -27,13 +27,16 @@ RESULTS_CSV = PROJECT_ROOT / "results.csv"
 RESULTS_DIR = PROJECT_ROOT / "results"
 
 
-def load_config():
+def load_config(model_override: str | None = None):
     with CONFIG_PATH.open("r", encoding="utf-8") as file:
         config = yaml.safe_load(file)
 
-    eval_model = os.environ.get("EVAL_MODEL")
-    if eval_model:
-        config["model"] = eval_model
+    if model_override:
+        config["model"] = model_override
+
+    ollama_base_url = os.environ.get("OLLAMA_BASE_URL")
+    if ollama_base_url:
+        config.setdefault("model-kwargs", {})["base_url"] = ollama_base_url
 
     return config
 
@@ -218,9 +221,8 @@ def init_model(config, out_struct):
     model_kwargs = config.get("model-kwargs") or {}
     structured_output_kwargs = config.get("structured-output") or {}
 
-    return init_chat_model(
+    return ChatOllama(
         model=config["model"],
-        model_provider=config["provider"],
         **model_kwargs,
     ).with_structured_output(
         out_struct,
@@ -282,8 +284,11 @@ def run_evaluation(config):
 
 
 def main():
-    load_dotenv(PROJECT_ROOT / ".env")
-    config = load_config()
+    parser = argparse.ArgumentParser(description="Run TUEG VLM evaluation.")
+    parser.add_argument("--model", help="Override the model in config.yml.")
+    args = parser.parse_args()
+
+    config = load_config(args.model)
 
     if config["model"] == "all":
         for model_name in config.get("models", {}):
