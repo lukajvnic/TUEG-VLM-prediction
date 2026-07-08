@@ -72,11 +72,15 @@ def elapsed_since_run_start(run_dir: Path | None) -> str | None:
         return None
 
     name = run_dir.name
-    if not name.startswith("run-"):
+    if name.startswith("run-"):
+        timestamp = name.removeprefix("run-")
+    elif name.startswith("smoketest-"):
+        timestamp = name.removeprefix("smoketest-")
+    else:
         return None
 
     try:
-        started = datetime.strptime(name.removeprefix("run-"), "%Y%m%d-%H%M%S")
+        started = datetime.strptime(timestamp, "%Y%m%d-%H%M%S")
     except ValueError:
         return None
 
