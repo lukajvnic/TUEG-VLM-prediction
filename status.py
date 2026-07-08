@@ -1,6 +1,7 @@
 import csv
 import subprocess
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -16,56 +17,128 @@ def load_models() -> list[str]:
     return models if config.get("model") == "all" else [config.get("model")]
 
 
-def last_job_id() -> str | None:
+def last_job_ids() -> list[str]:
     path = LOG_DIR / "last_array_job.txt"
-    return path.read_text(encoding="utf-8").strip() if path.exists() else None
+    if not path.exists():
+        return []
+    return [job_id for job_id in path.read_text(encoding="utf-8").strip().split(",") if job_id]
 
 
-def logged_models(path: Path, job_id: str | None) -> set[str]:
+def logged_models(path: Path, job_ids: list[str]) -> set[str]:
     if not path.exists():
         return set()
 
     models = set()
     with path.open(newline="", encoding="utf-8") as file:
         for row in csv.reader(file):
-            if len(row) >= 4 and (job_id is None or row[1] == job_id):
+            if len(row) >= 4 and (not job_ids or row[1] in job_ids):
                 models.add(row[3])
     return models
 
 
-def slurm_states(job_id: str | None) -> Counter:
-    if not job_id:
-        return Counter()
+def last_summary_job_id() -> str | None:
+    path = LOG_DIR / "last_summary_job.txt"
+    if not path.exists():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
+def last_run_dir() -> Path | None:
+    path = LOG_DIR / "last_run_dir.txt"
+    if not path.exists():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return Path(value) if value else None
+
+
+def format_duration(seconds: int) -> str:
+    days, remainder = divmod(max(0, seconds), 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{days}d {hours}h {minutes}m {seconds}s"
+
+
+def elapsed_since_run_start(run_dir: Path | None) -> str | None:
+    if run_dir is None:
+        return None
+
+    name = run_dir.name
+    if not name.startswith("run-"):
+        return None
+
+    try:
+        started = datetime.strptime(name.removeprefix("run-"), "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+
+    return format_duration(int((datetime.now() - started).total_seconds()))
+
+
+def slurm_rows(job_ids: list[str]) -> list[dict[str, str]]:
+    if not job_ids:
+        return []
     try:
         result = subprocess.run(
-            ["squeue", "-h", "-r", "-j", job_id, "-o", "%T"],
+            ["squeue", "-h", "-r", "-j", ",".join(job_ids), "-o", "%i|%T|%M|%R"],
             check=False,
             capture_output=True,
             text=True,
         )
     except FileNotFoundError:
-        return Counter()
-    return Counter(line.strip() for line in result.stdout.splitlines() if line.strip())
+        return []
+
+    rows = []
+    for line in result.stdout.splitlines():
+        parts = line.split("|", 3)
+        if len(parts) != 4:
+            continue
+        rows.append({"id": parts[0], "state": parts[1], "elapsed": parts[2], "reason": parts[3]})
+    return rows
 
 
 def main() -> None:
     models = set(load_models())
-    job_id = last_job_id()
-    completed = logged_models(LOG_DIR / "completed_models.csv", job_id) & models
-    failed = logged_models(LOG_DIR / "failed_models.csv", job_id) & models
+    job_ids = last_job_ids()
+    summary_job_id = last_summary_job_id()
+    run_dir = last_run_dir()
+
+    completed = logged_models(LOG_DIR / "completed_models.csv", job_ids) & models
+    failed = logged_models(LOG_DIR / "failed_models.csv", job_ids) & models
     done = completed | failed
     total = len(models)
-    percent = 100 * len(done) / total if total else 0
+    done_percent = 100 * len(done) / total if total else 0
 
-    print(f"Job: {job_id or 'unknown'}")
-    print(f"Done: {len(done)}/{total} ({percent:.1f}%)")
+    rows = slurm_rows(job_ids)
+    states = Counter(row["state"] for row in rows)
+    reasons = Counter(row["reason"] for row in rows if row["state"] == "PENDING")
+    waiting = states.get("PENDING", 0)
+    running = states.get("RUNNING", 0)
+    queued_or_running = waiting + running
+    remaining = max(0, total - len(done))
+
+    print(f"Run dir: {run_dir if run_dir else 'unknown'}")
+    elapsed = elapsed_since_run_start(run_dir)
+    if elapsed:
+        print(f"Elapsed: {elapsed}")
+    print(f"Array job(s): {', '.join(job_ids) if job_ids else 'unknown'}")
+    if summary_job_id:
+        summary_rows = slurm_rows([summary_job_id])
+        summary_state = summary_rows[0]["state"] if summary_rows else "not in queue / finished"
+        print(f"Summary job: {summary_job_id} ({summary_state})")
+
+    print(f"Done: {len(done)}/{total} ({done_percent:.1f}%)")
     print(f"Completed: {len(completed)}")
     print(f"Failed: {len(failed)}")
-    print(f"Remaining: {total - len(done)}")
+    print(f"Remaining: {remaining}")
+    print(f"Waiting for allocation: {waiting}")
+    print(f"Running: {running}")
+    print(f"Queued/running model tasks: {queued_or_running}")
 
-    states = slurm_states(job_id)
     if states:
-        print("Slurm:", ", ".join(f"{state}={count}" for state, count in sorted(states.items())))
+        print("Slurm states:", ", ".join(f"{state}={count}" for state, count in sorted(states.items())))
+    if reasons:
+        print("Pending reasons:", ", ".join(f"{reason}={count}" for reason, count in reasons.most_common()))
 
 
 if __name__ == "__main__":

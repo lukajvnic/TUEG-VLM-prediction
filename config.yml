@@ -1,6 +1,6 @@
 dataset: TUEP
 model: all
-array-concurrency: 4
+array-concurrency: 49
 eval-retries: 1
 
 # -1 for all data
@@ -13,22 +13,22 @@ structured-output:
   method: json_schema
 
 TUEP:
-  prompt: "Classify these EEG spectrograms as either epileptic or non-epileptic. Provide a text rationale explaining your decision."
+  prompt: "Classify these EEG spectrograms as either epileptic or non-epileptic. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for classification fields."
   data-directory: data
 TUAB:
-  prompt: "Classify these EEG spectrograms as belonging to either a normal or abnormal brain. Provide a text rationale explaining your decision."
+  prompt: "Classify these EEG spectrograms as belonging to either a normal or abnormal brain. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for classification fields."
   data-directory: data
 TUEV:
-  prompt: "Select all of the following event categories that appear in the EEG spectrograms: ARTF, BCKG, EYEM, GPED, PLED, or SPSW. Provide a text rationale explaining your decision."
+  prompt: "Select all of the following event categories that appear in the EEG spectrograms: ARTF, BCKG, EYEM, GPED, PLED, or SPSW. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for category fields."
   data-directory: data
 TUAR:
-  prompt: "Select all of the following artifact categories that appear in the EEG spectrograms: BCKG, CHEW, ELEC, ELPP, EYEM, MUSC, or SHIV. Provide a text rationale explaining your decision."
+  prompt: "Select all of the following artifact categories that appear in the EEG spectrograms: BCKG, CHEW, ELEC, ELPP, EYEM, MUSC, or SHIV. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for category fields."
   data-directory: data
 TUSZ:
-  prompt: "Select all of the following seizure/background categories that appear in the EEG spectrograms: ABSZ, BCKG, CPSZ, FNSZ, GNSZ, MYSZ, SPSZ, TCSZ, or TNSZ. Provide a text rationale explaining your decision."
+  prompt: "Select all of the following seizure/background categories that appear in the EEG spectrograms: ABSZ, BCKG, CPSZ, FNSZ, GNSZ, MYSZ, SPSZ, TCSZ, or TNSZ. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for category fields."
   data-directory: data
 TUSL:
-  prompt: "Select all of the following labels that appear in the EEG spectrograms: BCKG, SEIZ, or SLOW. Provide a text rationale explaining your decision."
+  prompt: "Select all of the following labels that appear in the EEG spectrograms: BCKG, SEIZ, or SLOW. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for label fields."
   data-directory: data
 
 models:
@@ -39,18 +39,6 @@ models:
   "deepseek-ocr:3b":
     time: "04:00:00"
     ram: "24G"
-    gpus: 1
-  "devstral-small-2:24b":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1
-  "gemma3:270m":
-    time: "02:00:00"
-    ram: "16G"
-    gpus: 1
-  "gemma3:1b":
-    time: "02:00:00"
-    ram: "16G"
     gpus: 1
   "gemma3:4b":
     time: "04:00:00"
@@ -144,10 +132,6 @@ models:
     time: "04:00:00"
     ram: "24G"
     gpus: 1
-  "medgemma:27b":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1
   "medgemma1.5:4b":
     time: "04:00:00"
     ram: "24G"
@@ -164,22 +148,6 @@ models:
     time: "02:00:00"
     ram: "16G"
     gpus: 1
-  "ministral-3:3b":
-    time: "04:00:00"
-    ram: "24G"
-    gpus: 1
-  "ministral-3:8b":
-    time: "06:00:00"
-    ram: "32G"
-    gpus: 1
-  "ministral-3:14b":
-    time: "08:00:00"
-    ram: "48G"
-    gpus: 1
-  "mistral-medium-3.5:128b":
-    time: "2-00:00:00"
-    ram: "256G"
-    gpus: 4
   "mistral-small3.1:24b":
     time: "16:00:00"
     ram: "96G"
@@ -196,10 +164,6 @@ models:
     time: "04:00:00"
     ram: "24G"
     gpus: 1
-  "nemotron3:33b":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1
   "qwen2.5vl:3b":
     time: "04:00:00"
     ram: "24G"
@@ -213,8 +177,8 @@ models:
     ram: "96G"
     gpus: 1
   "qwen2.5vl:72b":
-    time: "1-00:00:00"
-    ram: "160G"
+    time: "1-12:00:00"
+    ram: "192G"
     gpus: 2
   "qwen3-vl:2b-instruct":
     time: "04:00:00"
@@ -257,70 +221,10 @@ models:
     ram: "96G"
     gpus: 1
   "qwen3-vl:235b-a22b-instruct":
-    time: "3-00:00:00"
-    ram: "384G"
+    time: "4-00:00:00"
+    ram: "512G"
     gpus: 4
   "qwen3-vl:235b-a22b-thinking":
-    time: "3-00:00:00"
-    ram: "384G"
+    time: "4-00:00:00"
+    ram: "512G"
     gpus: 4
-  "qwen3.5:0.8b":
-    time: "02:00:00"
-    ram: "16G"
-    gpus: 1
-  "qwen3.5:2b":
-    time: "04:00:00"
-    ram: "24G"
-    gpus: 1
-  "qwen3.5:4b":
-    time: "04:00:00"
-    ram: "24G"
-    gpus: 1
-  "qwen3.5:9b":
-    time: "08:00:00"
-    ram: "48G"
-    gpus: 1
-  "qwen3.5:27b":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1
-  "qwen3.5:35b":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1
-  "qwen3.5:35b-a3b":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1
-  "qwen3.5:122b":
-    time: "2-00:00:00"
-    ram: "256G"
-    gpus: 4
-  "qwen3.5:122b-a10b":
-    time: "2-00:00:00"
-    ram: "256G"
-    gpus: 4
-  "qwen3.6:27b":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1
-  "qwen3.6:35b":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1
-  "qwen3.6:35b-a3b":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1
-  "translategemma:4b":
-    time: "04:00:00"
-    ram: "24G"
-    gpus: 1
-  "translategemma:12b":
-    time: "08:00:00"
-    ram: "48G"
-    gpus: 1
-  "translategemma:27b":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1

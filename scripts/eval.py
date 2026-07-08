@@ -85,15 +85,39 @@ def get_prediction(parsed, dataset: str):
     }
 
 
-def send(llm, batch: list[tuple[Path, list[HumanMessage]]], dataset: str, wandb_table=None):
+def log_invalid_structured_output(model: str, dataset: str, image_path: Path, raw):
+    PROJECT_ROOT.joinpath("logs").mkdir(exist_ok=True)
+    raw_dump = raw.model_dump(mode="json") if hasattr(raw, "model_dump") else str(raw)
+    with (PROJECT_ROOT / "logs" / "invalid_structured_outputs.jsonl").open("a", encoding="utf-8") as file:
+        file.write(json.dumps({
+            "timestamp": datetime.now().isoformat(),
+            "model": model,
+            "dataset": dataset,
+            "image_path": str(image_path),
+            "raw": raw_dump,
+        }, ensure_ascii=False) + "\n")
+
+
+def send(llm, batch: list[tuple[Path, list[HumanMessage]]], dataset: str, model_name: str, wandb_table=None):
     inputs = [messages for _, messages in batch]
     results = []
     start_time = time.monotonic()
 
-    for completed_count, (index, result) in enumerate(llm.batch_as_completed(inputs), start=1):
+    for completed_count, (index, result) in enumerate(
+        llm.batch_as_completed(inputs, config={"max_concurrency": 1}), start=1
+    ):
         image_path = batch[index][0]
         parsed = result["parsed"]
         raw = result["raw"]
+        if parsed is None:
+            log_invalid_structured_output(model_name, dataset, image_path, raw)
+            raw_content = getattr(raw, "content", raw)
+            raise ValueError(
+                "Structured output parsing returned None. "
+                f"Model did not produce the requested schema for {image_path}. "
+                "Full raw response was saved to logs/invalid_structured_outputs.jsonl. "
+                f"Raw response preview: {str(raw_content)[:1000]}"
+            )
         prediction = get_prediction(parsed, dataset)
         actual = get_actual(image_path)
         latency = time.monotonic() - start_time
@@ -156,16 +180,16 @@ def safe_filename_part(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
 
 
-def archive_results(model: str, dataset: str):
-    if not RESULTS_CSV.exists():
-        return
+def get_run_results_dir() -> Path:
+    run_id = os.environ.get("PI_RUN_ID")
+    if not run_id:
+        run_id = "run-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+    return RESULTS_DIR / safe_filename_part(run_id)
 
-    RESULTS_DIR.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    safe_model = safe_filename_part(model)
-    destination = RESULTS_DIR / f"{safe_model}-{dataset}-{timestamp}.csv"
-    RESULTS_CSV.rename(destination)
-    print(f"Moved results to {destination}")
+
+def archive_results(model: str, dataset: str):
+    if RESULTS_CSV.exists():
+        print(f"Saved results to {RESULTS_CSV}")
 
 
 def get_batch_paths(config) -> list[Path]:
@@ -238,12 +262,9 @@ def run_evaluation(config):
 
     print(f"Running {config['dataset']} with model {config['model']}")
 
-    RESULTS_DIR.mkdir(exist_ok=True)
-    run_id = os.environ.get("SLURM_ARRAY_JOB_ID", datetime.now().strftime("%Y%m%d-%H%M%S"))
-    task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
-    if task_id is not None:
-        run_id = f"{run_id}_{task_id}"
-    RESULTS_CSV = RESULTS_DIR / f"{safe_filename_part(config['model'])}-{config['dataset']}-{run_id}.csv"
+    run_results_dir = get_run_results_dir()
+    run_results_dir.mkdir(parents=True, exist_ok=True)
+    RESULTS_CSV = run_results_dir / f"{safe_filename_part(config['model'])}-{config['dataset']}.csv"
 
     out_struct = get_structure(config["dataset"])
     model = init_model(config, out_struct)
@@ -269,7 +290,7 @@ def run_evaluation(config):
     batch_paths = [path for path in all_batch_paths if str(path) not in seen_paths]
     skipped_count = len(all_batch_paths) - len(batch_paths)
 
-    limit = config.get("limit", -1)
+    limit = int(os.environ.get("PI_LIMIT", config.get("limit", -1)))
     if limit != -1:
         batch_paths = batch_paths[:limit]
 
@@ -287,7 +308,7 @@ def run_evaluation(config):
     )
 
     batch = build_batch(batch_paths, prompt)
-    send(model, batch, config["dataset"], wandb_table)
+    send(model, batch, config["dataset"], config["model"], wandb_table)
     archive_results(config["model"], config["dataset"])
     wandb.log({"vlm_outputs": wandb_table})
     wandb.finish()
