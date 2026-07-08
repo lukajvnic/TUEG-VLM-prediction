@@ -30,7 +30,9 @@ export OLLAMA_HOST="127.0.0.1:11434"
 export OLLAMA_BASE_URL="http://$OLLAMA_HOST"
 export APPTAINERENV_OLLAMA_HOST="$OLLAMA_HOST"
 
-OLLAMA_LOG="logs/ollama-${SLURM_JOB_ID}.log"
+RUN_LOG_DIR="${PI_LOG_DIR:-logs}"
+mkdir -p "$RUN_LOG_DIR"
+OLLAMA_LOG="$RUN_LOG_DIR/ollama-${SLURM_JOB_ID}.log"
 OLLAMA_PID=""
 cleanup() {
     [[ -n "$OLLAMA_PID" ]] && kill "$OLLAMA_PID" 2>/dev/null || true

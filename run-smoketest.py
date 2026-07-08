@@ -55,7 +55,9 @@ def main() -> None:
     LOG_DIR.mkdir(exist_ok=True)
     run_id = "smoketest-" + datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = RESULTS_DIR / run_id
+    run_log_dir = LOG_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    run_log_dir.mkdir(parents=True, exist_ok=True)
 
     job_ids = []
     for (ram, gpus), group_models in groups.items():
@@ -63,8 +65,8 @@ def main() -> None:
         array = f"0-{n_models - 1}%{min(concurrency, n_models)}"
         encoded_models = base64.b64encode(json.dumps(group_models).encode("utf-8")).decode("ascii")
         export = (
-            f"ALL,PI_RUN_ID={run_id},PI_MODEL_LIST_B64={encoded_models},"
-            f"PI_LIMIT={SMOKETEST_LIMIT},PI_SMOKETEST=1"
+            f"ALL,PI_RUN_ID={run_id},PI_LOG_DIR={run_log_dir},"
+            f"PI_MODEL_LIST_B64={encoded_models},PI_LIMIT={SMOKETEST_LIMIT},PI_SMOKETEST=1"
         )
         cmd = [
             "sbatch",
@@ -74,6 +76,8 @@ def main() -> None:
             f"--mem={ram}",
             f"--gres=gpu:{gpus}",
             f"--export={export}",
+            f"--output={run_log_dir}/%x-%A_%a.out",
+            f"--error={run_log_dir}/%x-%A_%a.err",
             str(SLURM_SCRIPT),
         ]
 
@@ -95,8 +99,8 @@ def main() -> None:
             "--time=00:15:00",
             "--mem=4G",
             "--cpus-per-task=1",
-            "--output=logs/%x-%j.out",
-            "--error=logs/%x-%j.err",
+            f"--output={run_log_dir}/%x-%j.out",
+            f"--error={run_log_dir}/%x-%j.err",
             "--wrap",
             f"source .venv/bin/activate && python scripts/summarize.py {run_dir}",
         ]
@@ -108,10 +112,12 @@ def main() -> None:
 
     (LOG_DIR / "last_array_job.txt").write_text(",".join(job_ids) + "\n", encoding="utf-8")
     (LOG_DIR / "last_run_dir.txt").write_text(f"{run_dir}\n", encoding="utf-8")
+    (LOG_DIR / "last_log_dir.txt").write_text(f"{run_log_dir}\n", encoding="utf-8")
     if summary_job_id:
         (LOG_DIR / "last_summary_job.txt").write_text(f"{summary_job_id}\n", encoding="utf-8")
 
     print(f"Smoketest run dir: {run_dir}")
+    print(f"Smoketest log dir: {run_log_dir}")
     print(f"Each model will evaluate {SMOKETEST_LIMIT} image.")
 
 

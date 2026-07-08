@@ -85,10 +85,16 @@ def get_prediction(parsed, dataset: str):
     }
 
 
+def get_run_log_dir() -> Path:
+    log_dir = os.environ.get("PI_LOG_DIR")
+    return Path(log_dir) if log_dir else PROJECT_ROOT / "logs"
+
+
 def log_invalid_structured_output(model: str, dataset: str, image_path: Path, raw):
-    PROJECT_ROOT.joinpath("logs").mkdir(exist_ok=True)
+    log_dir = get_run_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
     raw_dump = raw.model_dump(mode="json") if hasattr(raw, "model_dump") else str(raw)
-    with (PROJECT_ROOT / "logs" / "invalid_structured_outputs.jsonl").open("a", encoding="utf-8") as file:
+    with (log_dir / "invalid_structured_outputs.jsonl").open("a", encoding="utf-8") as file:
         file.write(json.dumps({
             "timestamp": datetime.now().isoformat(),
             "model": model,
@@ -319,8 +325,9 @@ def slurm_job_id() -> str:
 
 
 def log_success(config):
-    PROJECT_ROOT.joinpath("logs").mkdir(exist_ok=True)
-    with (PROJECT_ROOT / "logs" / "completed_models.csv").open("a", newline="", encoding="utf-8") as file:
+    log_dir = get_run_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with (log_dir / "completed_models.csv").open("a", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow([
             datetime.now().isoformat(),
@@ -331,8 +338,9 @@ def log_success(config):
 
 
 def log_failure(config, error: BaseException):
-    PROJECT_ROOT.joinpath("logs").mkdir(exist_ok=True)
-    with (PROJECT_ROOT / "logs" / "failed_models.csv").open("a", newline="", encoding="utf-8") as file:
+    log_dir = get_run_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with (log_dir / "failed_models.csv").open("a", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow([
             datetime.now().isoformat(),

@@ -52,6 +52,14 @@ def last_run_dir() -> Path | None:
     return Path(value) if value else None
 
 
+def last_log_dir() -> Path:
+    path = LOG_DIR / "last_log_dir.txt"
+    if not path.exists():
+        return LOG_DIR
+    value = path.read_text(encoding="utf-8").strip()
+    return Path(value) if value else LOG_DIR
+
+
 def format_duration(seconds: int) -> str:
     days, remainder = divmod(max(0, seconds), 86400)
     hours, remainder = divmod(remainder, 3600)
@@ -102,9 +110,10 @@ def main() -> None:
     job_ids = last_job_ids()
     summary_job_id = last_summary_job_id()
     run_dir = last_run_dir()
+    log_dir = last_log_dir()
 
-    completed = logged_models(LOG_DIR / "completed_models.csv", job_ids) & models
-    failed = logged_models(LOG_DIR / "failed_models.csv", job_ids) & models
+    completed = logged_models(log_dir / "completed_models.csv", job_ids) & models
+    failed = logged_models(log_dir / "failed_models.csv", job_ids) & models
     done = completed | failed
     total = len(models)
     done_percent = 100 * len(done) / total if total else 0
@@ -118,6 +127,7 @@ def main() -> None:
     remaining = max(0, total - len(done))
 
     print(f"Run dir: {run_dir if run_dir else 'unknown'}")
+    print(f"Log dir: {log_dir}")
     elapsed = elapsed_since_run_start(run_dir)
     if elapsed:
         print(f"Elapsed: {elapsed}")
