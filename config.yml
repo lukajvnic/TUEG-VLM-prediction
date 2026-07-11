@@ -1,5 +1,6 @@
-dataset: TUEP
+dataset: all
 model: all
+model-tier: all
 array-concurrency: 49
 eval-retries: 1
 
@@ -101,6 +102,7 @@ models:
     ram: "384G"
     gpus: 4
   "llama4:128x17b":
+    tier: large
     time: "7-00:00:00"
     ram: "512G"
     gpus: 4
@@ -221,10 +223,12 @@ models:
     ram: "96G"
     gpus: 1
   "qwen3-vl:235b-a22b-instruct":
+    tier: large
     time: "4-00:00:00"
     ram: "512G"
     gpus: 4
   "qwen3-vl:235b-a22b-thinking":
+    tier: large
     time: "4-00:00:00"
     ram: "512G"
     gpus: 4

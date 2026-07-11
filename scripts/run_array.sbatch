@@ -24,7 +24,8 @@ export APPTAINERENV_OLLAMA_LOAD_TIMEOUT="$OLLAMA_LOAD_TIMEOUT"
 export APPTAINERENV_OLLAMA_MAX_LOADED_MODELS="$OLLAMA_MAX_LOADED_MODELS"
 export APPTAINERENV_OLLAMA_NUM_PARALLEL="$OLLAMA_NUM_PARALLEL"
 
-MODEL=$(python -c 'import base64, json, os, yaml; c=yaml.safe_load(open("config.yml")); override=os.environ.get("PI_MODEL_LIST_B64"); models=json.loads(base64.b64decode(override).decode("utf-8")) if override else list(c["models"]); selected=c.get("model"); run=models if override or selected == "all" else [selected]; print(run[int(os.environ["SLURM_ARRAY_TASK_ID"])])')
+TASK=$(python -c 'import base64, json, os, yaml; path=os.environ.get("PI_CONFIG_PATH", "config.yml"); c=yaml.safe_load(open(path)); override=os.environ.get("PI_TASK_LIST_B64"); tasks=json.loads(base64.b64decode(override).decode("utf-8")) if override else [(m, c["dataset"]) for m in (list(c["models"]) if c.get("model") == "all" else [c["model"]])]; print(*tasks[int(os.environ["SLURM_ARRAY_TASK_ID"])], sep="\t")')
+IFS=$'\t' read -r MODEL DATASET <<< "$TASK"
 
 OLLAMA_PORT=$(python -c 'import os; job=int(os.environ.get("SLURM_JOB_ID", "0")); task=int(os.environ.get("SLURM_ARRAY_TASK_ID", "0")); print(20000 + ((job * 1009 + task) % 40000))')
 export OLLAMA_HOST="127.0.0.1:$OLLAMA_PORT"
@@ -40,7 +41,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "host=$(hostname) job=$SLURM_JOB_ID task=$SLURM_ARRAY_TASK_ID model=$MODEL ollama=$OLLAMA_HOST image=$OLLAMA_IMAGE"
+echo "host=$(hostname) job=$SLURM_JOB_ID task=$SLURM_ARRAY_TASK_ID model=$MODEL dataset=$DATASET ollama=$OLLAMA_HOST image=$OLLAMA_IMAGE"
 nvidia-smi || true
 apptainer exec --nv "$OLLAMA_IMAGE" ollama --version || true
 
@@ -59,4 +60,4 @@ apptainer exec --nv "$OLLAMA_IMAGE" ollama list >/dev/null 2>&1 || {
     exit 1
 }
 
-python scripts/eval.py --model "$MODEL"
+python scripts/eval.py --model "$MODEL" --dataset "$DATASET"

@@ -1,5 +1,7 @@
+import argparse
 import base64
 import json
+import shutil
 import subprocess
 from collections import defaultdict
 from datetime import datetime
@@ -13,13 +15,41 @@ SLURM_SCRIPT = PROJECT_ROOT / "scripts" / "run_array.sbatch"
 LOG_DIR = PROJECT_ROOT / "logs"
 
 
-def load_config() -> dict:
-    with CONFIG_PATH.open("r", encoding="utf-8") as file:
+DATASETS = ("TUEP", "TUAB", "TUEV", "TUAR", "TUSZ", "TUSL")
+
+
+def load_config(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as file:
         return yaml.safe_load(file)
 
 
+def selected_models(config: dict, tier: str) -> list[str]:
+    models = config.get("models") or {}
+    selected_model = config.get("model")
+    candidates = list(models) if selected_model == "all" else [selected_model]
+    if tier == "all":
+        return candidates
+    selected = [model for model in candidates if (models[model] or {}).get("tier", "fast") == tier]
+    if not selected:
+        raise SystemExit(f"ERROR: no models in tier {tier!r}")
+    return selected
+
+
+def selected_datasets(config: dict) -> list[str]:
+    dataset = config.get("dataset")
+    datasets = list(DATASETS) if dataset == "all" else [dataset]
+    invalid = [name for name in datasets if name not in DATASETS or name not in config]
+    if invalid:
+        raise SystemExit(f"ERROR: invalid or unconfigured dataset(s): {', '.join(map(str, invalid))}")
+    return datasets
+
+
 def main() -> None:
-    config = load_config()
+    parser = argparse.ArgumentParser(description="Submit TUEG VLM evaluations to Slurm.")
+    parser.add_argument("--tier", choices=("all", "fast", "large"), help="Override config model-tier")
+    args = parser.parse_args()
+
+    config = load_config(CONFIG_PATH)
     concurrency = int(config.get("array-concurrency", 4))
 
     if concurrency < 1:
@@ -28,33 +58,43 @@ def main() -> None:
         raise SystemExit(f"ERROR: missing {SLURM_SCRIPT}")
 
     models = config.get("models") or {}
-    selected_model = config.get("model")
-    models_to_run = list(models) if selected_model == "all" else [selected_model]
+    tier = args.tier or config.get("model-tier", "all")
+    models_to_run = selected_models(config, tier)
+    datasets_to_run = selected_datasets(config)
 
     if not models_to_run or not models_to_run[0]:
-        raise SystemExit("ERROR: config.yml must set model")
+        raise SystemExit("ERROR: config.yml must select at least one model")
     for model in models_to_run:
         if model not in models:
             raise SystemExit(f"ERROR: model {model!r} is not listed under models in config.yml")
 
+    tasks_to_run = [(model, dataset) for model in models_to_run for dataset in datasets_to_run]
     groups = defaultdict(list)
-    for model in models_to_run:
+    for model, dataset in tasks_to_run:
         spec = models[model] or {}
         key = (spec.get("time", "12:00:00"), spec.get("ram", "32G"), int(spec.get("gpus", 1)))
-        groups[key].append(model)
+        groups[key].append((model, dataset))
 
     LOG_DIR.mkdir(exist_ok=True)
-    run_id = "run-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_id = "run-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     run_dir = PROJECT_ROOT / "results" / run_id
     run_log_dir = LOG_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     run_log_dir.mkdir(parents=True, exist_ok=True)
+    # Array tasks must never observe later edits to the shared config.yml.
+    run_config = run_dir / "config.yml"
+    shutil.copy2(CONFIG_PATH, run_config)
+    # Preserve the resolved CLI/config choices so status remains accurate for tier runs.
+    (run_dir / "tasks.json").write_text(json.dumps(tasks_to_run, indent=2) + "\n", encoding="utf-8")
     job_ids = []
     for (time_limit, ram, gpus), group_models in groups.items():
         n_models = len(group_models)
         array = f"0-{n_models - 1}%{min(concurrency, n_models)}"
-        encoded_models = base64.b64encode(json.dumps(group_models).encode("utf-8")).decode("ascii")
-        export = f"ALL,PI_RUN_ID={run_id},PI_LOG_DIR={run_log_dir},PI_MODEL_LIST_B64={encoded_models}"
+        encoded_tasks = base64.b64encode(json.dumps(group_models).encode("utf-8")).decode("ascii")
+        export = (
+            f"ALL,PI_RUN_ID={run_id},PI_LOG_DIR={run_log_dir},PI_CONFIG_PATH={run_config},"
+            f"PI_TASK_LIST_B64={encoded_tasks}"
+        )
         cmd = [
             "sbatch",
             f"--chdir={PROJECT_ROOT}",
@@ -68,7 +108,7 @@ def main() -> None:
             str(SLURM_SCRIPT),
         ]
 
-        print(f"Submitting {n_models} model(s) with gpu:{gpus} mem:{ram} time:{time_limit}: {' '.join(cmd)}")
+        print(f"Submitting {n_models} task(s) with gpu:{gpus} mem:{ram} time:{time_limit}: {' '.join(cmd)}")
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         output = result.stdout.strip()
         print(output)

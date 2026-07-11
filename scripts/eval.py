@@ -22,18 +22,22 @@ from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
 
 
-CONFIG_PATH = PROJECT_ROOT / "config.yml"
+CONFIG_PATH = Path(os.environ.get("PI_CONFIG_PATH", PROJECT_ROOT / "config.yml"))
 DATASETS_DIR = PROJECT_ROOT / "datasets"
 RESULTS_CSV = PROJECT_ROOT / "results.csv"
 RESULTS_DIR = PROJECT_ROOT / "results"
 
 
-def load_config(model_override: str | None = None):
+def load_config(model_override: str | None = None, dataset_override: str | None = None):
     with CONFIG_PATH.open("r", encoding="utf-8") as file:
         config = yaml.safe_load(file)
 
     if model_override:
         config["model"] = model_override
+    if dataset_override:
+        config["dataset"] = dataset_override
+    if config.get("dataset") == "all":
+        raise ValueError("eval.py requires one concrete dataset; use run.py to expand dataset: all")
 
     ollama_base_url = os.environ.get("OLLAMA_BASE_URL")
     if ollama_base_url:
@@ -90,18 +94,35 @@ def get_run_log_dir() -> Path:
     return Path(log_dir) if log_dir else PROJECT_ROOT / "logs"
 
 
+def task_log_path(directory: str, suffix: str = ".json") -> Path:
+    """Return a task-unique log path; array tasks must not append shared files."""
+    job_id = slurm_job_id()
+    task_id = os.environ.get("SLURM_ARRAY_TASK_ID", "single")
+    path = get_run_log_dir() / directory
+    path.mkdir(parents=True, exist_ok=True)
+    return path / f"{job_id}_{task_id}{suffix}"
+
+
+def atomic_json_write(path: Path, payload: dict) -> None:
+    temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
 def log_invalid_structured_output(model: str, dataset: str, image_path: Path, raw):
-    log_dir = get_run_log_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
     raw_dump = raw.model_dump(mode="json") if hasattr(raw, "model_dump") else str(raw)
-    with (log_dir / "invalid_structured_outputs.jsonl").open("a", encoding="utf-8") as file:
-        file.write(json.dumps({
-            "timestamp": datetime.now().isoformat(),
-            "model": model,
-            "dataset": dataset,
-            "image_path": str(image_path),
-            "raw": raw_dump,
-        }, ensure_ascii=False) + "\n")
+    # Include microseconds because a retried task may produce more than one invalid response.
+    path = task_log_path(
+        "invalid_structured_outputs",
+        f"-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.json",
+    )
+    atomic_json_write(path, {
+        "timestamp": datetime.now().isoformat(),
+        "model": model,
+        "dataset": dataset,
+        "image_path": str(image_path),
+        "raw": raw_dump,
+    })
 
 
 def send(llm, batch: list[tuple[Path, list[HumanMessage]]], dataset: str, model_name: str, wandb_table=None):
@@ -121,7 +142,7 @@ def send(llm, batch: list[tuple[Path, list[HumanMessage]]], dataset: str, model_
             raise ValueError(
                 "Structured output parsing returned None. "
                 f"Model did not produce the requested schema for {image_path}. "
-                "Full raw response was saved to logs/invalid_structured_outputs.jsonl. "
+                "Full raw response was saved to the run log's invalid_structured_outputs directory. "
                 f"Raw response preview: {str(raw_content)[:1000]}"
             )
         prediction = get_prediction(parsed, dataset)
@@ -279,7 +300,7 @@ def run_evaluation(config):
 
     wandb.init(
         project="eeg-vlm-inference",
-        name=f"{config['model'].replace(':', '-')}-baseline",
+        name=f"{config['model'].replace(':', '-')}-{config['dataset']}-baseline",
         config={
             "model": config["model"],
             "prompt": prompt,
@@ -324,32 +345,28 @@ def slurm_job_id() -> str:
     return os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "local")
 
 
+def log_task_status(config, outcome: str, error: BaseException | None = None):
+    """Atomically replace one status file owned by this array task."""
+    payload = {
+        "timestamp": datetime.now().isoformat(),
+        "job_id": slurm_job_id(),
+        "task_id": os.environ.get("SLURM_ARRAY_TASK_ID", "single"),
+        "model": config["model"],
+        "dataset": config["dataset"],
+        "outcome": outcome,
+    }
+    if error is not None:
+        payload["error_type"] = type(error).__name__
+        payload["error"] = str(error)
+    atomic_json_write(task_log_path("task_status"), payload)
+
+
 def log_success(config):
-    log_dir = get_run_log_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
-    with (log_dir / "completed_models.csv").open("a", newline="", encoding="utf-8") as file:
-        writer = csv.writer(file)
-        writer.writerow([
-            datetime.now().isoformat(),
-            slurm_job_id(),
-            os.environ.get("SLURM_ARRAY_TASK_ID", "single"),
-            config["model"],
-        ])
+    log_task_status(config, "completed")
 
 
 def log_failure(config, error: BaseException):
-    log_dir = get_run_log_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
-    with (log_dir / "failed_models.csv").open("a", newline="", encoding="utf-8") as file:
-        writer = csv.writer(file)
-        writer.writerow([
-            datetime.now().isoformat(),
-            slurm_job_id(),
-            os.environ.get("SLURM_ARRAY_TASK_ID", "single"),
-            config["model"],
-            type(error).__name__,
-            str(error),
-        ])
+    log_task_status(config, "failed", error)
 
 
 def run_with_retries(config) -> bool:
@@ -375,9 +392,10 @@ def run_with_retries(config) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="Run TUEG VLM evaluation.")
     parser.add_argument("--model", help="Override the model in config.yml.")
+    parser.add_argument("--dataset", help="Override the dataset in config.yml.")
     args = parser.parse_args()
 
-    config = load_config(args.model)
+    config = load_config(args.model, args.dataset)
     models = list(config.get("models", {})) if config["model"] == "all" else [config["model"]]
     failed = False
 
