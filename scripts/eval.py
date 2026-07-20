@@ -280,7 +280,12 @@ def build_batch(batch_paths, prompt) -> list[tuple[Path, list[HumanMessage]]]:
 
 def init_model(config, out_struct):
     model_kwargs = config.get("model-kwargs") or {}
-    structured_output_kwargs = config.get("structured-output") or {}
+    model_spec = (config.get("models") or {}).get(config["model"]) or {}
+    # A model entry can override the global structured-output method for retries.
+    structured_output_kwargs = {
+        **(config.get("structured-output") or {}),
+        **(model_spec.get("structured-output") or {}),
+    }
 
     return ChatOllama(
         model=config["model"],
