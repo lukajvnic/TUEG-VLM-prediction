@@ -27,6 +27,15 @@ DATASETS_DIR = PROJECT_ROOT / "datasets"
 RESULTS_CSV = PROJECT_ROOT / "results.csv"
 RESULTS_DIR = PROJECT_ROOT / "results"
 
+# Raw Ollama responses stored in api_json can exceed csv's small default field limit.
+_csv_field_limit = sys.maxsize
+while True:
+    try:
+        csv.field_size_limit(_csv_field_limit)
+        break
+    except OverflowError:
+        _csv_field_limit //= 10
+
 
 def load_config(model_override: str | None = None, dataset_override: str | None = None):
     with CONFIG_PATH.open("r", encoding="utf-8") as file:

@@ -1,5 +1,6 @@
 import ast
 import csv
+import json
 import re
 import sys
 from pathlib import Path
@@ -35,6 +36,10 @@ def safe_div(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator else 0.0
 
 
+def safe_filename_part(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
+
+
 def model_name_from_file(path: Path) -> str:
     # Files are written as <safe-model>-<dataset>.csv. Keep the full stem if the
     # dataset suffix cannot be identified.
@@ -42,7 +47,32 @@ def model_name_from_file(path: Path) -> str:
     return match.group(1) if match else path.stem
 
 
-def summarize_file(path: Path) -> list[dict[str, object]]:
+def load_task_statuses(results_dir: Path) -> dict[tuple[str, str], str]:
+    """Return each task's terminal state; absent status means still partial."""
+    status_dir = PROJECT_ROOT / "logs" / results_dir.name / "task_status"
+    statuses = {}
+    if not status_dir.exists():
+        return statuses
+
+    for path in status_dir.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            model, dataset = payload["model"], payload["dataset"]
+            statuses[(model, dataset)] = payload.get("outcome", "partial")
+        except (OSError, ValueError, KeyError):
+            print(f"WARNING: could not read task status {path}", file=sys.stderr)
+    return statuses
+
+
+def run_status(outcome: str | None) -> str:
+    if outcome == "completed":
+        return "success"
+    if outcome == "failed":
+        return "fail"
+    return "partial"
+
+
+def summarize_file(path: Path, status: str) -> list[dict[str, object]]:
     with path.open("r", newline="", encoding="utf-8") as file:
         rows = list(csv.DictReader(file))
 
@@ -82,6 +112,7 @@ def summarize_file(path: Path) -> list[dict[str, object]]:
             "file": path.name,
             "label": label,
             "scope": "label",
+            "run_status": status,
             "tp": tp,
             "fp": fp,
             "tn": tn,
@@ -105,6 +136,7 @@ def summarize_file(path: Path) -> list[dict[str, object]]:
             "file": path.name,
             "label": "ALL",
             "scope": "model",
+            "run_status": status,
             "tp": sum(int(row["tp"]) for row in label_summaries),
             "fp": sum(int(row["fp"]) for row in label_summaries),
             "tn": sum(int(row["tn"]) for row in label_summaries),
@@ -128,6 +160,7 @@ def summarize_file(path: Path) -> list[dict[str, object]]:
         "file": path.name,
         "label": "ALL",
         "scope": "model",
+        "run_status": status,
         "tp": 0,
         "fp": 0,
         "tn": 0,
@@ -156,11 +189,18 @@ def main() -> None:
         if path.name != "summary.csv" and path.is_file()
     )
 
+    task_statuses = load_task_statuses(results_dir)
+    expected_files = {
+        f"{safe_filename_part(model)}-{dataset}.csv": (model, dataset)
+        for model, dataset in json.loads((results_dir / "tasks.json").read_text(encoding="utf-8"))
+    } if (results_dir / "tasks.json").exists() else {}
+
     fieldnames = [
         "model",
         "file",
         "label",
         "scope",
+        "run_status",
         "tp",
         "fp",
         "tn",
@@ -179,8 +219,25 @@ def main() -> None:
     ]
 
     rows = []
+    processed_files = set()
     for path in csv_files:
-        rows.extend(summarize_file(path))
+        task = expected_files.get(path.name)
+        outcome = task_statuses.get(task) if task else None
+        rows.extend(summarize_file(path, run_status(outcome)))
+        processed_files.add(path.name)
+
+    # Include tasks that failed before creating a results CSV (or are still running).
+    for filename, (model, dataset) in expected_files.items():
+        if filename not in processed_files:
+            rows.append({
+                "model": model, "file": filename, "label": "ALL", "scope": "model",
+                "run_status": run_status(task_statuses.get((model, dataset))),
+                "tp": 0, "fp": 0, "tn": 0, "fn": 0,
+                "support_positive": 0, "support_negative": 0, "total": 0,
+                "exact_correct": 0, "exact_accuracy": 0.0, "label_accuracy": 0.0,
+                "balanced_accuracy": 0.0, "sensitivity_recall": 0.0,
+                "specificity": 0.0, "precision": 0.0, "f1": 0.0,
+            })
 
     summary_path = results_dir / "summary.csv"
     with summary_path.open("w", newline="", encoding="utf-8") as file:
