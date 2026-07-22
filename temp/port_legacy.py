@@ -1,7 +1,7 @@
 """Import completed and failed legacy tasks into a new-format run directory.
 
 Usage:
-    python temp/port_legacy.py /path/to/legacy-archive --dataset TUEP
+    python temp/port_legacy.py /path/to/legacy-archive
 """
 
 import argparse
@@ -26,28 +26,58 @@ def safe_filename(value):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("legacy_run", type=Path, help="Archived legacy run containing results/ and logs/.")
-    parser.add_argument("--dataset", choices=sorted(DATASETS), required=True)
-    parser.add_argument("--job-id", required=True, help="Legacy array job ID to import.")
     parser.add_argument("--name", help="Name for the imported run directory.")
     return parser.parse_args()
 
 
-def dataset_from_row(row, default):
-    return next((value for value in row[4:] if value in DATASETS), default)
+def load_job_ids(legacy_run):
+    job_ids = set()
+    for name in ("squeue-before.txt", "sacct.txt", "sacct-before.txt", "sacct-after.txt"):
+        path = legacy_run / name
+        if not path.exists():
+            continue
+        for line in path.read_text().splitlines():
+            match = re.match(r"\s*(\d+)", line)
+            if match:
+                job_ids.add(match.group(1))
+    if not job_ids:
+        raise SystemExit("ERROR: no job IDs found in the legacy archive")
+    return job_ids
 
 
-def load_outcomes(path, status, default_dataset, job_id):
+def load_task_datasets(logs):
+    tasks = {}
+    pattern = re.compile(r"\bjob=(\d+)\s+task=(\d+)\s+model=(\S+)\s+dataset=(\S+)")
+    for path in logs.rglob("*.out"):
+        for match in pattern.finditer(path.read_text(errors="replace")):
+            job_id, task_id, model, dataset = match.groups()
+            if dataset in DATASETS:
+                tasks[job_id, task_id] = model, dataset
+    return tasks
+
+
+def dataset_from_row(row, task_datasets):
+    dataset = next((value for value in row[4:] if value in DATASETS), None)
+    if dataset:
+        return dataset
+    task = task_datasets.get((row[1], row[2]))
+    return task[1] if task else None
+
+
+def load_outcomes(path, status, task_datasets, job_ids):
     if not path.exists():
         return {}
 
     outcomes = {}
     with path.open(newline="") as file:
         for row in csv.reader(file):
-            if len(row) < 4 or row[1] != job_id:
+            if len(row) < 4 or row[1] not in job_ids:
                 continue
-            dataset = dataset_from_row(row, default_dataset)
-            if dataset:
-                outcomes[row[3], dataset] = "" if status == "success" else ", ".join(row[4:])
+            dataset = dataset_from_row(row, task_datasets)
+            if not dataset:
+                print(f"WARNING: no dataset found for legacy task {row[1]}_{row[2]}")
+                continue
+            outcomes[row[3], dataset] = "" if status == "success" else ", ".join(row[4:])
     return outcomes
 
 
@@ -109,10 +139,11 @@ def copy_config(legacy_run, run_dir):
         shutil.copy2(legacy_config, run_dir / "legacy-config.yml")
 
 
-def import_outcomes(legacy_run, run_dir, dataset, job_id):
+def import_outcomes(legacy_run, run_dir, job_ids):
     logs = legacy_run / "logs"
-    successes = load_outcomes(logs / "completed_models.csv", "success", dataset, job_id)
-    failures = load_outcomes(logs / "failed_models.csv", "fail", dataset, job_id)
+    task_datasets = load_task_datasets(logs)
+    successes = load_outcomes(logs / "completed_models.csv", "success", task_datasets, job_ids)
+    failures = load_outcomes(logs / "failed_models.csv", "fail", task_datasets, job_ids)
     results = index_results(legacy_run / "results")
     rows = []
 
@@ -148,7 +179,7 @@ def main():
     legacy_run = args.legacy_run.resolve()
     run_dir = create_run(args.name)
     copy_config(legacy_run, run_dir)
-    rows = import_outcomes(legacy_run, run_dir, args.dataset, args.job_id)
+    rows = import_outcomes(legacy_run, run_dir, load_job_ids(legacy_run))
     write_status(run_dir, rows)
     write_tasks(run_dir, rows)
     print(f"Imported {len(rows)} task(s) into {run_dir}")
