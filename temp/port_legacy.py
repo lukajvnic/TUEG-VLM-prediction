@@ -15,6 +15,7 @@ import csv
 import json
 import re
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,20 @@ LEGACY_ARCHIVE = Path("/home/luka/scratch/tueg-vlm-legacy/20260722-162258")
 LEGACY_RUN = "run-20260712-143321-451122"
 DEFAULT_RESULTS = LEGACY_ARCHIVE / "results" / LEGACY_RUN
 DEFAULT_LOGS = LEGACY_ARCHIVE / "logs" / LEGACY_RUN
+
+
+# Raw Ollama responses in api_json exceed the csv module's small default limit.
+def set_csv_field_limit():
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            return
+        except OverflowError:
+            limit //= 10
+
+
+set_csv_field_limit()
 
 
 def safe_filename(value):
