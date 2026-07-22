@@ -1,6 +1,5 @@
 import argparse
 import csv
-from collections import defaultdict
 from pathlib import Path
 
 import yaml
@@ -19,12 +18,12 @@ def load_retry_config(run_dir):
     return base_config
 
 
-def load_failed_tasks(run_dir):
+def load_successful_tasks(run_dir):
     with (run_dir / "status.csv").open(newline="") as file:
         return {
             (row["model"], row["dataset"])
             for row in csv.DictReader(file)
-            if row["status"] == "fail"
+            if row["status"] == "success"
         }
 
 
@@ -47,32 +46,33 @@ def render_datasets(config):
     return output
 
 
-def render_model(model, model_config, failed_datasets):
+def render_model(model, model_config, active_datasets):
     block = yaml.safe_dump({model: model_config}, sort_keys=False)
     lines = []
     for line in block.splitlines(keepends=True):
         dataset = line.strip().removeprefix("- ")
-        if line.strip().startswith("- ") and dataset not in failed_datasets:
+        if line.strip().startswith("- ") and dataset not in active_datasets:
             line = comment_block(line)
         lines.append(line)
     return indent("".join(lines))
 
 
-def render_models(config, failed_tasks):
-    failed_by_model = defaultdict(set)
-    for model, dataset in failed_tasks:
-        failed_by_model[model].add(dataset)
-
+def render_models(config, successful_tasks):
     output = "models:\n"
     for model, model_config in config["models"].items():
-        block = render_model(model, model_config, failed_by_model.get(model, set()))
-        output += block if model in failed_by_model else comment_block(block)
+        # Pairs absent from status.csv have not run and must remain enabled.
+        active_datasets = {
+            dataset for dataset in model_config["datasets"]
+            if (model, dataset) not in successful_tasks
+        }
+        block = render_model(model, model_config, active_datasets)
+        output += block if active_datasets else comment_block(block)
     return output
 
 
-def render_config(config, failed_tasks):
+def render_config(config, successful_tasks):
     settings = yaml.safe_dump({"settings": config["settings"]}, sort_keys=False)
-    return settings + render_datasets(config) + render_models(config, failed_tasks)
+    return settings + render_datasets(config) + render_models(config, successful_tasks)
 
 
 def main():
@@ -82,7 +82,7 @@ def main():
 
     eval_dir = Path(__file__).parent
     run_dir = eval_dir / "runs" / args.run
-    retry_config = render_config(load_retry_config(run_dir), load_failed_tasks(run_dir))
+    retry_config = render_config(load_retry_config(run_dir), load_successful_tasks(run_dir))
     (eval_dir / "config.yml").write_text(retry_config)
 
 
