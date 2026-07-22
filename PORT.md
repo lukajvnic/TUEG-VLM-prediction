@@ -1,64 +1,62 @@
-# Port legacy runs
+# Port active legacy runs
 
-## 1. Update the repository, not the data
+## 1. Freeze and archive on CCDB
 
-Commit and push the new `eval/` code from `TUEG-VLM-restructure` to the `TUEG-VLM-prediction` repository first.
-
-On the Alliance login node, back up the datasets and update the existing clone in place:
+Run this **before** pulling the new code. Replace the three job IDs.
 
 ```bash
 REPO=~/dev/TUEG-VLM-prediction
-rsync -a "$REPO/datasets/" "$SCRATCH/TUEG-VLM-datasets-backup/"
-cd "$REPO"
-git status --short datasets
-git pull --ff-only
-```
-
-Do not delete or reclone the repository. `git pull` preserves the downloaded dataset files, which are expected to remain at `datasets/`.
-
-## 2. Freeze the legacy jobs
-
-Before cancelling, archive their config, logs, results, and Slurm state. Replace the IDs below.
-
-```bash
-JOBS="<original-job-id>,<large-tier-job-id>,<retry-job-id>"
+JOBS="<original>,<large-tier>,<retry>"
 STAMP=$(date +%Y%m%d-%H%M%S)
 ARCHIVE="$SCRATCH/tueg-vlm-legacy/$STAMP"
 mkdir -p "$ARCHIVE"
 
-squeue -r -j "$JOBS" -o "%i|%T|%M|%R" | tee "$ARCHIVE/squeue-before.txt"
-sacct -X -j "$JOBS" --format=JobIDRaw,State,Reason | tee "$ARCHIVE/sacct-before.txt"
+rsync -a "$REPO/datasets/" "$SCRATCH/tueg-vlm-datasets-backup/"
 cp "$REPO/config.yml" "$ARCHIVE/config.yml"
+squeue -r -j "$JOBS" -o "%i|%T|%M|%R" > "$ARCHIVE/squeue-before.txt"
 
 scancel "$JOBS"
 while squeue -h -j "$JOBS" | grep -q .; do sleep 10; done
 
 rsync -a "$REPO/results/" "$ARCHIVE/results/"
 rsync -a "$REPO/logs/" "$ARCHIVE/logs/"
-sacct -X -j "$JOBS" --format=JobIDRaw,State,Reason | tee "$ARCHIVE/sacct-after.txt"
+sacct -X -j "$JOBS" --format=JobIDRaw,State,Reason > "$ARCHIVE/sacct.txt"
 ```
 
-## 3. Import legacy outcomes
+## 2. Pull the new code
 
-Create one imported run per old run:
+```bash
+cd "$REPO"
+git pull --ff-only
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-- completed pairs become `success` rows and have their result CSV copied into the new result layout;
-- known failures become `fail` rows with their legacy reason;
-- interrupted/unstarted pairs remain unfinished and will be rerun from the start.
+The in-repo `datasets/` directory remains in place. Do not run `git clean`.
 
-Do not import partial CSVs as successful results. The new evaluator does not yet resume a partially completed model/dataset task per image.
+## 3. Import all old arrays ((CONTINUE HERE))
 
-## 4. Resume only remaining work
+Run this once. It reads every saved job ID and Slurm task log from the archive, then imports all matching legacy outcomes.
 
-1. Run `create-retry-config.py` on the imported status to activate failed pairs.
-2. Manually uncomment only interrupted/unstarted pairs too.
-3. Keep completed pairs commented.
-4. Review failures and adjust affected models' `time`, `ram`, `gpus`, and possibly `array-concurrency`.
-5. Submit the remaining work:
+```bash
+python temp/port_legacy.py "$ARCHIVE"
+```
+
+The command derives each task's dataset from its archived Slurm output, prints the imported run directory name, imports verified completed results as `success`, and imports legacy failures as `fail`. Interrupted tasks are not imported and must be rerun.
+
+## 4. Submit unfinished and failed work
+
+Create a retry config from the imported run:
 
 ```bash
 cd "$REPO/eval"
-python run.py
+python create-retry-config.py <imported-run-name>
 ```
 
-A new run directory is expected and is fine. Imported legacy results and new resumed results can remain separate.
+This activates failed pairs only. Manually uncomment interrupted/unstarted pairs too. Keep completed pairs commented.
+
+Review failed-model resources (`time`, `ram`, `gpus`) and `array-concurrency`, then submit:
+
+```bash
+python run.py
+```

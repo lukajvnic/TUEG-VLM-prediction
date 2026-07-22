@@ -64,21 +64,39 @@ def dataset_from_row(row, task_datasets):
     return task[1] if task else None
 
 
-def load_outcomes(path, status, task_datasets, job_ids):
-    if not path.exists():
-        return {}
-
+def load_csv_outcomes(logs, filename, status, task_datasets, job_ids):
     outcomes = {}
-    with path.open(newline="") as file:
-        for row in csv.reader(file):
-            if len(row) < 4 or row[1] not in job_ids:
-                continue
-            dataset = dataset_from_row(row, task_datasets)
-            if not dataset:
-                print(f"WARNING: no dataset found for legacy task {row[1]}_{row[2]}")
-                continue
-            outcomes[row[3], dataset] = "" if status == "success" else ", ".join(row[4:])
+    for path in logs.rglob(filename):
+        with path.open(newline="") as file:
+            for row in csv.reader(file):
+                if len(row) < 4 or row[1] not in job_ids:
+                    continue
+                dataset = dataset_from_row(row, task_datasets)
+                if not dataset:
+                    print(f"WARNING: no dataset found for legacy task {row[1]}_{row[2]}")
+                    continue
+                outcomes[row[3], dataset] = "" if status == "success" else ", ".join(row[4:])
     return outcomes
+
+
+def load_json_outcomes(logs, job_ids):
+    successes = {}
+    failures = {}
+    for path in logs.rglob("task_status/*.json"):
+        try:
+            record = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            continue
+        if str(record.get("job_id")) not in job_ids:
+            continue
+        task = record.get("model"), record.get("dataset")
+        if not all(task) or task[1] not in DATASETS:
+            continue
+        if record.get("outcome") == "completed":
+            successes[task] = ""
+        elif record.get("outcome") == "failed":
+            failures[task] = record.get("error", "legacy task failed")
+    return successes, failures
 
 
 def api_model(path):
@@ -101,7 +119,7 @@ def dataset_from_filename(path):
 
 def index_results(results_dir):
     index = {}
-    for path in results_dir.glob("*.csv"):
+    for path in results_dir.rglob("*.csv"):
         if path.name in {"summary.csv", "rank.csv"}:
             continue
         model = api_model(path)
@@ -109,6 +127,14 @@ def index_results(results_dir):
         if model and dataset:
             index[model, dataset] = path
     return index
+
+
+def find_result(results_dir, results, task):
+    model, dataset = task
+    matches = list(results_dir.rglob(f"{safe_filename(model)}-{dataset}.csv"))
+    if matches:
+        return max(matches, key=lambda path: path.stat().st_mtime)
+    return results.get(task)
 
 
 def count_rows(path):
@@ -142,13 +168,17 @@ def copy_config(legacy_run, run_dir):
 def import_outcomes(legacy_run, run_dir, job_ids):
     logs = legacy_run / "logs"
     task_datasets = load_task_datasets(logs)
-    successes = load_outcomes(logs / "completed_models.csv", "success", task_datasets, job_ids)
-    failures = load_outcomes(logs / "failed_models.csv", "fail", task_datasets, job_ids)
-    results = index_results(legacy_run / "results")
+    successes = load_csv_outcomes(logs, "completed_models.csv", "success", task_datasets, job_ids)
+    failures = load_csv_outcomes(logs, "failed_models.csv", "fail", task_datasets, job_ids)
+    json_successes, json_failures = load_json_outcomes(logs, job_ids)
+    successes.update(json_successes)
+    failures.update(json_failures)
+    results_dir = legacy_run / "results"
+    results = index_results(results_dir)
     rows = []
 
     for task in successes:
-        result = results.get(task)
+        result = find_result(results_dir, results, task)
         if not result:
             print(f"WARNING: no result CSV for completed task {task[0]} / {task[1]}")
             continue
