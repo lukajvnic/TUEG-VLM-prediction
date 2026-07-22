@@ -1,0 +1,521 @@
+settings:
+  array-concurrency: 49
+  eval-retries: 1
+  limit: -1
+  model-kwargs:
+    base_url: http://localhost:11434
+    temperature: 0
+  structured-output:
+    method: json_schema
+datasets:
+  TUEP:
+    prompt: "Classify these EEG spectrograms as either epileptic or non-epileptic. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for classification fields."
+  TUAB:
+    prompt: "Classify these EEG spectrograms as belonging to either a normal or abnormal brain. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for classification fields."
+  TUEV:
+    prompt: "Select all of the following event categories that appear in the EEG spectrograms: ARTF, BCKG, EYEM, GPED, PLED, or SPSW. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for category fields."
+  TUAR:
+    prompt: "Select all of the following artifact categories that appear in the EEG spectrograms: BCKG, CHEW, ELEC, ELPP, EYEM, MUSC, or SHIV. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for category fields."
+  TUSZ:
+    prompt: "Select all of the following seizure/background categories that appear in the EEG spectrograms: ABSZ, BCKG, CPSZ, FNSZ, GNSZ, MYSZ, SPSZ, TCSZ, or TNSZ. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for category fields."
+  TUSL:
+    prompt: "Select all of the following labels that appear in the EEG spectrograms: BCKG, SEIZ, or SLOW. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for label fields."
+models:
+  "bakllava:7b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "deepseek-ocr:3b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "gemma3:4b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "gemma3:12b":
+    time: "08:00:00"
+    ram: "48G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "gemma3:27b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "gemma4:e2b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "gemma4:e4b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "gemma4:12b":
+    time: "08:00:00"
+    ram: "48G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "gemma4:26b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "gemma4:31b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "glm-ocr:latest":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "granite3.2-vision:2b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "llama4:scout":
+    time: "2-00:00:00"
+    ram: "256G"
+    gpus: 4
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "llama4:16x17b":
+    time: "4-00:00:00"
+    ram: "384G"
+    gpus: 4
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "llama4:128x17b":
+    tier: large
+    time: "7-00:00:00"
+    ram: "512G"
+    gpus: 4
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "llava:7b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "llava:13b":
+    time: "08:00:00"
+    ram: "48G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "llava:34b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "llava:v1.6":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "llava-llama3:8b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "llava-phi3:3.8b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "medgemma:4b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "medgemma1.5:4b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "minicpm-v:8b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "minicpm-v4.5:8b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "minicpm-v4.6:1b":
+    time: "02:00:00"
+    ram: "16G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "mistral-small3.1:24b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "mistral-small3.2:24b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "moondream:1.8b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "moondream:v2":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen2.5vl:3b":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen2.5vl:7b":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen2.5vl:32b":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:2b-instruct":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:2b-thinking":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:4b-instruct":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:4b-thinking":
+    time: "04:00:00"
+    ram: "24G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:8b-instruct":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:8b-thinking":
+    time: "06:00:00"
+    ram: "32G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:30b-a3b-instruct":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:30b-a3b-thinking":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:32b-instruct":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:32b-thinking":
+    time: "16:00:00"
+    ram: "96G"
+    gpus: 1
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:235b-a22b-instruct":
+    tier: large
+    time: "4-00:00:00"
+    ram: "512G"
+    gpus: 4
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  "qwen3-vl:235b-a22b-thinking":
+    tier: large
+    time: "4-00:00:00"
+    ram: "512G"
+    gpus: 4
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL

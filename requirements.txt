@@ -1,9 +1,5 @@
 PyYAML
-pydantic
-wandb
-langchain
 langchain-core
 langchain-ollama
-mne
-matplotlib
-numpy
+pydantic
+wandb
