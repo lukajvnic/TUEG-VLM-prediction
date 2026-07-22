@@ -1,5 +1,7 @@
+import argparse
 import csv
 import json
+import re
 import subprocess
 from collections import Counter
 from datetime import datetime
@@ -20,7 +22,12 @@ def load_tasks(run_dir: Path | None) -> set[tuple[str, str]]:
     if run_dir is not None:
         manifest = run_dir / "tasks.json"
         if manifest.exists():
-            return {tuple(task) for task in json.loads(manifest.read_text(encoding="utf-8"))}
+            tasks = json.loads(manifest.read_text(encoding="utf-8"))
+            # Standard runs use [model, dataset]; resume runs preserve a reason field.
+            return {
+                (task["model"], task["dataset"]) if isinstance(task, dict) else tuple(task[:2])
+                for task in tasks
+            }
 
     config_path = run_dir / "config.yml" if run_dir is not None and (run_dir / "config.yml").exists() else CONFIG_PATH
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -84,6 +91,25 @@ def last_run_dir() -> Path | None:
     return Path(value) if value else None
 
 
+def job_ids_in_log_dir(log_dir: Path) -> list[str]:
+    ids = set()
+    pattern = re.compile(r"^tueg-vlm-array-(\d+)_\d+\.(?:out|err)$")
+    for path in log_dir.glob("tueg-vlm-array-*.*"):
+        match = pattern.match(path.name)
+        if match:
+            ids.add(match.group(1))
+    return sorted(ids)
+
+
+def summary_job_id_in_log_dir(log_dir: Path) -> str | None:
+    pattern = re.compile(r"^tueg-vlm-(?:resume-)?summary-(\d+)\.(?:out|err)$")
+    for path in log_dir.glob("tueg-vlm-*summary-*.*"):
+        match = pattern.match(path.name)
+        if match:
+            return match.group(1)
+    return None
+
+
 def last_log_dir() -> Path:
     path = LOG_DIR / "last_log_dir.txt"
     if not path.exists():
@@ -145,10 +171,25 @@ def slurm_rows(job_ids: list[str]) -> list[dict[str, str]]:
 
 
 def main() -> None:
-    job_ids = last_job_ids()
-    summary_job_id = last_summary_job_id()
-    run_dir = last_run_dir()
-    log_dir = last_log_dir()
+    parser = argparse.ArgumentParser(description="Show progress for a submitted run or resume.")
+    parser.add_argument("--run-dir", type=Path, help="results/run-* or results/resume-* directory")
+    parser.add_argument("--log-dir", type=Path, help="Override the matching logs directory")
+    args = parser.parse_args()
+
+    if args.run_dir:
+        run_dir = args.run_dir.resolve()
+        log_dir = args.log_dir.resolve() if args.log_dir else LOG_DIR / run_dir.name
+        ids_file = run_dir / "job_ids.txt"
+        job_ids = (
+            [job_id for job_id in ids_file.read_text(encoding="utf-8").strip().split(",") if job_id]
+            if ids_file.exists() else job_ids_in_log_dir(log_dir)
+        )
+        summary_job_id = summary_job_id_in_log_dir(log_dir)
+    else:
+        job_ids = last_job_ids()
+        summary_job_id = last_summary_job_id()
+        run_dir = last_run_dir()
+        log_dir = last_log_dir()
     tasks = load_tasks(run_dir)
     config_path = run_dir / "config.yml" if run_dir is not None and (run_dir / "config.yml").exists() else CONFIG_PATH
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
