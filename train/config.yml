@@ -1,0 +1,19 @@
+model: Qwen/Qwen2.5-VL-7B-Instruct
+dataset: TUEP
+output-dir: checkpoints/TUEP
+resume-from-checkpoint:
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+
+training:
+  epochs: 3
+  batch-size: 1
+  gradient-accumulation: 8
+  learning-rate: 0.0002
+  eval-steps: 100
+  save-steps: 100
+  save-total-limit: 2
+  logging-steps: 10

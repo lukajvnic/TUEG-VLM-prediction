@@ -7,22 +7,31 @@ this will just be a copy of labels.csv with an additional column "rationale" tha
 import base64
 import csv
 import mimetypes
+import sys
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 from langchain_ollama import ChatOllama
 
 
-MODEL = "qwen2.5vl:7b"
+MODEL = "qwen2.5vl:3b"
+# The 100–120 word target usually fits in this, with room for labels.
+MAX_OUTPUT_TOKENS = 256
 
 PROMPTS = {
-    "TUAB": "The EEG is labeled {labels}. Write a concise rationale for this classification using visible EEG features. State the label explicitly.",
-    "TUAR": "The EEG contains these artifacts: {labels}. Write a concise rationale explaining why each listed artifact is visible. State every label explicitly.",
-    "TUEP": "The EEG is from a person labeled {labels}. Write a concise rationale for this classification using visible EEG features. State the label explicitly.",
-    "TUEV": "The EEG contains these events: {labels}. Write a concise rationale explaining why each listed event is visible. State every label explicitly.",
-    "TUSL": "The EEG contains these events: {labels}. Write a concise rationale explaining why each listed event is visible. State every label explicitly.",
-    "TUSZ": "The EEG contains these seizure labels: {labels}. Write a concise rationale explaining why each listed seizure type is visible. State every label explicitly.",
+    "TUAB": "The EEG is labeled {labels}. Write a rationale for this classification using visible EEG features. State the label explicitly.",
+    "TUAR": "The EEG contains these artifacts: {labels}. Write a rationale explaining why each listed artifact is visible. State every label explicitly.",
+    "TUEP": "The EEG is from a person labeled {labels}. Write a rationale for this classification using visible EEG features. State the label explicitly.",
+    "TUEV": "The EEG contains these events: {labels}. Write a rationale explaining why each listed event is visible. State every label explicitly.",
+    "TUSL": "The EEG contains these events: {labels}. Write a rationale explaining why each listed event is visible. State every label explicitly.",
+    "TUSZ": "The EEG contains these seizure labels: {labels}. Write a rationale explaining why each listed seizure type is visible. State every label explicitly.",
 }
+
+REPORT_FORMAT = (
+    "Write a focused 3–4 sentence EEG mini-report (100–120 words). State every label "
+    "explicitly. Describe only visible background, morphology, distribution, timing, or "
+    "artifacts. No heading, repetition, or unsupported findings."
+)
 
 def get_datasets():
     datasets = Path(__file__).parents[2] / "datasets"
@@ -30,17 +39,32 @@ def get_datasets():
 
 def create_prompt(dataset, row):
     labels = ", ".join(label for label, value in row.items() if value.strip().lower() == "true") or "none"
-    return PROMPTS[Path(dataset).name].format(labels=labels)
+    return f"{PROMPTS[Path(dataset).name].format(labels=labels)} {REPORT_FORMAT}"
+
+def get_completed(dataset):
+    with (dataset / "rationales.csv").open(newline="", encoding="utf-8") as file:
+        return {
+            row["image_path"]
+            for row in csv.DictReader(file)
+            if row["ground_truth_rationales"].strip()
+        }
+
+
+def get_pending_count():
+    total = 0
+    for dataset in get_datasets():
+        completed = get_completed(dataset)
+        with (dataset / "labels.csv").open(newline="", encoding="utf-8") as file:
+            total += sum(
+                row["image_path"] not in completed and (dataset / row["image_path"]).is_file()
+                for row in csv.DictReader(file)
+            )
+    return total
+
 
 def build_batch():
     for dataset in get_datasets():
-        with (dataset / "rationales.csv").open(newline="", encoding="utf-8") as file:
-            completed = {
-                row["image_path"]
-                for row in csv.DictReader(file)
-                if row["ground_truth_rationales"].strip()
-            }
-
+        completed = get_completed(dataset)
         with (dataset / "labels.csv").open(newline="", encoding="utf-8") as file:
             for row in csv.DictReader(file):
                 if row["image_path"] in completed:
@@ -48,15 +72,19 @@ def build_batch():
                 path = dataset / row["image_path"]
                 if not path.is_file():
                     continue
-                mime_type = mimetypes.guess_type(path)[0] or "image/png"
-                image = base64.b64encode(path.read_bytes()).decode()
+                try:
+                    mime_type = mimetypes.guess_type(path)[0] or "image/png"
+                    image = base64.b64encode(path.read_bytes()).decode()
+                except Exception as error:
+                    print(f"Skipping unreadable image {path}: {error}", file=sys.stderr, flush=True)
+                    continue
                 yield path, [HumanMessage(content=[
                     {"type": "text", "text": create_prompt(dataset, row)},
                     {"type": "image_url", "image_url": f"data:{mime_type};base64,{image}"},
                 ])]
 
 def init_model():
-    return ChatOllama(model=MODEL)
+    return ChatOllama(model=MODEL, num_predict=MAX_OUTPUT_TOKENS)
 
 
 def get_dataset(path):
@@ -79,18 +107,24 @@ def save_rationales(dataset, fields, rows):
     temporary.replace(path)
 
 
-def send(batch):
+def send(batch, total):
     model = init_model()
     rationales = {}
 
-    for path, messages in batch:
+    for index, (path, messages) in enumerate(batch, start=1):
         dataset = get_dataset(path)
+        print(f"[{index}/{total}] {dataset.name}: {path.relative_to(dataset)}", flush=True)
         if dataset not in rationales:
             fields, rows = load_rationales(dataset)
             rationales[dataset] = fields, rows, {row["image_path"]: row for row in rows}
 
         fields, rows, by_path = rationales[dataset]
-        response = model.invoke(messages)
+        try:
+            response = model.invoke(messages)
+        except Exception as error:
+            # Leave this row blank so a later run retries it; do not abort the job.
+            print(f"Skipping {path}: {error}", file=sys.stderr, flush=True)
+            continue
         by_path[path.relative_to(dataset).as_posix()]["ground_truth_rationales"] = response.content
         save_rationales(dataset, fields, rows)
 
@@ -109,7 +143,9 @@ def init_csv():
 
 def main():
     init_csv()
-    send(build_batch())
+    total = get_pending_count()
+    print(f"Generating {total} rationales", flush=True)
+    send(build_batch(), total)
 
 
 if __name__ == "__main__":
