@@ -2,6 +2,10 @@ settings:
   array-concurrency: 200
   eval-retries: 1
   limit: -1
+  parallel-requests: 4
+  # Name of a previous run dir (e.g. run-20260730-120000-000000) to resume from:
+  # already-completed images in that run are skipped. Leave blank to run all.
+  resume-from:
   model-kwargs:
     base_url: http://localhost:11434
     temperature: 0
@@ -61,7 +65,7 @@ models:
   deepseek-ocr:3b:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     # - TUEP
     - TUAB
@@ -72,7 +76,7 @@ models:
   gemma3:4b:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     # - TUEP
     # - TUAB
@@ -105,7 +109,7 @@ models:
   gemma4:e2b:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     - TUEP
     # - TUAB
@@ -116,7 +120,7 @@ models:
   gemma4:e4b:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     - TUEP
     # - TUAB
@@ -160,7 +164,7 @@ models:
   glm-ocr:latest:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     # - TUEP
     # - TUAB
@@ -171,7 +175,7 @@ models:
   granite3.2-vision:2b:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     - TUEP
     # - TUAB
@@ -282,7 +286,7 @@ models:
   medgemma:4b:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     # - TUEP
     # - TUAB
@@ -293,7 +297,7 @@ models:
   medgemma1.5:4b:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     # - TUEP
     # - TUAB
@@ -315,7 +319,7 @@ models:
   minicpm-v4.5:8b:
     time: "12:00:00"
     ram: 32G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     # - TUEP
     # - TUAB
@@ -326,7 +330,7 @@ models:
   minicpm-v4.6:1b:
     time: "04:00:00"
     ram: 16G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     - TUEP
     # - TUAB
@@ -381,7 +385,7 @@ models:
   qwen2.5vl:3b:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     - TUEP
     - TUAB
@@ -392,7 +396,7 @@ models:
   qwen2.5vl:7b:
     time: "12:00:00"
     ram: 32G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     # - TUEP
     # - TUAB
@@ -414,7 +418,7 @@ models:
   qwen3-vl:2b-instruct:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     # - TUEP
     # - TUAB
@@ -425,7 +429,7 @@ models:
   qwen3-vl:2b-thinking:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     - TUEP
     - TUAB
@@ -436,7 +440,7 @@ models:
   qwen3-vl:4b-instruct:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     # - TUEP
     # - TUAB
@@ -447,7 +451,7 @@ models:
   qwen3-vl:4b-thinking:
     time: "08:00:00"
     ram: 24G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     - TUEP
     # - TUAB
@@ -458,7 +462,7 @@ models:
   qwen3-vl:8b-instruct:
     time: "12:00:00"
     ram: 32G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     # - TUEP
     # - TUAB
@@ -469,7 +473,7 @@ models:
   qwen3-vl:8b-thinking:
     time: "12:00:00"
     ram: 32G
-    gpus: 1
+    gpus: "a100_3g.20gb:1"
     datasets:
     - TUEP
     # - TUAB

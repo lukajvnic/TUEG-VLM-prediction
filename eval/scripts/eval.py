@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import yaml
@@ -44,6 +45,8 @@ def load_relevant_config(args):
         "prompt": config["datasets"][args.dataset]["prompt"],
         "eval-retries": settings["eval-retries"],
         "limit": settings["limit"],
+        "parallel-requests": settings["parallel-requests"],
+        "resume-from": settings.get("resume-from"),
         "model-kwargs": settings["model-kwargs"],
         "structured-output": settings["structured-output"],
     }
@@ -65,33 +68,44 @@ def init_csv(run_dir, args):
     return path
 
 
-def get_paths(args, config):
-    dataset_dir = Path(__file__).parents[2] / "datasets" / args.dataset
-    with (dataset_dir / "labels.csv").open(newline="", encoding="utf-8") as file:
-        paths = sorted(
-            (dataset_dir / row["image_path"]).resolve()
-            for row in csv.DictReader(file)
-            if (dataset_dir / row["image_path"]).is_file()
-        )
-
-    limit = config["limit"]
-    return paths if limit == -1 else paths[:limit]
+def get_dataset_dir(args):
+    return Path(__file__).parents[2] / "datasets" / args.dataset
 
 
-def get_ground_truth(path):
-    dataset_dir = next(parent for parent in path.parents if (parent / "labels.csv").exists())
-    image_path = path.relative_to(dataset_dir).as_posix()
-
+def load_dataset(args, config):
+    dataset_dir = get_dataset_dir(args)
+    paths = []
+    ground_truths = {}
     with (dataset_dir / "labels.csv").open(newline="", encoding="utf-8") as file:
         for row in csv.DictReader(file):
-            if row["image_path"] == image_path:
-                return {
-                    label.upper()
-                    for label, value in row.items()
-                    if label != "image_path" and value.strip().lower() == "true"
-                }
+            path = (dataset_dir / row["image_path"]).resolve()
+            ground_truths[path] = {
+                label.upper()
+                for label, value in row.items()
+                if label != "image_path" and value.strip().lower() == "true"
+            }
+            if path.is_file():
+                paths.append(path)
 
-    raise KeyError(f"No labels found for {image_path}")
+    paths.sort()
+    limit = config["limit"]
+    if limit != -1:
+        paths = paths[:limit]
+    return paths, ground_truths
+
+
+def load_completed_paths(run_dir, args, config):
+    csv_name = f"{safe_filename(args.model)}-{args.dataset}.csv"
+    sources = [run_dir / "results" / csv_name]
+    if config["resume-from"]:
+        sources.append(Path(__file__).parents[1] / "runs" / config["resume-from"] / "results" / csv_name)
+
+    completed = set()
+    for source in sources:
+        if source.exists():
+            with source.open(newline="", encoding="utf-8") as file:
+                completed.update(row["path"] for row in csv.DictReader(file))
+    return completed
 
 
 def get_prediction(parsed, dataset):
@@ -153,57 +167,73 @@ def log_result(run_dir, args, results_csv, image_path, prediction, ground_truth,
 
 
 
-def send(model, batch, run_dir, args, results_csv, config, progress):
-    for image_path, messages in batch:
-        for attempt in range(config["eval-retries"] + 1):
-            try:
-                response = model.invoke(messages)
-                parsed = response["parsed"]
-                if parsed is None:
-                    raise ValueError("Structured output could not be parsed")
-
-                prediction = get_prediction(parsed, args.dataset)
-                ground_truth = get_ground_truth(image_path)
-                log_result(
-                    run_dir,
-                    args,
-                    results_csv,
-                    image_path,
-                    prediction,
-                    ground_truth,
-                    parsed.text_rationale,
-                    response["raw"],
-                )
-                progress["completed_images"] += 1
-                break
-            except Exception as error:
-                if attempt == config["eval-retries"]:
-                    log_result(
-                        run_dir, args, results_csv, image_path, None, None, "", None, error
-                    )
-                    raise
-                time.sleep(10)
+def build_message(path, prompt):
+    mime_type = mimetypes.guess_type(path)[0] or "image/png"
+    image = base64.b64encode(path.read_bytes()).decode()
+    return HumanMessage(
+        content=[
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": f"data:{mime_type};base64,{image}"},
+        ]
+    )
 
 
-def build_batch(paths, prompt):
-    batch = []
-    for path in paths:
-        mime_type = mimetypes.guess_type(path)[0] or "image/png"
-        image = base64.b64encode(path.read_bytes()).decode()
-        batch.append(
-            (
-                path,
-                [
-                    HumanMessage(
-                        content=[
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": f"data:{mime_type};base64,{image}"},
-                        ]
-                    )
-                ],
-            )
-        )
-    return batch
+def evaluate_image(model, path, args, config, ground_truths):
+    messages = [build_message(path, config["prompt"])]
+    for attempt in range(config["eval-retries"] + 1):
+        try:
+            response = model.invoke(messages)
+            parsed = response["parsed"]
+            if parsed is None:
+                raise ValueError("Structured output could not be parsed")
+
+            return {
+                "image_path": path,
+                "prediction": get_prediction(parsed, args.dataset),
+                "ground_truth": ground_truths[path],
+                "rationale": parsed.text_rationale,
+                "raw": response["raw"],
+                "error": None,
+            }
+        except Exception as error:
+            if attempt == config["eval-retries"]:
+                return {
+                    "image_path": path,
+                    "prediction": None,
+                    "ground_truth": None,
+                    "rationale": "",
+                    "raw": None,
+                    "error": error,
+                }
+            time.sleep(10)
+
+
+def record_result(result, run_dir, args, results_csv, progress):
+    log_result(
+        run_dir,
+        args,
+        results_csv,
+        result["image_path"],
+        result["prediction"],
+        result["ground_truth"],
+        result["rationale"],
+        result["raw"],
+        result["error"],
+    )
+    if result["error"] is None:
+        progress["completed_images"] += 1
+    else:
+        progress["failed_images"] += 1
+
+
+def send(model, paths, run_dir, args, results_csv, config, progress, ground_truths):
+    with ThreadPoolExecutor(max_workers=config["parallel-requests"]) as executor:
+        futures = [
+            executor.submit(evaluate_image, model, path, args, config, ground_truths)
+            for path in paths
+        ]
+        for future in as_completed(futures):
+            record_result(future.result(), run_dir, args, results_csv, progress)
 
 
 def init_wandb(args, config):
@@ -232,23 +262,28 @@ def main():
     args = load_args()
     run_dir = Path(os.environ["RUN_DIR"])
     total_images = 0
-    progress = {"completed_images": 0}
+    progress = {"completed_images": 0, "failed_images": 0}
 
     try:
         config = load_relevant_config(args)
-        paths = get_paths(args, config)
+        paths, ground_truths = load_dataset(args, config)
         total_images = len(paths)
-        update_status(run_dir, args, "running", "", total_images, progress["completed_images"])
 
         results_csv = init_csv(run_dir, args)
-        batch = build_batch(paths, config["prompt"])
+        completed = load_completed_paths(run_dir, args, config)
+        paths = [path for path in paths if str(path) not in completed]
+        progress["completed_images"] = total_images - len(paths)
+        update_status(run_dir, args, "running", "", total_images, progress["completed_images"])
+
         model = init_model(args, config)
-        send(model, batch, run_dir, args, results_csv, config, progress)
+        send(model, paths, run_dir, args, results_csv, config, progress, ground_truths)
     except Exception as error:
         update_status(run_dir, args, "fail", str(error), total_images, progress["completed_images"])
         raise
     else:
-        update_status(run_dir, args, "success", "", total_images, progress["completed_images"])
+        failed = progress["failed_images"]
+        status, reason = ("fail", f"{failed} images failed") if failed else ("success", "")
+        update_status(run_dir, args, status, reason, total_images, progress["completed_images"])
     finally:
         wandb.finish()
 

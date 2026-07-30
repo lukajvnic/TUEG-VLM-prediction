@@ -17,8 +17,15 @@ export OLLAMA_IMAGE="${OLLAMA_IMAGE:-$SCRATCH/ollama/ollama.sif}"
 export OLLAMA_MODELS="$SCRATCH/ollama/models"
 export OLLAMA_HOST="127.0.0.1:$((20000 + (SLURM_JOB_ID + SLURM_ARRAY_TASK_ID) % 40000))"
 export OLLAMA_BASE_URL="http://$OLLAMA_HOST"
+export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-4}"
+# A full-resolution EEG image + prompt measures ~4033 tokens; the 4096 default
+# truncates once the JSON rationale is added. 8192 clears that with headroom
+# while keeping KV-cache memory (context x OLLAMA_NUM_PARALLEL) modest on MIG.
+export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-8192}"
 export APPTAINERENV_OLLAMA_MODELS="$OLLAMA_MODELS"
 export APPTAINERENV_OLLAMA_HOST="$OLLAMA_HOST"
+export APPTAINERENV_OLLAMA_NUM_PARALLEL="$OLLAMA_NUM_PARALLEL"
+export APPTAINERENV_OLLAMA_CONTEXT_LENGTH="$OLLAMA_CONTEXT_LENGTH"
 
 OLLAMA_LOG="$RUN_DIR/logs/ollama-${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}.log"
 apptainer exec --nv "$OLLAMA_IMAGE" ollama serve > "$OLLAMA_LOG" 2>&1 &
