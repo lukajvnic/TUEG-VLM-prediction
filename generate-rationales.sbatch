@@ -4,7 +4,7 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=3-00:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=generate-rationales-%j.out
 #SBATCH --error=generate-rationales-%j.err
 

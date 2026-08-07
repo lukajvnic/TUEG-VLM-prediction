@@ -48,6 +48,8 @@ env/
 */TUSZ/train/
 *.zip
 
+knowledge/
+
 *.err
 *.out
 results/*.csv
