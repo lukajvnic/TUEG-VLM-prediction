@@ -1,13 +1,15 @@
 '''
 This program takes one LLM model, provides the image and a prompt containing the ground truth answer, and tells it to create a text rationale.
-It will save it to rationales.csv (?) under each of the datasets (e.g. datasets/TUEP/rationales.csv)
-this will just be a copy of labels.csv with an additional column "rationale" that is generated based on the prior information.
+It will save it to rationales.csv under each of the datasets (e.g. datasets/TUEP/rationales.csv):
+a copy of labels.csv with an additional column "ground_truth_rationales" generated from the labels and the image.
 '''
 
 import base64
 import csv
 import mimetypes
+import os
 import sys
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage
@@ -15,31 +17,50 @@ from langchain_ollama import ChatOllama
 
 
 MODEL = "qwen2.5vl:3b"
-# The 100–120 word target usually fits in this, with room for labels.
-MAX_OUTPUT_TOKENS = 256
+# Grounded, per-label rationales run longer than a plain summary; give them room.
+MAX_OUTPUT_TOKENS = 512
+# Concurrent in-flight requests. Match the server's OLLAMA_NUM_PARALLEL so they batch.
+PARALLEL_REQUESTS = int(os.environ.get("OLLAMA_NUM_PARALLEL", "4"))
+# Persist progress every this many completed rationales (bounds O(N^2) CSV rewrites).
+FLUSH_EVERY = 25
 
-PROMPTS = {
-    "TUAB": "The EEG is labeled {labels}. Write a rationale for this classification using visible EEG features. State the label explicitly.",
-    "TUAR": "The EEG contains these artifacts: {labels}. Write a rationale explaining why each listed artifact is visible. State every label explicitly.",
-    "TUEP": "The EEG is from a person labeled {labels}. Write a rationale for this classification using visible EEG features. State the label explicitly.",
-    "TUEV": "The EEG contains these events: {labels}. Write a rationale explaining why each listed event is visible. State every label explicitly.",
-    "TUSL": "The EEG contains these events: {labels}. Write a rationale explaining why each listed event is visible. State every label explicitly.",
-    "TUSZ": "The EEG contains these seizure labels: {labels}. Write a rationale explaining why each listed seizure type is visible. State every label explicitly.",
+IMAGE_INTRO = (
+    "This image is a multi-channel EEG waveform plot: time runs along the horizontal "
+    "axis and each row is the signal from one electrode channel. "
+)
+
+LABEL_CLAUSES = {
+    "TUAB": "This recording is labeled {labels}.",
+    "TUEP": "This recording is from a person labeled {labels}.",
+    "TUAR": "This recording contains these artifacts: {labels}.",
+    "TUEV": "This recording contains these events: {labels}.",
+    "TUSL": "This recording contains these events: {labels}.",
+    "TUSZ": "This recording contains these seizure labels: {labels}.",
 }
 
-REPORT_FORMAT = (
-    "Write a focused 3–4 sentence EEG mini-report (100–120 words). State every label "
-    "explicitly. Describe only visible background, morphology, distribution, timing, or "
-    "artifacts. No heading, repetition, or unsupported findings."
+GROUNDED = (
+    "Justify this labeling using only visible EEG features. For each finding, give the "
+    "specific evidence: which channel(s) it appears on, where along the time axis, and "
+    "what the curve looks like there (shape, frequency, amplitude). State every label "
+    "explicitly. Write a focused 3-5 sentence mini-report; do not describe the image "
+    "format, define terminology, repeat yourself, or add unsupported findings."
 )
+
 
 def get_datasets():
     datasets = Path(__file__).parents[2] / "datasets"
     return sorted(path for path in datasets.iterdir() if (path / "labels.csv").is_file())
 
+
+def is_train(row):
+    # Fine-tune on train patients only; split absent = old unsplit dataset (use all).
+    return row.get("split") in (None, "train")
+
+
 def create_prompt(dataset, row):
     labels = ", ".join(label for label, value in row.items() if value.strip().lower() == "true") or "none"
-    return f"{PROMPTS[Path(dataset).name].format(labels=labels)} {REPORT_FORMAT}"
+    return f"{IMAGE_INTRO}{LABEL_CLAUSES[dataset.name].format(labels=labels)} {GROUNDED}"
+
 
 def get_completed(dataset):
     with (dataset / "rationales.csv").open(newline="", encoding="utf-8") as file:
@@ -56,7 +77,7 @@ def get_pending_count():
         completed = get_completed(dataset)
         with (dataset / "labels.csv").open(newline="", encoding="utf-8") as file:
             total += sum(
-                row["image_path"] not in completed and (dataset / row["image_path"]).is_file()
+                is_train(row) and row["image_path"] not in completed and (dataset / row["image_path"]).is_file()
                 for row in csv.DictReader(file)
             )
     return total
@@ -67,7 +88,7 @@ def build_batch():
         completed = get_completed(dataset)
         with (dataset / "labels.csv").open(newline="", encoding="utf-8") as file:
             for row in csv.DictReader(file):
-                if row["image_path"] in completed:
+                if not is_train(row) or row["image_path"] in completed:
                     continue
                 path = dataset / row["image_path"]
                 if not path.is_file():
@@ -82,6 +103,7 @@ def build_batch():
                     {"type": "text", "text": create_prompt(dataset, row)},
                     {"type": "image_url", "image_url": f"data:{mime_type};base64,{image}"},
                 ])]
+
 
 def init_model():
     return ChatOllama(model=MODEL, num_predict=MAX_OUTPUT_TOKENS)
@@ -107,38 +129,91 @@ def save_rationales(dataset, fields, rows):
     temporary.replace(path)
 
 
-def send(batch, total):
-    model = init_model()
-    rationales = {}
-
-    for index, (path, messages) in enumerate(batch, start=1):
-        dataset = get_dataset(path)
-        print(f"[{index}/{total}] {dataset.name}: {path.relative_to(dataset)}", flush=True)
-        if dataset not in rationales:
-            fields, rows = load_rationales(dataset)
-            rationales[dataset] = fields, rows, {row["image_path"]: row for row in rows}
-
-        fields, rows, by_path = rationales[dataset]
-        try:
-            response = model.invoke(messages)
-        except Exception as error:
-            # Leave this row blank so a later run retries it; do not abort the job.
-            print(f"Skipping {path}: {error}", file=sys.stderr, flush=True)
-            continue
-        by_path[path.relative_to(dataset).as_posix()]["ground_truth_rationales"] = response.content
-        save_rationales(dataset, fields, rows)
-
 def init_csv():
+    # Rebuild each rationales.csv from the current labels.csv, carrying over any
+    # rationales already written. This keeps the two files in sync, so a labels.csv
+    # that gained or lost rows never desyncs the rationale lookup during a run.
     for dataset in get_datasets():
+        with (dataset / "labels.csv").open(newline="", encoding="utf-8") as file:
+            reader = csv.DictReader(file)
+            fields = [*reader.fieldnames, "ground_truth_rationales"]
+            label_rows = [row for row in reader if is_train(row)]
+
+        existing = {}
         path = dataset / "rationales.csv"
         if path.exists():
-            continue
-        with (dataset / "labels.csv").open(newline="", encoding="utf-8") as source, \
-             path.open("w", newline="", encoding="utf-8") as target:
-            reader = csv.reader(source)
-            writer = csv.writer(target)
-            writer.writerow(next(reader) + ["ground_truth_rationales"])
-            writer.writerows(row + [""] for row in reader)
+            with path.open(newline="", encoding="utf-8") as file:
+                existing = {
+                    row["image_path"]: row.get("ground_truth_rationales", "")
+                    for row in csv.DictReader(file)
+                }
+
+        rows = [
+            {**row, "ground_truth_rationales": existing.get(row["image_path"], "")}
+            for row in label_rows
+        ]
+        save_rationales(dataset, fields, rows)
+
+
+def generate(model, path, messages):
+    try:
+        response = model.invoke(messages)
+        return path, str(response.content), None
+    except Exception as error:
+        return path, None, error
+
+
+def send(batch, total):
+    model = init_model()
+    datasets = {}
+    dirty = set()
+    processed = 0
+
+    def flush():
+        for dataset in dirty:
+            fields, rows, _ = datasets[dataset]
+            save_rationales(dataset, fields, rows)
+        dirty.clear()
+
+    def handle(result):
+        nonlocal processed
+        path, content, error = result
+        dataset = get_dataset(path)
+        processed += 1
+        print(f"[{processed}/{total}] {dataset.name}: {path.relative_to(dataset)}", flush=True)
+        if error is not None:
+            # Leave this row blank so a later run retries it; do not abort the job.
+            print(f"Skipping {path}: {error}", file=sys.stderr, flush=True)
+            return
+        if dataset not in datasets:
+            fields, rows = load_rationales(dataset)
+            datasets[dataset] = (fields, rows, {row["image_path"]: row for row in rows})
+        _, _, by_path = datasets[dataset]
+        by_path[path.relative_to(dataset).as_posix()]["ground_truth_rationales"] = content
+        dirty.add(dataset)
+        if processed % FLUSH_EVERY == 0:
+            flush()
+
+    items = iter(batch)
+    with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as executor:
+        # Keep the pool fed without materialising every image at once: only pull
+        # (and base64-encode) the next item when an in-flight request completes.
+        inflight = set()
+        for _ in range(PARALLEL_REQUESTS * 2):
+            item = next(items, None)
+            if item is None:
+                break
+            inflight.add(executor.submit(generate, model, *item))
+
+        while inflight:
+            done, inflight = wait(inflight, return_when=FIRST_COMPLETED)
+            for future in done:
+                handle(future.result())
+                item = next(items, None)
+                if item is not None:
+                    inflight.add(executor.submit(generate, model, *item))
+
+    flush()
 
 
 def main():

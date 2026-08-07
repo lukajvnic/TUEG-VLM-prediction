@@ -82,7 +82,12 @@ def main():
 
     eval_dir = Path(__file__).parent
     run_dir = eval_dir / "runs" / args.run
-    retry_config = render_config(load_retry_config(run_dir), load_successful_tasks(run_dir))
+
+    config = load_retry_config(run_dir)
+    # Resume the retried run's partially-completed tasks from where they stopped.
+    config["settings"]["resume-from"] = args.run
+
+    retry_config = render_config(config, load_successful_tasks(run_dir))
     (eval_dir / "config.yml").write_text(retry_config)
 
 

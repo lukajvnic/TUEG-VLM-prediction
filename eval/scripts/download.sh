@@ -12,4 +12,4 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DESTINATION="${2:-$PROJECT_ROOT/datasets/}"
 mkdir -p "$DESTINATION"
 
-rsync -auvxL -e "ssh -i ~/.ssh/uw/id_ed25519" "nedc-tuh-eeg@www.isip.piconepress.com:$1" "$DESTINATION"
+rsync -auvxL -e "ssh -i ~/.ssh/id_ed25519" "nedc-tuh-eeg@www.isip.piconepress.com:$1" "$DESTINATION"

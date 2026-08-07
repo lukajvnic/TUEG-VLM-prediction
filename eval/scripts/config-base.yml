@@ -1,7 +1,9 @@
 settings:
-  array-concurrency: 49
+  array-concurrency: 78
   eval-retries: 1
   limit: -1
+  parallel-requests: 4
+  resume-from:
   model-kwargs:
     base_url: http://localhost:11434
     temperature: 0
@@ -9,17 +11,17 @@ settings:
     method: json_schema
 datasets:
   TUEP:
-    prompt: "Classify these EEG spectrograms as either epileptic or non-epileptic. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for classification fields."
+    prompt: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. Based only on these waveforms, classify the recording as epileptic or non-epileptic. In the text_rationale field, describe the specific evidence for your decision: which channel(s) support it, where along the time axis, and what the curve looks like there (shape, frequency, amplitude, symmetry). Do not describe the image format or define terminology."
   TUAB:
-    prompt: "Classify these EEG spectrograms as belonging to either a normal or abnormal brain. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for classification fields."
+    prompt: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. Based only on these waveforms, classify the brain activity as normal or abnormal. In the text_rationale field, describe the specific evidence for your decision: which channel(s) support it, where along the time axis, and what the curve looks like there (shape, frequency, amplitude, symmetry). Do not describe the image format or define terminology."
   TUEV:
-    prompt: "Select all of the following event categories that appear in the EEG spectrograms: ARTF, BCKG, EYEM, GPED, PLED, or SPSW. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for category fields."
+    prompt: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. From these event categories - ARTF, BCKG, EYEM, GPED, PLED, SPSW - select every one present, based only on the waveforms. In the text_rationale field, for each category you mark as present, describe the specific evidence in the waveform: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). Do not describe the image format or define terminology. Set a category's boolean to true only when it is present."
   TUAR:
-    prompt: "Select all of the following artifact categories that appear in the EEG spectrograms: BCKG, CHEW, ELEC, ELPP, EYEM, MUSC, or SHIV. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for category fields."
+    prompt: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. From these artifact categories - BCKG, CHEW, ELEC, ELPP, EYEM, MUSC, SHIV - select every one present, based only on the waveforms. In the text_rationale field, for each category you mark as present, describe the specific evidence in the waveform: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). Do not describe the image format or define terminology. Set a category's boolean to true only when it is present."
   TUSZ:
-    prompt: "Select all of the following seizure/background categories that appear in the EEG spectrograms: ABSZ, BCKG, CPSZ, FNSZ, GNSZ, MYSZ, SPSZ, TCSZ, or TNSZ. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for category fields."
+    prompt: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. From these seizure/background categories - ABSZ, BCKG, CPSZ, FNSZ, GNSZ, MYSZ, SPSZ, TCSZ, TNSZ - select every one present, based only on the waveforms. In the text_rationale field, for each category you mark as present, describe the specific evidence in the waveform: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). Do not describe the image format or define terminology. Set a category's boolean to true only when it is present."
   TUSL:
-    prompt: "Select all of the following labels that appear in the EEG spectrograms: BCKG, SEIZ, or SLOW. Provide a text rationale explaining your decision. You must return only the requested structured JSON object. Do not include markdown, code fences, chain-of-thought, hidden reasoning, XML tags, or any text outside the JSON object. Use boolean values only for label fields."
+    prompt: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. From these labels - BCKG, SEIZ, SLOW - select every one present, based only on the waveforms. In the text_rationale field, for each category you mark as present, describe the specific evidence in the waveform: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). Do not describe the image format or define terminology. Set a label's boolean to true only when it is present."
 models:
   "bakllava:7b":
     time: "06:00:00"

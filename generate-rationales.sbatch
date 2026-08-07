@@ -17,6 +17,8 @@ export OLLAMA_HOST=127.0.0.1:11434
 # Full-resolution EEG images can exceed Ollama's 4096-token default. This leaves
 # ample room for both the image prompt and the 256-token report.
 export OLLAMA_CONTEXT_LENGTH=16384
+# Serve several rationale requests at once so the GPU stays busy.
+export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-4}"
 export OLLAMA_MODELS="${OLLAMA_MODELS:-$SLURM_SUBMIT_DIR/ollama-models}"
 mkdir -p "$OLLAMA_MODELS"
 

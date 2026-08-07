@@ -20,20 +20,32 @@ env/
 # Large dataset contents (keep top-level dataset dirs and scripts)
 */TUAB/data/
 */TUAB/v*/
+*/TUAB/test/
+*/TUAB/train/
 */TUAR/data/
 */TUAR/data-annotated/
 */TUAR/v*/
+*/TUAR/test/
+*/TUAR/train/
 */TUEP/data/
 */TUEP/v*/
+*/TUEP/test/
+*/TUEP/train/
 */TUEV/data/
 */TUEV/data-annotated/
 */TUEV/v*/
+*/TUEV/test/
+*/TUEV/train/
 */TUSL/data/
 */TUSL/data-annotated/
 */TUSL/v*/
+*/TUSL/test/
+*/TUSL/train/
 */TUSZ/data/
 */TUSZ/data-annotated/
 */TUSZ/v*/
+*/TUSZ/test/
+*/TUSZ/train/
 *.zip
 
 *.err
@@ -50,3 +62,9 @@ Thumbs.db
 *.log
 *.tmp
 *.swp
+
+datasets/_render.py
+generate-all.sh
+qc.py
+things-to-review.md
+zip-datasets.sh

@@ -19,6 +19,10 @@ import wandb
 from structure import get_structure
 
 
+# How often (in processed images) to refresh status.csv with live progress.
+STATUS_EVERY = 50
+
+
 def set_csv_field_limit():
     limit = sys.maxsize
     while True:
@@ -78,11 +82,15 @@ def load_dataset(args, config):
     ground_truths = {}
     with (dataset_dir / "labels.csv").open(newline="", encoding="utf-8") as file:
         for row in csv.DictReader(file):
+            # Evaluate on held-out test patients only (split column absent = old
+            # unsplit dataset, so fall through and use everything).
+            if row.get("split") not in (None, "test"):
+                continue
             path = (dataset_dir / row["image_path"]).resolve()
             ground_truths[path] = {
                 label.upper()
                 for label, value in row.items()
-                if label != "image_path" and value.strip().lower() == "true"
+                if label not in ("image_path", "split") and value.strip().lower() == "true"
             }
             if path.is_file():
                 paths.append(path)
@@ -226,14 +234,20 @@ def record_result(result, run_dir, args, results_csv, progress):
         progress["failed_images"] += 1
 
 
-def send(model, paths, run_dir, args, results_csv, config, progress, ground_truths):
+def send(model, paths, run_dir, args, results_csv, config, progress, ground_truths, total_images):
     with ThreadPoolExecutor(max_workers=config["parallel-requests"]) as executor:
         futures = [
             executor.submit(evaluate_image, model, path, args, config, ground_truths)
             for path in paths
         ]
         for future in as_completed(futures):
-            record_result(future.result(), run_dir, args, results_csv, progress)
+            result = future.result()
+            record_result(result, run_dir, args, results_csv, progress)
+            done = progress["completed_images"] + progress["failed_images"]
+            tag = "ok" if result["error"] is None else "FAIL"
+            print(f"[{done}/{total_images}] {args.dataset} {tag}: {Path(result['image_path']).name}", flush=True)
+            if done % STATUS_EVERY == 0:
+                update_status(run_dir, args, "running", "", total_images, progress["completed_images"])
 
 
 def init_wandb(args, config):
@@ -276,7 +290,7 @@ def main():
         update_status(run_dir, args, "running", "", total_images, progress["completed_images"])
 
         model = init_model(args, config)
-        send(model, paths, run_dir, args, results_csv, config, progress, ground_truths)
+        send(model, paths, run_dir, args, results_csv, config, progress, ground_truths, total_images)
     except Exception as error:
         update_status(run_dir, args, "fail", str(error), total_images, progress["completed_images"])
         raise
