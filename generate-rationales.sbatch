@@ -4,7 +4,7 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=24:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --output=generate-rationales-%j.out
 #SBATCH --error=generate-rationales-%j.err
 
@@ -14,9 +14,10 @@ cd "${SLURM_SUBMIT_DIR:?Submit this job from the project directory}"
 source .venv/bin/activate
 
 export OLLAMA_HOST=127.0.0.1:11434
-# Full-resolution EEG images can exceed Ollama's 4096-token default. This leaves
-# ample room for both the image prompt and the 256-token report.
-export OLLAMA_CONTEXT_LENGTH=16384
+# A 1536x1536 image + prompt is ~3050 tokens; with the ~512-token report that's
+# ~3600, so 8192 is ample. (16384 doubled the KV cache for no benefit and slowed
+# generation -- the 24h run timed out.)
+export OLLAMA_CONTEXT_LENGTH=8192
 # Serve several rationale requests at once so the GPU stays busy.
 export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-4}"
 export OLLAMA_MODELS="${OLLAMA_MODELS:-$SLURM_SUBMIT_DIR/ollama-models}"

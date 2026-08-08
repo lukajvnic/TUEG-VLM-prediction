@@ -106,7 +106,16 @@ def build_batch():
 
 
 def init_model():
-    return ChatOllama(model=MODEL, num_predict=MAX_OUTPUT_TOKENS)
+    # Pin num_predict AND num_ctx on the request so the report isn't cut short by a
+    # server-side default (rationales were truncating mid-sentence at ~128 tokens).
+    # num_ctx covers the ~3050-token image + prompt + report; temperature=0 keeps
+    # the reports focused and reproducible.
+    return ChatOllama(
+        model=MODEL,
+        num_predict=MAX_OUTPUT_TOKENS,
+        num_ctx=8192,
+        temperature=0,
+    )
 
 
 def get_dataset(path):
