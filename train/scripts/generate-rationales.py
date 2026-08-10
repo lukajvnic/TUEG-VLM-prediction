@@ -16,13 +16,21 @@ from langchain_core.messages import HumanMessage
 from langchain_ollama import ChatOllama
 
 
-MODEL = "qwen2.5vl:3b"
+# Not qwen2.5vl: it locks onto a single token and repeats it for the whole
+# num_predict budget on these plots (ollama/ollama#10767 -- 7b/32b/72b all
+# affected, so a bigger Qwen is not the fix). Ollama has no repetition-loop
+# detection (#16179) and exposes neither DRY nor XTC (#7504), so no sampler
+# setting prevents this; a different model family is the only lever.
+MODEL = "gemma3:12b"
 # Grounded, per-label rationales run longer than a plain summary; give them room.
 MAX_OUTPUT_TOKENS = 512
 # Concurrent in-flight requests. Match the server's OLLAMA_NUM_PARALLEL so they batch.
 PARALLEL_REQUESTS = int(os.environ.get("OLLAMA_NUM_PARALLEL", "4"))
 # Persist progress every this many completed rationales (bounds O(N^2) CSV rewrites).
 FLUSH_EVERY = 25
+# Once the Ollama runner goes bad it stays bad, so stop rather than spend the rest
+# of the allocation writing garbage. See is_degenerate.
+MAX_CONSECUTIVE_DEGENERATE = 20
 
 IMAGE_INTRO = (
     "This image is a multi-channel EEG waveform plot: time runs along the horizontal "
@@ -164,10 +172,29 @@ def init_csv():
         save_rationales(dataset, fields, rows)
 
 
+class Degenerate(Exception):
+    pass
+
+
+def is_degenerate(text):
+    # A wedged runner returns the same token repeated for the whole num_predict
+    # budget (a 512-char run of "?"). Greedy decoding makes it identical every
+    # time, so it looks like a real answer to every check except this one. Treat
+    # it as a failure: the row stays blank and a later run retries it, instead of
+    # baking garbage into the fine-tuning set.
+    words = text.split()
+    if len(text) < 40 or len(words) < 8:
+        return True
+    return len(set(text)) < 12 or len(set(words)) / len(words) < 0.2
+
+
 def generate(model, path, messages):
     try:
         response = model.invoke(messages)
-        return path, str(response.content), None
+        content = str(response.content).strip()
+        if is_degenerate(content):
+            return path, None, Degenerate(f"{len(content)} chars: {content[:60]!r}")
+        return path, content, None
     except Exception as error:
         return path, None, error
 
@@ -177,6 +204,7 @@ def send(batch, total):
     datasets = {}
     dirty = set()
     processed = 0
+    streak = 0
 
     def flush():
         for dataset in dirty:
@@ -185,7 +213,7 @@ def send(batch, total):
         dirty.clear()
 
     def handle(result):
-        nonlocal processed
+        nonlocal processed, streak
         path, content, error = result
         dataset = get_dataset(path)
         processed += 1
@@ -193,7 +221,15 @@ def send(batch, total):
         if error is not None:
             # Leave this row blank so a later run retries it; do not abort the job.
             print(f"Skipping {path}: {error}", file=sys.stderr, flush=True)
+            streak = streak + 1 if isinstance(error, Degenerate) else 0
+            if streak >= MAX_CONSECUTIVE_DEGENERATE:
+                flush()
+                raise SystemExit(
+                    f"{streak} degenerate responses in a row -- the Ollama runner is wedged. "
+                    "Restart it (and check the GPU) before resuming; completed rows are saved."
+                )
             return
+        streak = 0
         if dataset not in datasets:
             fields, rows = load_rationales(dataset)
             datasets[dataset] = (fields, rows, {row["image_path"]: row for row in rows})
@@ -228,7 +264,7 @@ def send(batch, total):
 def main():
     init_csv()
     total = get_pending_count()
-    print(f"Generating {total} rationales", flush=True)
+    print(f"Generating {total} rationales with {MODEL}", flush=True)
     send(build_batch(), total)
 
 

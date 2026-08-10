@@ -23,7 +23,13 @@ export OLLAMA_HOST="127.0.0.1:11434"
 # ~512-token report (init_model also pins num_ctx/num_predict per request).
 export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-8192}"
 export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-4}"
+# Qwen2.5-VL in Ollama falls into infinite single-token repetition without flash
+# attention -- the non-FA path mispredicts and the loop never emits EOS, so the
+# reply is one character repeated for the whole num_predict budget.
+# ollama/ollama#11452, #10767.
+export OLLAMA_FLASH_ATTENTION="${OLLAMA_FLASH_ATTENTION:-1}"
 export APPTAINERENV_OLLAMA_MODELS="$OLLAMA_MODELS"
+export APPTAINERENV_OLLAMA_FLASH_ATTENTION="$OLLAMA_FLASH_ATTENTION"
 export APPTAINERENV_OLLAMA_HOST="$OLLAMA_HOST"
 export APPTAINERENV_OLLAMA_CONTEXT_LENGTH="$OLLAMA_CONTEXT_LENGTH"
 export APPTAINERENV_OLLAMA_NUM_PARALLEL="$OLLAMA_NUM_PARALLEL"
@@ -39,7 +45,13 @@ for _ in {1..60}; do
 done
 apptainer exec --nv "$OLLAMA_IMAGE" ollama list >/dev/null   # fail loudly if Ollama never came up
 
-apptainer exec --nv "$OLLAMA_IMAGE" ollama show qwen2.5vl:3b >/dev/null 2>&1 \
-  || apptainer exec --nv "$OLLAMA_IMAGE" ollama pull qwen2.5vl:3b
+# Read the tag out of the script so MODEL stays the single place to change it.
+model=$(sed -n 's/^MODEL = "\(.*\)"$/\1/p' train/scripts/generate-rationales.py)
+apptainer exec --nv "$OLLAMA_IMAGE" ollama show "$model" >/dev/null 2>&1 \
+  || apptainer exec --nv "$OLLAMA_IMAGE" ollama pull "$model"
+
+# Version matters as much as model choice here: vision-model regressions land often
+# (ollama/ollama#13549 broke image input in 0.13.3+). Record it with the run.
+apptainer exec --nv "$OLLAMA_IMAGE" ollama --version
 
 python train/scripts/generate-rationales.py
