@@ -16,11 +16,19 @@ from langchain_core.messages import HumanMessage
 from langchain_ollama import ChatOllama
 import wandb
 
+from sample import probe, select
 from structure import get_structure
 
 
 # How often (in processed images) to refresh status.csv with live progress.
 STATUS_EVERY = 50
+
+# Retrying helps when the server was momentarily unreachable; it never helps when
+# the model returned well-formed JSON that does not match the schema, or no JSON
+# at all. Sleeping before those retries just burns walltime -- at 36 models x
+# thousands of images a 10 s pause on a deterministic failure is hours of GPU time.
+TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError)
+RETRY_SLEEP_SECONDS = 10
 
 
 def set_csv_field_limit():
@@ -45,14 +53,19 @@ def load_relevant_config(args):
         config = yaml.safe_load(file)
 
     settings = config["settings"]
+    model = config.get("models", {}).get(args.model, {})
     return {
         "prompt": config["datasets"][args.dataset]["prompt"],
         "eval-retries": settings["eval-retries"],
         "limit": settings["limit"],
-        "parallel-requests": settings["parallel-requests"],
+        # A big model on a full A100 can keep more requests in flight than a 2B
+        # model on a 20 GB MIG slice, so the per-model value wins when present.
+        "parallel-requests": model.get("parallel-requests", settings["parallel-requests"]),
         "resume-from": settings.get("resume-from"),
         "model-kwargs": settings["model-kwargs"],
         "structured-output": settings["structured-output"],
+        "test-sample": settings.get("test-sample"),
+        "probe-images": settings.get("probe-images"),
     }
 
 
@@ -78,24 +91,32 @@ def get_dataset_dir(args):
 
 def load_dataset(args, config):
     dataset_dir = get_dataset_dir(args)
-    paths = []
-    ground_truths = {}
     with (dataset_dir / "labels.csv").open(newline="", encoding="utf-8") as file:
-        for row in csv.DictReader(file):
-            # Evaluate on held-out test patients only (split column absent = old
-            # unsplit dataset, so fall through and use everything).
-            if row.get("split") not in (None, "test"):
-                continue
-            path = (dataset_dir / row["image_path"]).resolve()
-            ground_truths[path] = {
-                label.upper()
-                for label, value in row.items()
-                if label not in ("image_path", "split") and value.strip().lower() == "true"
-            }
-            if path.is_file():
-                paths.append(path)
+        # Evaluate on held-out test patients only (split column absent = old
+        # unsplit dataset, so fall through and use everything).
+        rows = [row for row in csv.DictReader(file) if row.get("split") in (None, "test")]
 
-    paths.sort()
+    ground_truths = {
+        (dataset_dir / row["image_path"]).resolve(): {
+            label.upper()
+            for label, value in row.items()
+            if label not in ("image_path", "split", "assessed") and value.strip().lower() == "true"
+        }
+        for row in rows
+    }
+
+    # `select` drops windows the source annotations never covered (assessed=false --
+    # they cannot be graded) and applies the stratified per-recording cap. It is
+    # deterministic, so every model evaluates the identical set. `probe-images`
+    # narrows that further for the stage-1 screening run.
+    if config["probe-images"]:
+        selected = probe(rows, args.dataset, config["probe-images"], config["test-sample"])
+    else:
+        selected = select(rows, args.dataset, config["test-sample"])
+    paths = sorted(
+        path for path in ((dataset_dir / name).resolve() for name in selected) if path.is_file()
+    )
+
     limit = config["limit"]
     if limit != -1:
         paths = paths[:limit]
@@ -170,7 +191,6 @@ def log_result(run_dir, args, results_csv, image_path, prediction, ground_truth,
             csv.writer(file).writerow(
                 [image_path, prediction, ground_truth, prediction == ground_truth, rationale, json.dumps(raw, default=str)]
             )
-        wandb.log({"path": str(image_path), "correct": prediction == ground_truth})
 
 
 
@@ -213,7 +233,10 @@ def evaluate_image(model, path, args, config, ground_truths):
                     "raw": None,
                     "error": error,
                 }
-            time.sleep(10)
+            # Back off only when the server might recover. A schema-validation or
+            # JSON-parse failure is deterministic: retry immediately or not at all.
+            if isinstance(error, TRANSIENT_ERRORS):
+                time.sleep(RETRY_SLEEP_SECONDS)
 
 
 def record_result(result, run_dir, args, results_csv, progress):
@@ -230,6 +253,7 @@ def record_result(result, run_dir, args, results_csv, progress):
     )
     if result["error"] is None:
         progress["completed_images"] += 1
+        progress["correct_images"] += result["prediction"] == result["ground_truth"]
     else:
         progress["failed_images"] += 1
 
@@ -248,6 +272,17 @@ def send(model, paths, run_dir, args, results_csv, config, progress, ground_trut
             print(f"[{done}/{total_images}] {args.dataset} {tag}: {Path(result['image_path']).name}", flush=True)
             if done % STATUS_EVERY == 0:
                 update_status(run_dir, args, "running", "", total_images, progress["completed_images"])
+                # Aggregate rather than per-image: one wandb event per image is
+                # ~15k events per task and buys nothing that the results CSV and
+                # score.py do not already give us.
+                wandb.log(
+                    {
+                        "done": done,
+                        "completed_images": progress["completed_images"],
+                        "failed_images": progress["failed_images"],
+                        "running_accuracy": progress["correct_images"] / max(progress["completed_images"], 1),
+                    }
+                )
 
 
 def init_wandb(args, config):
@@ -276,7 +311,7 @@ def main():
     args = load_args()
     run_dir = Path(os.environ["RUN_DIR"])
     total_images = 0
-    progress = {"completed_images": 0, "failed_images": 0}
+    progress = {"completed_images": 0, "failed_images": 0, "correct_images": 0}
 
     try:
         config = load_relevant_config(args)
@@ -298,6 +333,14 @@ def main():
         failed = progress["failed_images"]
         status, reason = ("fail", f"{failed} images failed") if failed else ("success", "")
         update_status(run_dir, args, status, reason, total_images, progress["completed_images"])
+        wandb.summary.update(
+            {
+                "total_images": total_images,
+                "completed_images": progress["completed_images"],
+                "failed_images": failed,
+                "window_accuracy": progress["correct_images"] / max(progress["completed_images"], 1),
+            }
+        )
     finally:
         wandb.finish()
 

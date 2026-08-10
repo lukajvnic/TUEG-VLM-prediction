@@ -4,6 +4,16 @@ settings:
   limit: -1
   parallel-requests: 4
   resume-from:
+  # Stage-1 screening: images per dataset for the probe run (blank = full run).
+  # Promote a model to the full run only when its recording-level macro-F1 CI
+  # clears the constant-predictor baseline that score.py prints.
+  probe-images:
+  test-sample:
+    abundant-class-recordings: 200
+    windows-per-signature: 3
+    background-per-recording: 2
+    binary-windows-per-recording: 4
+    recordings-per-patient: 4
   model-kwargs:
     base_url: http://localhost:11434
     temperature: 0
@@ -24,9 +34,10 @@ datasets:
     prompt: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. From these labels - BCKG, SEIZ, SLOW - select every one present, based only on the waveforms. In the text_rationale field, for each category you mark as present, describe the specific evidence in the waveform: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). Do not describe the image format or define terminology. Set a label's boolean to true only when it is present."
 models:
   "bakllava:7b":
-    time: "06:00:00"
-    ram: "32G"
-    gpus: 1
+    time: "20:00:00"
+    ram: "16G"
+    gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -35,9 +46,10 @@ models:
       - TUSZ
       - TUSL
   "deepseek-ocr:3b":
-    time: "04:00:00"
-    ram: "24G"
+    time: "12:00:00"
+    ram: "16G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -46,9 +58,10 @@ models:
       - TUSZ
       - TUSL
   "gemma3:4b":
-    time: "04:00:00"
-    ram: "24G"
+    time: "12:00:00"
+    ram: "16G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -57,9 +70,10 @@ models:
       - TUSZ
       - TUSL
   "gemma3:12b":
-    time: "08:00:00"
-    ram: "48G"
+    time: "12:00:00"
+    ram: "24G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -68,9 +82,10 @@ models:
       - TUSZ
       - TUSL
   "gemma3:27b":
-    time: "16:00:00"
-    ram: "96G"
+    time: "24:00:00"
+    ram: "48G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -79,9 +94,10 @@ models:
       - TUSZ
       - TUSL
   "gemma4:e2b":
-    time: "04:00:00"
-    ram: "24G"
+    time: "12:00:00"
+    ram: "16G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -90,9 +106,10 @@ models:
       - TUSZ
       - TUSL
   "gemma4:e4b":
-    time: "04:00:00"
-    ram: "24G"
+    time: "12:00:00"
+    ram: "16G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -101,9 +118,10 @@ models:
       - TUSZ
       - TUSL
   "gemma4:12b":
-    time: "08:00:00"
-    ram: "48G"
+    time: "12:00:00"
+    ram: "24G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -112,9 +130,10 @@ models:
       - TUSZ
       - TUSL
   "gemma4:26b":
-    time: "16:00:00"
-    ram: "96G"
+    time: "24:00:00"
+    ram: "48G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -123,9 +142,10 @@ models:
       - TUSZ
       - TUSL
   "gemma4:31b":
-    time: "16:00:00"
-    ram: "96G"
+    time: "36:00:00"
+    ram: "48G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -134,9 +154,10 @@ models:
       - TUSZ
       - TUSL
   "glm-ocr:latest":
-    time: "04:00:00"
+    time: "20:00:00"
     ram: "24G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -145,9 +166,10 @@ models:
       - TUSZ
       - TUSL
   "granite3.2-vision:2b":
-    time: "04:00:00"
-    ram: "24G"
+    time: "12:00:00"
+    ram: "16G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -155,21 +177,23 @@ models:
       - TUAR
       - TUSZ
       - TUSL
-  "llama4:scout":
-    time: "2-00:00:00"
-    ram: "256G"
-    gpus: 4
-    datasets:
-      - TUEP
-      - TUAB
-      - TUEV
-      - TUAR
-      - TUSZ
-      - TUSL
+  # disabled -- duplicate: Scout IS the 16x17b model, kept as llama4:16x17b
+  # "llama4:scout":
+  #   time: "2-00:00:00"
+  #   ram: "256G"
+  #   gpus: 4
+  #   datasets:
+  #     - TUEP
+  #     - TUAB
+  #     - TUEV
+  #     - TUAR
+  #     - TUSZ
+  #     - TUSL
   "llama4:16x17b":
-    time: "4-00:00:00"
-    ram: "384G"
+    time: "16:00:00"
+    ram: "128G"
     gpus: 4
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -177,22 +201,24 @@ models:
       - TUAR
       - TUSZ
       - TUSL
-  "llama4:128x17b":
-    tier: large
-    time: "7-00:00:00"
-    ram: "512G"
-    gpus: 4
-    datasets:
-      - TUEP
-      - TUAB
-      - TUEV
-      - TUAR
-      - TUSZ
-      - TUSL
+  # disabled -- excluded: 512G + 4 GPUs + 7 days exceeds what Narval will schedule
+  # "llama4:128x17b":
+  #   tier: large
+  #   time: "7-00:00:00"
+  #   ram: "512G"
+  #   gpus: 4
+  #   datasets:
+  #     - TUEP
+  #     - TUAB
+  #     - TUEV
+  #     - TUAR
+  #     - TUSZ
+  #     - TUSL
   "llava:7b":
-    time: "06:00:00"
-    ram: "32G"
-    gpus: 1
+    time: "20:00:00"
+    ram: "16G"
+    gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -201,9 +227,10 @@ models:
       - TUSZ
       - TUSL
   "llava:13b":
-    time: "08:00:00"
-    ram: "48G"
+    time: "12:00:00"
+    ram: "24G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -212,9 +239,10 @@ models:
       - TUSZ
       - TUSL
   "llava:34b":
-    time: "16:00:00"
-    ram: "96G"
+    time: "36:00:00"
+    ram: "48G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -222,21 +250,23 @@ models:
       - TUAR
       - TUSZ
       - TUSL
-  "llava:v1.6":
-    time: "06:00:00"
-    ram: "32G"
-    gpus: 1
-    datasets:
-      - TUEP
-      - TUAB
-      - TUEV
-      - TUAR
-      - TUSZ
-      - TUSL
+  # disabled -- duplicate: Ollama tag alias of llava:7b (confirm: ollama show llava:v1.6)
+  # "llava:v1.6":
+  #   time: "06:00:00"
+  #   ram: "32G"
+  #   gpus: 1
+  #   datasets:
+  #     - TUEP
+  #     - TUAB
+  #     - TUEV
+  #     - TUAR
+  #     - TUSZ
+  #     - TUSL
   "llava-llama3:8b":
-    time: "06:00:00"
-    ram: "32G"
-    gpus: 1
+    time: "20:00:00"
+    ram: "24G"
+    gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -245,9 +275,10 @@ models:
       - TUSZ
       - TUSL
   "llava-phi3:3.8b":
-    time: "04:00:00"
-    ram: "24G"
-    gpus: 1
+    time: "12:00:00"
+    ram: "16G"
+    gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -256,9 +287,10 @@ models:
       - TUSZ
       - TUSL
   "medgemma:4b":
-    time: "04:00:00"
-    ram: "24G"
+    time: "12:00:00"
+    ram: "16G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -267,9 +299,10 @@ models:
       - TUSZ
       - TUSL
   "medgemma1.5:4b":
-    time: "04:00:00"
-    ram: "24G"
+    time: "12:00:00"
+    ram: "16G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -278,9 +311,10 @@ models:
       - TUSZ
       - TUSL
   "minicpm-v:8b":
-    time: "06:00:00"
-    ram: "32G"
-    gpus: 1
+    time: "20:00:00"
+    ram: "24G"
+    gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -289,9 +323,10 @@ models:
       - TUSZ
       - TUSL
   "minicpm-v4.5:8b":
-    time: "06:00:00"
-    ram: "32G"
+    time: "20:00:00"
+    ram: "24G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -300,9 +335,10 @@ models:
       - TUSZ
       - TUSL
   "minicpm-v4.6:1b":
-    time: "02:00:00"
+    time: "08:00:00"
     ram: "16G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -311,9 +347,10 @@ models:
       - TUSZ
       - TUSL
   "mistral-small3.1:24b":
-    time: "16:00:00"
-    ram: "96G"
+    time: "24:00:00"
+    ram: "32G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -322,9 +359,10 @@ models:
       - TUSZ
       - TUSL
   "mistral-small3.2:24b":
-    time: "16:00:00"
-    ram: "96G"
+    time: "24:00:00"
+    ram: "32G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -333,31 +371,34 @@ models:
       - TUSZ
       - TUSL
   "moondream:1.8b":
-    time: "04:00:00"
-    ram: "24G"
-    gpus: 1
-    datasets:
-      - TUEP
-      - TUAB
-      - TUEV
-      - TUAR
-      - TUSZ
-      - TUSL
-  "moondream:v2":
-    time: "04:00:00"
-    ram: "24G"
-    gpus: 1
-    datasets:
-      - TUEP
-      - TUAB
-      - TUEV
-      - TUAR
-      - TUSZ
-      - TUSL
-  "qwen2.5vl:3b":
-    time: "04:00:00"
-    ram: "24G"
+    time: "08:00:00"
+    ram: "16G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
+    datasets:
+      - TUEP
+      - TUAB
+      - TUEV
+      - TUAR
+      - TUSZ
+      - TUSL
+  # disabled -- duplicate: Ollama tag alias of moondream:1.8b
+  # "moondream:v2":
+  #   time: "04:00:00"
+  #   ram: "24G"
+  #   gpus: 1
+  #   datasets:
+  #     - TUEP
+  #     - TUAB
+  #     - TUEV
+  #     - TUAR
+  #     - TUSZ
+  #     - TUSL
+  "qwen2.5vl:3b":
+    time: "12:00:00"
+    ram: "16G"
+    gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -366,9 +407,10 @@ models:
       - TUSZ
       - TUSL
   "qwen2.5vl:7b":
-    time: "06:00:00"
-    ram: "32G"
+    time: "20:00:00"
+    ram: "24G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -377,9 +419,10 @@ models:
       - TUSZ
       - TUSL
   "qwen2.5vl:32b":
-    time: "16:00:00"
-    ram: "96G"
+    time: "36:00:00"
+    ram: "48G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -388,9 +431,10 @@ models:
       - TUSZ
       - TUSL
   "qwen3-vl:2b-instruct":
-    time: "04:00:00"
-    ram: "24G"
+    time: "12:00:00"
+    ram: "16G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -398,21 +442,23 @@ models:
       - TUAR
       - TUSZ
       - TUSL
-  "qwen3-vl:2b-thinking":
-    time: "04:00:00"
-    ram: "24G"
-    gpus: "a100_3g.20gb:1"
-    datasets:
-      - TUEP
-      - TUAB
-      - TUEV
-      - TUAR
-      - TUSZ
-      - TUSL
+  # disabled -- reasoning ablation is run once, at 8b, against qwen3-vl:8b-instruct
+  # "qwen3-vl:2b-thinking":
+  #   time: "04:00:00"
+  #   ram: "24G"
+  #   gpus: "a100_3g.20gb:1"
+  #   datasets:
+  #     - TUEP
+  #     - TUAB
+  #     - TUEV
+  #     - TUAR
+  #     - TUSZ
+  #     - TUSL
   "qwen3-vl:4b-instruct":
-    time: "04:00:00"
-    ram: "24G"
+    time: "12:00:00"
+    ram: "16G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -420,21 +466,23 @@ models:
       - TUAR
       - TUSZ
       - TUSL
-  "qwen3-vl:4b-thinking":
-    time: "04:00:00"
-    ram: "24G"
-    gpus: "a100_3g.20gb:1"
-    datasets:
-      - TUEP
-      - TUAB
-      - TUEV
-      - TUAR
-      - TUSZ
-      - TUSL
+  # disabled -- reasoning ablation is run once, at 8b, against qwen3-vl:8b-instruct
+  # "qwen3-vl:4b-thinking":
+  #   time: "04:00:00"
+  #   ram: "24G"
+  #   gpus: "a100_3g.20gb:1"
+  #   datasets:
+  #     - TUEP
+  #     - TUAB
+  #     - TUEV
+  #     - TUAR
+  #     - TUSZ
+  #     - TUSL
   "qwen3-vl:8b-instruct":
-    time: "06:00:00"
-    ram: "32G"
+    time: "20:00:00"
+    ram: "24G"
     gpus: "a100_3g.20gb:1"
+    parallel-requests: 4
     datasets:
       - TUEP
       - TUAB
@@ -443,9 +491,10 @@ models:
       - TUSZ
       - TUSL
   "qwen3-vl:8b-thinking":
-    time: "06:00:00"
-    ram: "32G"
-    gpus: "a100_3g.20gb:1"
+    time: "36:00:00"
+    ram: "24G"
+    gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -454,9 +503,10 @@ models:
       - TUSZ
       - TUSL
   "qwen3-vl:30b-a3b-instruct":
-    time: "16:00:00"
-    ram: "96G"
+    time: "08:00:00"
+    ram: "48G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -464,21 +514,23 @@ models:
       - TUAR
       - TUSZ
       - TUSL
-  "qwen3-vl:30b-a3b-thinking":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1
-    datasets:
-      - TUEP
-      - TUAB
-      - TUEV
-      - TUAR
-      - TUSZ
-      - TUSL
+  # disabled -- reasoning ablation is run once, at 8b, against qwen3-vl:8b-instruct
+  # "qwen3-vl:30b-a3b-thinking":
+  #   time: "16:00:00"
+  #   ram: "96G"
+  #   gpus: 1
+  #   datasets:
+  #     - TUEP
+  #     - TUAB
+  #     - TUEV
+  #     - TUAR
+  #     - TUSZ
+  #     - TUSL
   "qwen3-vl:32b-instruct":
-    time: "16:00:00"
-    ram: "96G"
+    time: "36:00:00"
+    ram: "48G"
     gpus: 1
+    parallel-requests: 8
     datasets:
       - TUEP
       - TUAB
@@ -486,38 +538,42 @@ models:
       - TUAR
       - TUSZ
       - TUSL
-  "qwen3-vl:32b-thinking":
-    time: "16:00:00"
-    ram: "96G"
-    gpus: 1
-    datasets:
-      - TUEP
-      - TUAB
-      - TUEV
-      - TUAR
-      - TUSZ
-      - TUSL
-  "qwen3-vl:235b-a22b-instruct":
-    tier: large
-    time: "4-00:00:00"
-    ram: "512G"
-    gpus: 4
-    datasets:
-      - TUEP
-      - TUAB
-      - TUEV
-      - TUAR
-      - TUSZ
-      - TUSL
-  "qwen3-vl:235b-a22b-thinking":
-    tier: large
-    time: "4-00:00:00"
-    ram: "512G"
-    gpus: 4
-    datasets:
-      - TUEP
-      - TUAB
-      - TUEV
-      - TUAR
-      - TUSZ
-      - TUSL
+  # disabled -- reasoning ablation is run once, at 8b, against qwen3-vl:8b-instruct
+  # "qwen3-vl:32b-thinking":
+  #   time: "16:00:00"
+  #   ram: "96G"
+  #   gpus: 1
+  #   datasets:
+  #     - TUEP
+  #     - TUAB
+  #     - TUEV
+  #     - TUAR
+  #     - TUSZ
+  #     - TUSL
+  # disabled -- excluded: Q4 weights ~142G exceed 4x A100-40G (160G) once activations and KV are added, and 512G RAM exceeds the 498G node total. Needs 80G-class cards.
+  # "qwen3-vl:235b-a22b-instruct":
+  #   tier: large
+  #   time: "4-00:00:00"
+  #   ram: "512G"
+  #   gpus: 4
+  #   parallel-requests: 8
+  #   datasets:
+  #     - TUEP
+  #     - TUAB
+  #     - TUEV
+  #     - TUAR
+  #     - TUSZ
+  #     - TUSL
+  # disabled -- reasoning ablation is run once, at 8b, against qwen3-vl:8b-instruct
+  # "qwen3-vl:235b-a22b-thinking":
+  #   tier: large
+  #   time: "4-00:00:00"
+  #   ram: "512G"
+  #   gpus: 4
+  #   datasets:
+  #     - TUEP
+  #     - TUAB
+  #     - TUEV
+  #     - TUAR
+  #     - TUSZ
+  #     - TUSL

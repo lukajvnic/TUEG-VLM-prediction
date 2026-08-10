@@ -65,8 +65,17 @@ def is_train(row):
     return row.get("split") in (None, "train")
 
 
+NON_LABEL_COLUMNS = ("image_path", "split", "assessed")
+
+
 def create_prompt(dataset, row):
-    labels = ", ".join(label for label, value in row.items() if value.strip().lower() == "true") or "none"
+    # `assessed` is a bookkeeping flag whose value is literally "true"/"false", so
+    # it has to be excluded by name or it lands in the prompt as a class label.
+    labels = ", ".join(
+        label
+        for label, value in row.items()
+        if label not in NON_LABEL_COLUMNS and value.strip().lower() == "true"
+    ) or "none"
     return f"{IMAGE_INTRO}{LABEL_CLAUSES[dataset.name].format(labels=labels)} {GROUNDED}"
 
 

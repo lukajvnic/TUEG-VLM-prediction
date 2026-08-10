@@ -17,7 +17,20 @@ export OLLAMA_IMAGE="${OLLAMA_IMAGE:-$SCRATCH/ollama/ollama.sif}"
 export OLLAMA_MODELS="$SCRATCH/ollama/models"
 export OLLAMA_HOST="127.0.0.1:$((20000 + (SLURM_JOB_ID + SLURM_ARRAY_TASK_ID) % 40000))"
 export OLLAMA_BASE_URL="http://$OLLAMA_HOST"
-export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-4}"
+# Serve exactly as many concurrent requests as eval.py will send. eval.py takes
+# the model's own `parallel-requests` when set (a full A100 sustains more in
+# flight than a 20 GB MIG slice) and falls back to the global setting, so the
+# server and the client must read the same value from the same config.
+export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-$(
+    MODEL="$MODEL" python -c '
+import os, yaml
+with open(os.path.join(os.environ["RUN_DIR"], "config.yml")) as f:
+    config = yaml.safe_load(f)
+settings = config["settings"]
+model = config.get("models", {}).get(os.environ["MODEL"], {})
+print(model.get("parallel-requests", settings["parallel-requests"]))
+'
+)}"
 # A full-resolution EEG image + prompt measures ~4033 tokens; the 4096 default
 # truncates once the JSON rationale is added. 8192 clears that with headroom
 # while keeping KV-cache memory (context x OLLAMA_NUM_PARALLEL) modest on MIG.
