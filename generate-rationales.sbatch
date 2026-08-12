@@ -54,4 +54,10 @@ apptainer exec --nv "$OLLAMA_IMAGE" ollama show "$model" >/dev/null 2>&1 \
 # (ollama/ollama#13549 broke image input in 0.13.3+). Record it with the run.
 apptainer exec --nv "$OLLAMA_IMAGE" ollama --version
 
-python train/scripts/generate-rationales.py
+# SPLIT=train (default) writes the fine-tuning targets to datasets/<DS>/rationales.csv.
+# SPLIT=test writes reference rationales for the benchmark's sampled test windows to
+# datasets/<DS>/rationales-test.csv, for eval/agreement.py to judge against:
+#   sbatch --export=ALL,SPLIT=test generate-rationales.sbatch
+# The two write different files on purpose -- rationales-test.csv comes from held-out
+# test patients and must never reach the fine-tune.
+python train/scripts/generate-rationales.py --split "${SPLIT:-train}"

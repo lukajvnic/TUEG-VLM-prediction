@@ -267,6 +267,7 @@ def send(model, paths, run_dir, args, results_csv, config, progress, ground_trut
         for future in as_completed(futures):
             result = future.result()
             record_result(result, run_dir, args, results_csv, progress)
+            result["raw"] = None
             done = progress["completed_images"] + progress["failed_images"]
             tag = "ok" if result["error"] is None else "FAIL"
             print(f"[{done}/{total_images}] {args.dataset} {tag}: {Path(result['image_path']).name}", flush=True)

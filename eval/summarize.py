@@ -6,6 +6,10 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from chart import write_bar_chart
+
+CHANCE_LEVEL = 0.5
+
 
 def set_csv_field_limit():
     limit = sys.maxsize
@@ -102,6 +106,27 @@ def rank_models(summary):
     return ranking
 
 
+def describe_ranking(ranking):
+    counts = {row["datasets"] for row in ranking} or {0}
+    span = str(max(counts)) if len(counts) == 1 else f"up to {max(counts)}"
+    return (
+        f"{len(ranking)} models · mean window-level balanced accuracy across {span} datasets"
+        " · quick leaderboard, not the reportable metric"
+    )
+
+
+def write_rank_chart(path, ranking, run):
+    write_bar_chart(
+        path,
+        labels=[row["model"] for row in ranking],
+        values=[row["balanced_accuracy"] for row in ranking],
+        title=f"Model ranking — {run}",
+        subtitle=describe_ranking(ranking),
+        y_label="Balanced accuracy",
+        reference=(CHANCE_LEVEL, f"chance {CHANCE_LEVEL:.2f}"),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("run")
@@ -110,8 +135,10 @@ def main():
     set_csv_field_limit()
     run_dir = Path(__file__).parent / "runs" / args.run
     summary = [summarize_task(task, load_results(run_dir, task)) for task in load_completed_tasks(run_dir)]
+    ranking = rank_models(summary)
     write_csv(run_dir / "summary.csv", ("model", "dataset", "accuracy", "balanced_accuracy", "tp", "fp", "tn", "fn"), summary)
-    write_csv(run_dir / "rank.csv", ("rank", "model", "balanced_accuracy", "datasets"), rank_models(summary))
+    write_csv(run_dir / "rank.csv", ("rank", "model", "balanced_accuracy", "datasets"), ranking)
+    write_rank_chart(run_dir / "rank.png", ranking, args.run)
 
 
 if __name__ == "__main__":

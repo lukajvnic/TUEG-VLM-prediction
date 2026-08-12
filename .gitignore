@@ -50,6 +50,8 @@ env/
 
 knowledge/
 
+CLAUDE.md
+
 *.err
 *.out
 results/*.csv
