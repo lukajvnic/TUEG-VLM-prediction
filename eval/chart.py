@@ -90,12 +90,13 @@ def draw_bars(axes, values):
         axes.add_patch(rounded_bar(x, value, width_px * unit_x, CORNER_PX * unit_x, CORNER_PX * unit_y))
 
 
-def style_axes(axes, labels, y_label, y_ticks):
+def style_axes(axes, labels, y_label, y_ticks, y_limits):
     axes.set_xlim(-0.5, len(labels) - 0.5)
-    axes.set_ylim(0, max(y_ticks) * HEADROOM)
+    axes.set_ylim(*y_limits)
     axes.set_xticks(range(len(labels)))
     axes.set_xticklabels(labels, rotation=45, ha="right")
     axes.set_yticks(y_ticks)
+    axes.set_yticklabels(f"{tick:.2f}" for tick in y_ticks)
     axes.set_ylabel(y_label, color=INK_SECONDARY, fontsize=10, labelpad=10)
     axes.tick_params(axis="both", length=0, colors=INK_MUTED, labelsize=9)
     axes.set_axisbelow(True)
@@ -126,6 +127,21 @@ def label_peak(axes, values, fmt):
              ha="center", va="bottom")
 
 
+def zoomed_range(values, pad=0.05, floor=0.0, ceiling=1.0):
+    """[min-pad, max+pad], clamped to [floor, ceiling]. Widens gaps between
+    near-identical bars at the cost of exaggerating noise — caller must own
+    that tradeoff in the caption."""
+    lo = max(floor, min(values) - pad)
+    hi = min(ceiling, max(values) + pad)
+    return lo, hi if hi > lo else lo + pad
+
+
+def nice_ticks(lo, hi, count=5):
+    span = hi - lo
+    step = span / (count - 1) if count > 1 else span
+    return [lo + step * index for index in range(count)]
+
+
 def annotate(axes, text, xy, coords, offset, color, size, **align):
     axes.annotate(
         text, xy=xy, xycoords=coords, xytext=offset, textcoords="offset points",
@@ -134,11 +150,17 @@ def annotate(axes, text, xy, coords, offset, color, size, **align):
 
 
 def write_bar_chart(path, labels, values, title, subtitle, y_label, reference=None,
-                    y_ticks=DEFAULT_TICKS, value_format="{:.3f}"):
+                    y_ticks=DEFAULT_TICKS, value_format="{:.3f}", y_range=None):
     if not values:
         return
+    if y_range is not None:
+        lo, hi = y_range
+        y_ticks = nice_ticks(lo, hi)
+        y_limits = (lo, hi + (hi - lo) * (HEADROOM - 1))
+    else:
+        y_limits = (0, max(y_ticks) * HEADROOM)
     figure, axes = make_figure(len(values))
-    style_axes(axes, labels, y_label, y_ticks)
+    style_axes(axes, labels, y_label, y_ticks, y_limits)
     add_titles(axes, title, subtitle)
     draw_bars(axes, values)
     label_peak(axes, values, value_format)
