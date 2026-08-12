@@ -106,15 +106,6 @@ def rank_models(summary):
     return ranking
 
 
-def describe_ranking(ranking):
-    counts = {row["datasets"] for row in ranking} or {0}
-    span = str(max(counts)) if len(counts) == 1 else f"up to {max(counts)}"
-    return (
-        f"{len(ranking)} models · mean window-level balanced accuracy across {span} datasets"
-        " · quick leaderboard, not the reportable metric · axis zoomed, gaps mostly noise"
-    )
-
-
 def write_rank_chart(path, ranking, run):
     values = [row["balanced_accuracy"] for row in ranking]
     write_bar_chart(
@@ -122,7 +113,6 @@ def write_rank_chart(path, ranking, run):
         labels=[row["model"] for row in ranking],
         values=values,
         title=f"Model ranking — {run}",
-        subtitle=describe_ranking(ranking),
         y_label="Balanced accuracy",
         reference=(CHANCE_LEVEL, f"chance {CHANCE_LEVEL:.2f}"),
         y_range=zoomed_range(values),

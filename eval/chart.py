@@ -107,10 +107,11 @@ def style_axes(axes, labels, y_label, y_ticks, y_limits):
     axes.spines["bottom"].set(color=BASELINE, linewidth=1)
 
 
-def add_titles(axes, title, subtitle):
+def add_titles(axes, title, subtitle=None):
     axes.set_title(title, color=INK, fontsize=13, fontweight="bold", loc="left", pad=30)
-    annotate(axes, subtitle, (0, 1), ("axes fraction", "axes fraction"), (0, 12), INK_SECONDARY, 9,
-             ha="left", va="bottom")
+    if subtitle:
+        annotate(axes, subtitle, (0, 1), ("axes fraction", "axes fraction"), (0, 12), INK_SECONDARY, 9,
+                 ha="left", va="bottom")
 
 
 def add_reference(axes, value, label):
@@ -149,7 +150,7 @@ def annotate(axes, text, xy, coords, offset, color, size, **align):
     )
 
 
-def write_bar_chart(path, labels, values, title, subtitle, y_label, reference=None,
+def write_bar_chart(path, labels, values, title, y_label, subtitle=None, reference=None,
                     y_ticks=DEFAULT_TICKS, value_format="{:.3f}", y_range=None):
     if not values:
         return
