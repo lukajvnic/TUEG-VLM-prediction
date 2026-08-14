@@ -57,8 +57,10 @@ def get_squeue_states(job_ids):
 
 
 def get_sacct_states(job_ids):
+    # JobID, not JobIDRaw: raw ids are per-element and carry no `<array>_<task>`
+    # suffix, so every finished array element fails the parse below.
     states = {}
-    command = ["sacct", "-n", "-P", "-X", "-j", ",".join(job_ids), "--format=JobIDRaw,State,Reason"]
+    command = ["sacct", "-n", "-P", "-X", "-j", ",".join(job_ids), "--format=JobID,State,Reason"]
     for line in run_slurm(command):
         job_task, state, reason = line.split("|", 2)
         if "_" not in job_task:
