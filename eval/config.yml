@@ -2,23 +2,37 @@
 # live from this file rather than from a run's frozen copy: the stage runs after
 # and independently of the sweep, so its settings are not pinned at submission.
 judge:
-  # Text-only, so no vision tower and no image tokens: it reads two rationales.
-  # Chosen for being (a) not the gemma3:12b teacher that writes the reference
-  # rationales and (b) not one of the 35 benchmarked models, so it never grades
-  # its own prose. Non-thinking, so token cost per pair is predictable -- a
-  # reasoning model would make walltime a function of how much it decides to
-  # think, which is what makes qwen3-vl:8b-thinking the eval sweep's long pole.
+  # Used text-only: it reads two rationales, never the image.
   #
-  # Must be staged into $OLLAMA_MODELS before submitting: compute nodes have no
-  # route to the Ollama registry. `run-judge.py check` verifies this.
-  model: "qwen2.5:14b-instruct"
+  # Picked from the models already staged in $OLLAMA_MODELS -- the eval sweep ran
+  # against all 35 in `models` below, so all 35 are present, and compute nodes
+  # have no route to the Ollama registry. `run-judge.py check` verifies staging
+  # before anything is queued.
+  #
+  # Why this one, of those 35:
+  #  - NOT gemma3:12b, and not the gemma family at all (8 gemma + 2 medgemma).
+  #    gemma3:12b writes every reference rationale, so a gemma judge would be
+  #    grading prose from its own lineage.
+  #  - NOT qwen2.5vl (3 models): rejected for the single-token repetition loop,
+  #    ollama/ollama#10767 -- same reason it is not the teacher.
+  #  - NOT a -thinking model: token cost per pair must be predictable across
+  #    ~520k pairs.
+  #  - Smallest capable family (2 entries), so only mistral-small3.1:24b shares
+  #    its lineage; and 24B follows the two-boolean schema reliably where an 8B
+  #    does not.
+  #
+  # CAVEAT: it IS one of the 35 benchmarked models, so its own row in the
+  # agreement table grades its own prose. See knowledge/known-issues.md.
+  model: "mistral-small3.2:24b"
 
-  # ~9 GB of Q4 weights x 1.15 + KV for 4096 x 8 in flight is ~12 GB, so this
-  # fits a 20 GB MIG slice with headroom. ESTIMATE, not measured -- if Ollama
-  # logs CPU offload, drop parallel-requests to 4 or move to gpus: 1.
+  # Mirrors this model's own roster entry below, which is known to schedule.
+  # ~14 GB of Q4 weights x 1.15 is ~16 GB before KV, so it does NOT fit the
+  # 19.6 GiB a MIG 3g.20gb slice reports -- needs a full A100. Walltime stays at
+  # 12h despite the roster's 24h: text-only pairs cost far less than a ~4033
+  # token image, and judging resumes per pair.
   time: "12:00:00"
-  ram: "24G"
-  gpus: "a100_3g.20gb:1"
+  ram: "32G"
+  gpus: 1
   parallel-requests: 8
   array-concurrency: 12
 
