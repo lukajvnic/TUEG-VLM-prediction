@@ -1,15 +1,15 @@
 """Rationale-agreement stage: does a model's zero-shot rationale say the same
 thing as the reference rationale written for the same window?
 
-    python eval/agreement.py check  <run>   # join coverage, no GPU -- run this first
-    python eval/agreement.py submit <run>   # one array task per model
-    python eval/agreement.py report <run>   # aggregate to CSV
+    python eval/run-judge.py check  <run>   # join coverage, no GPU -- run this first
+    python eval/run-judge.py submit <run>   # one array task per model
+    python eval/run-judge.py report <run>   # aggregate to CSV
 
 `check` is the pre-flight: it reports, per model x dataset, how many of the
 evaluated windows actually have a reference rationale. A low number means the
 teacher pass has not run or has not finished --
 
-    sbatch --export=ALL,SPLIT=test generate-rationales.sbatch
+    sbatch --export=ALL,SPLIT=test eval/scripts/generate-rationales.sbatch
 
 -- and queueing 35 judge tasks against a missing reference set would waste the
 whole allocation.
@@ -37,6 +37,7 @@ import argparse
 import base64
 import csv
 import json
+import os
 import re
 import subprocess
 import sys
@@ -87,7 +88,7 @@ def mean(values):
 
 
 def load_judge_config():
-    with (EVAL_DIR / "judge.yml").open() as file:
+    with (EVAL_DIR / "config.yml").open() as file:
         return yaml.safe_load(file)["judge"]
 
 
@@ -96,6 +97,30 @@ def run_dir_for(run):
     if not path.is_dir():
         raise SystemExit(f"No such run: {path}")
     return path
+
+
+def model_store():
+    root = os.environ.get("OLLAMA_MODELS")
+    if not root and (scratch := os.environ.get("SCRATCH")):
+        root = f"{scratch}/ollama/models"
+    return Path(root) if root else None
+
+
+def judge_model_staged(model):
+    """True/False if the store can be inspected, None if there is no store here.
+
+    Compute nodes have no route to the Ollama registry, so a judge model missing
+    from $OLLAMA_MODELS cannot be fetched at task start -- all 35 array tasks die
+    on it. Reading the manifest path needs no server and no apptainer, so this
+    works from a login node, which is where submission happens anyway.
+    """
+    store = model_store()
+    if store is None or not store.is_dir():
+        return None
+    name, _, tag = model.partition(":")
+    if "/" not in name:
+        name = f"library/{name}"
+    return (store / "manifests" / "registry.ollama.ai" / name / (tag or "latest")).is_file()
 
 
 def load_tasks(run_dir):
@@ -142,14 +167,33 @@ def evaluated_names(run_dir, model, dataset):
         }
 
 
+def report_judge_model():
+    """Print whether the configured judge is staged. Returns True if it is absent."""
+    model = load_judge_config()["model"]
+    staged = judge_model_staged(model)
+    if staged is None:
+        print(f"judge model {model} -- no Ollama store here, not checked\n")
+        return False
+    if staged:
+        print(f"judge model {model} -- staged in {model_store()}\n")
+        return False
+    print(f"!! judge model {model} is NOT in {model_store()}")
+    print("   Compute nodes cannot reach the registry, so every judge task would")
+    print("   fail on it. Stage it from a login node first:")
+    print(f"     apptainer exec $SCRATCH/ollama/ollama.sif ollama pull {model}\n")
+    return True
+
+
 def check(run_dir):
+    missing_model = report_judge_model()
     tasks = load_tasks(run_dir)
     references = {dataset: reference_names(dataset) for _, dataset in set(tasks)}
 
     missing = sorted(name for name, names in references.items() if names is None)
     if missing:
         print(f"!! no rationales-test.csv for: {', '.join(missing)}")
-        print("   generate it with: sbatch --export=ALL,SPLIT=test generate-rationales.sbatch\n")
+        print("   generate it with: sbatch --export=ALL,SPLIT=test "
+              "eval/scripts/generate-rationales.sbatch\n")
 
     print(f"{'model':<30} {'dataset':<7} {'evaluated':>9} {'joinable':>9} {'coverage':>9}")
     shortfall = 0
@@ -172,7 +216,7 @@ def check(run_dir):
     if shortfall:
         print(f"~~ {shortfall} evaluated windows have no reference rationale; they "
               f"will be skipped by the judge.")
-    return 0 if total_joinable else 1
+    return 1 if missing_model or not total_joinable else 0
 
 
 # ------------------------------------------------------------------ submit
@@ -183,6 +227,14 @@ def submit(run_dir, args):
     models = sorted({model for model, _ in load_tasks(run_dir)})
     if not models:
         raise SystemExit(f"No successful tasks in {run_dir / 'status.csv'}")
+
+    if judge_model_staged(config["model"]) is False:
+        raise SystemExit(
+            f"judge model {config['model']} is not in {model_store()}.\n"
+            f"Compute nodes cannot reach the Ollama registry, so all {len(models)} "
+            f"tasks would fail on it. Stage it from a login node first:\n"
+            f"  apptainer exec $SCRATCH/ollama/ollama.sif ollama pull {config['model']}"
+        )
 
     concurrency = min(config["array-concurrency"], len(models))
     command = [
@@ -291,7 +343,7 @@ def report(run_dir):
     if not tasks:
         raise SystemExit(
             f"No judged pairs under {run_dir / 'agreement'} -- run "
-            f"`python eval/agreement.py submit {run_dir.name}` first."
+            f"`python eval/run-judge.py submit {run_dir.name}` first."
         )
 
     models = summarize_models(tasks)

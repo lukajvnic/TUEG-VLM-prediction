@@ -275,7 +275,7 @@ def send(model, paths, run_dir, args, results_csv, config, progress, ground_trut
                 update_status(run_dir, args, "running", "", total_images, progress["completed_images"])
                 # Aggregate rather than per-image: one wandb event per image is
                 # ~15k events per task and buys nothing that the results CSV and
-                # score.py do not already give us.
+                # summarize.py do not already give us.
                 wandb.log(
                     {
                         "done": done,

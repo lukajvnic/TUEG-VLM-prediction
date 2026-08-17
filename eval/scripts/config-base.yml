@@ -6,7 +6,7 @@ settings:
   resume-from:
   # Stage-1 screening: images per dataset for the probe run (blank = full run).
   # Promote a model to the full run only when its recording-level macro-F1 CI
-  # clears the constant-predictor baseline that score.py prints.
+  # clears the constant-predictor baseline that summarize.py prints.
   probe-images:
   test-sample:
     abundant-class-recordings: 200

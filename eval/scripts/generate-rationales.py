@@ -10,7 +10,7 @@ Two splits, two output files:
   --split test            -> datasets/<DS>/rationales-test.csv
       The same thing for the test windows the benchmark actually scores (the
       stratified sample from eval/scripts/sample.py). These are the *reference*
-      rationales that eval/agreement.py compares each model's zero-shot
+      rationales that eval/run-judge.py compares each model's zero-shot
       rationale against.
 
 The two files are deliberately separate. rationales-test.csv is written from
@@ -24,7 +24,6 @@ each time the other ran.
 import argparse
 import base64
 import csv
-import importlib.util
 import mimetypes
 import os
 import sys
@@ -34,6 +33,8 @@ from pathlib import Path
 import yaml
 from langchain_core.messages import HumanMessage
 from langchain_ollama import ChatOllama
+
+from sample import select
 
 
 # Not qwen2.5vl: it locks onto a single token and repeats it for the whole
@@ -79,7 +80,7 @@ GROUNDED = (
 
 
 def get_datasets():
-    datasets = Path(__file__).parents[2] / "datasets"
+    datasets = Path(__file__).resolve().parents[2] / "datasets"
     return sorted(path for path in datasets.iterdir() if (path / "labels.csv").is_file())
 
 
@@ -104,21 +105,10 @@ def create_prompt(dataset, row):
 # ---------------------------------------------------------------- target rows
 
 
-def load_sample_module():
-    # eval/scripts/sample.py defines the benchmark's test subsample. Loaded by path
-    # (rather than duplicated) so the reference rationales cover exactly the windows
-    # eval.py scores -- the same reason scrub-degenerate.py loads this module.
-    path = Path(__file__).parents[2] / "eval" / "scripts" / "sample.py"
-    spec = importlib.util.spec_from_file_location("sample", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def load_test_policy():
     # The sampling caps live in eval/config.yml so the reference set and the
     # evaluated set are driven by one number, not two copies of it.
-    path = Path(__file__).parents[2] / "eval" / "config.yml"
+    path = Path(__file__).resolve().parents[1] / "config.yml"
     with path.open() as file:
         settings = yaml.safe_load(file).get("settings") or {}
     return settings.get("test-sample") or {}
@@ -137,7 +127,7 @@ def evaluated_names(dataset, run):
     has a reference, even if the sampling policy changed after that run was
     submitted. Costs a dependency on the run having produced results already.
     """
-    results = Path(__file__).parents[2] / "eval" / "runs" / run / "results"
+    results = Path(__file__).resolve().parents[1] / "runs" / run / "results"
     names = set()
     for path in sorted(results.glob(f"*-{dataset.name}.csv")):
         with path.open(newline="", encoding="utf-8") as file:
@@ -159,10 +149,7 @@ def target_rows(dataset, split, policy, run):
     if run:
         wanted = evaluated_names(dataset, run)
     else:
-        wanted = {
-            Path(name).name
-            for name in load_sample_module().select(test_rows, dataset.name, policy)
-        }
+        wanted = {Path(name).name for name in select(test_rows, dataset.name, policy)}
     return [row for row in test_rows if Path(row["image_path"]).name in wanted]
 
 

@@ -1,13 +1,13 @@
 """Union a base run with its retry run into a single scoreable run dir.
 
-`create-retry-config.py` + `run.py` put retried work in a *new* run dir, and
+`create-retry-config.py` + `run-eval.py` put retried work in a *new* run dir, and
 `resume-from` only tells the retry which images to skip -- it never copies the
 base run's rows forward. So neither dir is scoreable alone: the base is missing
 the retried images, and the retry holds only those images. The two are disjoint
 by construction (that is what resume-from guarantees), so merging is a union
 keyed on `path`.
 
-    python eval/merge-runs.py <base-run> <retry-run> [--into NAME] [--dry-run]
+    python eval/scripts/merge-runs.py <base-run> <retry-run> [--into NAME] [--dry-run]
 """
 
 import argparse
@@ -16,7 +16,7 @@ import shutil
 import sys
 from pathlib import Path
 
-RUNS = Path(__file__).parent / "runs"
+RUNS = Path(__file__).resolve().parents[1] / "runs"
 STATUS_FIELDS = ("model", "dataset", "status", "reason", "total_images", "completed_images")
 
 

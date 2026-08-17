@@ -1,6 +1,6 @@
 """Deterministic stratified subsampling of the test split.
 
-The benchmark is scored at the **recording** level (score.py aggregates a
+The benchmark is scored at the **recording** level (summarize.py aggregates a
 recording's windows into one prediction), and for TUEP the ground truth is
 actually per *patient*. So the precision of every headline metric is set by the
 number of recordings/patients -- while inference cost scales with the number of
@@ -41,7 +41,7 @@ BACKGROUND = {"bckg"}
 
 DEFAULT_POLICY = {
     # A class present in fewer than this many test recordings is "under-supported":
-    # every window carrying it is protected from capping. Set at 10x score.py's
+    # every window carrying it is protected from capping. Set at 10x summarize.py's
     # MIN_SUPPORT=20 so no class near the reporting threshold is ever thinned.
     "abundant-class-recordings": 200,
     # Cap per (recording, label-signature) for signatures made only of abundant classes.
@@ -151,7 +151,7 @@ def probe(rows, dataset, size, policy=None):
 
     Stage 1 of the two-stage design: run every model over this, and promote only
     the models whose recording-level macro-F1 confidence interval clears the
-    constant-predictor baseline (see score.py). Most general-purpose VLMs are
+    constant-predictor baseline (see summarize.py). Most general-purpose VLMs are
     expected to sit at chance on EEG waveforms, and establishing that does not
     need the full test set -- but it does need the rare classes to be present,
     which is why this stratifies by signature instead of slicing the front of a

@@ -5,7 +5,7 @@
 
 # One array task per benchmarked model: judges that model's rationales across all
 # of its datasets, so the judge's weights load once per ~14.8k pairs rather than
-# once per dataset. Submitted by eval/agreement.py; RUN_NAME and MODELS_B64 come
+# once per dataset. Submitted by eval/run-judge.py; RUN_NAME and MODELS_B64 come
 # in via --export.
 
 set -euo pipefail
@@ -17,7 +17,7 @@ MODEL=$(python -c 'import base64, json, os; print(json.loads(base64.b64decode(os
 
 read -r JUDGE_MODEL JUDGE_PARALLEL JUDGE_CTX < <(python -c '
 import yaml
-with open("judge.yml") as f:
+with open("config.yml") as f:
     judge = yaml.safe_load(f)["judge"]
 print(judge["model"], judge["parallel-requests"], judge["num-ctx"])
 ')
@@ -50,8 +50,16 @@ for _ in {1..60}; do
 done
 apptainer exec --nv "$OLLAMA_IMAGE" ollama list >/dev/null   # fail loudly if it never came up
 
-apptainer exec --nv "$OLLAMA_IMAGE" ollama show "$JUDGE_MODEL" >/dev/null 2>&1 \
-  || apptainer exec --nv "$OLLAMA_IMAGE" ollama pull "$JUDGE_MODEL"
+# No `|| ollama pull` fallback: compute nodes have no route to the registry, so a
+# pull can only hang for its timeout and then fail the task anyway -- turning a
+# missing model into a cryptic i/o timeout 30 s in. run_array.sbatch never had
+# one. Stage models from a login node; fail immediately and say so if absent.
+if ! apptainer exec --nv "$OLLAMA_IMAGE" ollama show "$JUDGE_MODEL" >/dev/null 2>&1; then
+    echo "judge model '$JUDGE_MODEL' is not in $OLLAMA_MODELS" >&2
+    echo "stage it from a login node, then resubmit:" >&2
+    echo "  OLLAMA_MODELS=$OLLAMA_MODELS apptainer exec \$SCRATCH/ollama/ollama.sif ollama pull $JUDGE_MODEL" >&2
+    exit 1
+fi
 
 # Record it with the run: the judge's verdicts are only comparable across tasks
 # if the same Ollama build and the same model digest produced them.

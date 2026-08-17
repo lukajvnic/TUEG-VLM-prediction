@@ -11,8 +11,12 @@ def load_config(path):
 
 
 def load_retry_config(run_dir):
+    # config-base.yml supplies only `models` (the full, uncommented list); every
+    # other key comes from the run being retried. render_config must emit all of
+    # them -- a key that is loaded but not rendered is dropped on the first retry.
     run_config = load_config(run_dir / "config.yml")
     base_config = load_config(Path(__file__).parent / "scripts" / "config-base.yml")
+    base_config["judge"] = run_config["judge"]
     base_config["settings"] = run_config["settings"]
     base_config["datasets"] = run_config["datasets"]
     return base_config
@@ -71,8 +75,10 @@ def render_models(config, successful_tasks):
 
 
 def render_config(config, successful_tasks):
-    settings = yaml.safe_dump({"settings": config["settings"]}, sort_keys=False)
-    return settings + render_datasets(config) + render_models(config, successful_tasks)
+    header = yaml.safe_dump(
+        {"judge": config["judge"], "settings": config["settings"]}, sort_keys=False
+    )
+    return header + render_datasets(config) + render_models(config, successful_tasks)
 
 
 def main():

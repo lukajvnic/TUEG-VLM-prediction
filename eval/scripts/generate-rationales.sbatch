@@ -46,9 +46,15 @@ done
 apptainer exec --nv "$OLLAMA_IMAGE" ollama list >/dev/null   # fail loudly if Ollama never came up
 
 # Read the tag out of the script so MODEL stays the single place to change it.
-model=$(sed -n 's/^MODEL = "\(.*\)"$/\1/p' train/scripts/generate-rationales.py)
-apptainer exec --nv "$OLLAMA_IMAGE" ollama show "$model" >/dev/null 2>&1 \
-  || apptainer exec --nv "$OLLAMA_IMAGE" ollama pull "$model"
+model=$(sed -n 's/^MODEL = "\(.*\)"$/\1/p' eval/scripts/generate-rationales.py)
+# No `|| ollama pull` fallback -- see judge_array.sbatch. Compute nodes cannot
+# reach the registry, so a pull only converts a missing model into a timeout.
+if ! apptainer exec --nv "$OLLAMA_IMAGE" ollama show "$model" >/dev/null 2>&1; then
+    echo "teacher model '$model' is not in $OLLAMA_MODELS" >&2
+    echo "stage it from a login node, then resubmit:" >&2
+    echo "  OLLAMA_MODELS=$OLLAMA_MODELS apptainer exec \$SCRATCH/ollama/ollama.sif ollama pull $model" >&2
+    exit 1
+fi
 
 # Version matters as much as model choice here: vision-model regressions land often
 # (ollama/ollama#13549 broke image input in 0.13.3+). Record it with the run.
@@ -56,8 +62,8 @@ apptainer exec --nv "$OLLAMA_IMAGE" ollama --version
 
 # SPLIT=train (default) writes the fine-tuning targets to datasets/<DS>/rationales.csv.
 # SPLIT=test writes reference rationales for the benchmark's sampled test windows to
-# datasets/<DS>/rationales-test.csv, for eval/agreement.py to judge against:
-#   sbatch --export=ALL,SPLIT=test generate-rationales.sbatch
+# datasets/<DS>/rationales-test.csv, for eval/run-judge.py to judge against:
+#   sbatch --export=ALL,SPLIT=test eval/scripts/generate-rationales.sbatch
 # The two write different files on purpose -- rationales-test.csv comes from held-out
 # test patients and must never reach the fine-tune.
-python train/scripts/generate-rationales.py --split "${SPLIT:-train}"
+python eval/scripts/generate-rationales.py --split "${SPLIT:-train}"

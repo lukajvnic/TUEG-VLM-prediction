@@ -89,10 +89,10 @@ def eval_dir():
 
 
 def load_judge_config():
-    # Read live, not from the run's frozen config.yml: a sweep submitted before
-    # this stage existed has no judge settings in its copy, and judge.yml is
-    # never rewritten by create-retry-config.py.
-    with (eval_dir() / "judge.yml").open() as file:
+    # Read the live config.yml, not the run's frozen copy: the judge stage runs
+    # after and independently of the sweep, so its settings are not pinned at
+    # submission time the way a model's Slurm resources are.
+    with (eval_dir() / "config.yml").open() as file:
         return yaml.safe_load(file)["judge"]
 
 
