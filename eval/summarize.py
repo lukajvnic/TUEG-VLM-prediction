@@ -13,12 +13,19 @@ Two things the raw per-window `correct` flag gets wrong:
     model catch the finding somewhere in the recording".
 
 Window-level accuracy and balanced accuracy are still written to `summary.csv`
-for continuity, but the ranking and the charts are driven by recording-level
+for continuity, but the ranking in `rank.csv` is driven by recording-level
 macro-F1, and every row carries the caveats that decide whether its score means
 anything: the constant-predictor baseline it has to clear, the bootstrap CI,
 whether the output was degenerate, and how many independent patients it saw.
 
-Usage:  python eval/summarize.py <run-name> [--bootstrap N]
+The per-dataset charts plot recording-level **balanced accuracy**, whose floor is
+a flat 0.50 for any image-blind constant answer. It reads more directly than
+macro-F1, at the cost of ignoring precision: a model that fires a rare class on
+everything keeps recall 1 and only loses specificity. `--metric macro-f1` charts
+the precision-charging metric instead, and both columns are in `summary.csv`
+either way.
+
+Usage:  python eval/summarize.py <run-name> [--bootstrap N] [--metric M]
 """
 
 import argparse
@@ -226,7 +233,7 @@ DEGENERATE_FRACTION = 0.95
 
 SUMMARY_FIELDS = (
     "model", "dataset", "status", "windows", "recordings", "patients",
-    "accuracy", "balanced_accuracy",
+    "accuracy", "balanced_accuracy", "recording_balanced_accuracy",
     "window_macro_f1", "window_ci_low", "window_ci_high",
     "recording_macro_f1", "recording_ci_low", "recording_ci_high",
     "baseline_macro_f1", "clears_baseline",
@@ -237,7 +244,8 @@ SUMMARY_FIELDS = (
 CLASS_FIELDS = ("model", "dataset", "level", "class",
                 "precision", "recall", "f1", "support", "in_macro")
 RANK_FIELDS = ("rank", "model", "recording_macro_f1", "baseline_macro_f1",
-               "balanced_accuracy", "datasets", "clears_baseline", "degenerate")
+               "recording_balanced_accuracy", "balanced_accuracy",
+               "datasets", "clears_baseline", "degenerate")
 
 
 def set_csv_field_limit():
@@ -356,6 +364,28 @@ def pooled_confusion(pairs):
         totals = [totals[0] + tp, totals[1] + fp, totals[2] + tn, totals[3] + fn]
         balanced.append((safe_divide(tp, tp + fn) + safe_divide(tn, tn + fp)) / 2)
     return (*totals, safe_divide(sum(balanced), len(balanced)))
+
+
+def balanced_accuracy(pairs, classes):
+    """Mean of (recall + specificity) / 2 over `classes`.
+
+    Restricted to the same classes macro-F1 scores, so the two metrics are
+    computed over one class set and a model cannot look better under one merely
+    by being graded on more classes.
+
+    Insensitive to precision by construction: a model that fires a rare class on
+    everything keeps recall 1 and loses only specificity, which is why macro-F1
+    stays the headline. Its compensation is that any constant, image-blind answer
+    scores exactly 0.5 whatever the class balance -- see `chart_reference`.
+    """
+    scores = []
+    for cls in classes:
+        tp = sum(1 for pred, true in pairs if cls in pred and cls in true)
+        fp = sum(1 for pred, true in pairs if cls in pred and cls not in true)
+        fn = sum(1 for pred, true in pairs if cls not in pred and cls in true)
+        tn = len(pairs) - tp - fp - fn
+        scores.append((safe_divide(tp, tp + fn) + safe_divide(tn, tn + fp)) / 2)
+    return safe_divide(sum(scores), len(scores))
 
 
 def aggregate_to_recordings(windows, dataset):
@@ -490,6 +520,7 @@ def evaluate(model, dataset, status, rows, iterations):
         "patients": len(patients),
         "accuracy": safe_divide(sum(row["correct"].lower() == "true" for row in rows), len(rows)),
         "balanced_accuracy": balanced,
+        "recording_balanced_accuracy": balanced_accuracy(recording_pairs, recording_classes),
         "window_macro_f1": macro_f1(window_stats),
         "window_ci_low": window_ci[0] if window_ci else "",
         "window_ci_high": window_ci[1] if window_ci else "",
@@ -590,6 +621,10 @@ def rank_models(summaries):
             "model": model,
             "recording_macro_f1": sum(r["recording_macro_f1"] for r in rows) / len(rows),
             "baseline_macro_f1": sum(r["baseline_macro_f1"] for r in rows) / len(rows),
+            # the charted metric, so rank.csv and the PNGs cannot disagree;
+            # `balanced_accuracy` beside it is the window-level one, kept for continuity
+            "recording_balanced_accuracy":
+                sum(r["recording_balanced_accuracy"] for r in rows) / len(rows),
             "balanced_accuracy": sum(r["balanced_accuracy"] for r in rows) / len(rows),
             "datasets": len(rows),
             "clears_baseline": sum(1 for r in rows if r["clears_baseline"] is True),
@@ -601,53 +636,86 @@ def rank_models(summaries):
     return ranking
 
 
-def dataset_ranking(summaries, dataset):
-    """One dataset's models, best first.
+# What a chart can plot. Both are recording-level: a recording is the fair unit
+# on TUAB/TUEP, so a window-level number would not be comparable across the six.
+METRICS = {
+    "macro-f1": ("recording_macro_f1", "Recording-level macro-F1"),
+    "balanced-accuracy": ("recording_balanced_accuracy", "Recording-level balanced accuracy"),
+}
+DEFAULT_METRIC = "balanced-accuracy"
+
+
+def dataset_ranking(summaries, dataset, field):
+    """One dataset's models, best first by the charted metric.
 
     Same completeness filter as `rank_models`: a task that died halfway would
     otherwise be charted beside full ones on a fraction of the test set.
     """
     rows = [row for row in summaries
             if row["dataset"] == dataset and row["status"] in ("success", "unknown")]
-    return sorted(rows, key=lambda row: (-row["recording_macro_f1"], row["model"]))
+    return sorted(rows, key=lambda row: (-row[field], row["model"]))
 
 
-def write_dataset_chart(path, rows, dataset, run):
-    """Reference line is the constant-predictor floor, not 0.5.
+def chart_reference(metric, rows):
+    """The floor an image-blind constant answer reaches, in the charted metric.
 
-    Chance is not a meaningful landmark for macro-F1 on a class-imbalanced
-    multi-label set; the floor an image-blind model reaches is. It is averaged
-    over the models charted, which is close to a formality — the floor is a
-    property of the test set, so every model that saw all of it gets the same
-    number — but a partially-scored task would otherwise move the line.
+    For macro-F1 it depends on the class balance, so it is computed per dataset
+    (`baseline_macro_f1`) and averaged over the models charted -- close to a
+    formality, since the floor is a property of the test set, but a partially
+    scored task would otherwise move the line.
+
+    For balanced accuracy it is exactly 0.50 by construction: a constant answer
+    scores recall 1 / specificity 0 on the class it names and recall 0 /
+    specificity 1 on every other, so every class contributes 0.5 to the mean
+    whatever the class balance. Nothing to compute, and nothing to caveat.
     """
-    values = [row["recording_macro_f1"] for row in rows]
+    if metric == "balanced-accuracy":
+        return 0.5, "constant predictor 0.50"
     baseline = sum(row["baseline_macro_f1"] for row in rows) / len(rows)
+    return baseline, f"constant predictor {baseline:.2f}"
+
+
+def write_dataset_chart(path, rows, dataset, run, metric):
+    """Reference line is always the constant-predictor floor for the metric drawn.
+
+    It lands at 0.50 for balanced accuracy and wherever the class balance puts it
+    for macro-F1 (0.95 on TUAB), so the two charts are not comparable by eye and
+    the line is what tells you which one you are looking at. `chart_reference`
+    owns the arithmetic.
+    """
+    field, y_label = METRICS[metric]
+    values = [row[field] for row in rows]
+    reference = chart_reference(metric, rows)
     write_bar_chart(
         path,
         labels=[row["model"] for row in rows],
         values=values,
         title=f"Model ranking — {dataset} ({run})",
-        y_label="Recording-level macro-F1",
-        reference=(baseline, f"constant predictor {baseline:.2f}"),
-        y_range=zoomed_range(values + [baseline]),
+        y_label=y_label,
+        reference=reference,
+        y_range=zoomed_range(values + [reference[0]]),
     )
 
 
-def write_dataset_charts(run_dir, summaries, run):
+def write_dataset_charts(run_dir, summaries, run, metric=DEFAULT_METRIC):
     """One chart per dataset, `rank-<DATASET>.png`.
 
     A single chart of each model's mean across datasets hid the thing worth
     seeing: a model carried by one easy dataset drew the same bar as one that
     was even across all six. The mean ranking still lives in `rank.csv`.
+
+    A non-default metric is suffixed into the filename so charting one does not
+    silently overwrite the other.
     """
+    field, _ = METRICS[metric]
+    suffix = "" if metric == DEFAULT_METRIC else f"-{metric}"
     written = []
     for dataset in sorted({row["dataset"] for row in summaries}):
-        rows = dataset_ranking(summaries, dataset)
+        rows = dataset_ranking(summaries, dataset, field)
         if not rows:
             continue
-        name = f"rank-{safe_filename(dataset)}.png"
-        write_dataset_chart(run_dir / name, rows, dataset, run)
+        name = f"rank-{safe_filename(dataset)}{suffix}.png"
+        write_dataset_chart(run_dir / name, rows, dataset, run, metric)
         written.append(name)
     return written
 
@@ -657,6 +725,10 @@ def main():
     parser.add_argument("run")
     parser.add_argument("--bootstrap", type=int, default=BOOTSTRAP,
                         help="resamples for the macro-F1 CI (0 disables)")
+    parser.add_argument("--metric", choices=sorted(METRICS), default=DEFAULT_METRIC,
+                        help="what the per-dataset charts plot; both are written to "
+                             "summary.csv either way, and rank.csv always ranks on "
+                             "recording macro-F1 (default: %(default)s)")
     args = parser.parse_args()
 
     set_csv_field_limit()
@@ -676,7 +748,7 @@ def main():
     write_csv(run_dir / "classes.csv", CLASS_FIELDS,
               [row for summary in summaries for row in class_rows(summary)])
     write_csv(run_dir / "rank.csv", RANK_FIELDS, ranking)
-    charts = write_dataset_charts(run_dir, summaries, args.run)
+    charts = write_dataset_charts(run_dir, summaries, args.run, args.metric)
 
     print(f"\nwrote summary.csv, classes.csv, rank.csv"
           + (f", {', '.join(charts)}" if charts else "") + f" to {run_dir}")
