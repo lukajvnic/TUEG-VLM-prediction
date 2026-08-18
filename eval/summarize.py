@@ -13,7 +13,7 @@ Two things the raw per-window `correct` flag gets wrong:
     model catch the finding somewhere in the recording".
 
 Window-level accuracy and balanced accuracy are still written to `summary.csv`
-for continuity, but the ranking and the chart are driven by recording-level
+for continuity, but the ranking and the charts are driven by recording-level
 macro-F1, and every row carries the caveats that decide whether its score means
 anything: the constant-predictor baseline it has to clear, the bootstrap CI,
 whether the output was degenerate, and how many independent patients it saw.
@@ -601,23 +601,55 @@ def rank_models(summaries):
     return ranking
 
 
-def write_rank_chart(path, ranking, run):
+def dataset_ranking(summaries, dataset):
+    """One dataset's models, best first.
+
+    Same completeness filter as `rank_models`: a task that died halfway would
+    otherwise be charted beside full ones on a fraction of the test set.
+    """
+    rows = [row for row in summaries
+            if row["dataset"] == dataset and row["status"] in ("success", "unknown")]
+    return sorted(rows, key=lambda row: (-row["recording_macro_f1"], row["model"]))
+
+
+def write_dataset_chart(path, rows, dataset, run):
     """Reference line is the constant-predictor floor, not 0.5.
 
     Chance is not a meaningful landmark for macro-F1 on a class-imbalanced
-    multi-label set; the floor an image-blind model reaches is.
+    multi-label set; the floor an image-blind model reaches is. It is averaged
+    over the models charted, which is close to a formality — the floor is a
+    property of the test set, so every model that saw all of it gets the same
+    number — but a partially-scored task would otherwise move the line.
     """
-    values = [row["recording_macro_f1"] for row in ranking]
-    baseline = sum(row["baseline_macro_f1"] for row in ranking) / len(ranking)
+    values = [row["recording_macro_f1"] for row in rows]
+    baseline = sum(row["baseline_macro_f1"] for row in rows) / len(rows)
     write_bar_chart(
         path,
-        labels=[row["model"] for row in ranking],
+        labels=[row["model"] for row in rows],
         values=values,
-        title=f"Model ranking — {run}",
+        title=f"Model ranking — {dataset} ({run})",
         y_label="Recording-level macro-F1",
         reference=(baseline, f"constant predictor {baseline:.2f}"),
         y_range=zoomed_range(values + [baseline]),
     )
+
+
+def write_dataset_charts(run_dir, summaries, run):
+    """One chart per dataset, `rank-<DATASET>.png`.
+
+    A single chart of each model's mean across datasets hid the thing worth
+    seeing: a model carried by one easy dataset drew the same bar as one that
+    was even across all six. The mean ranking still lives in `rank.csv`.
+    """
+    written = []
+    for dataset in sorted({row["dataset"] for row in summaries}):
+        rows = dataset_ranking(summaries, dataset)
+        if not rows:
+            continue
+        name = f"rank-{safe_filename(dataset)}.png"
+        write_dataset_chart(run_dir / name, rows, dataset, run)
+        written.append(name)
+    return written
 
 
 def main():
@@ -644,10 +676,10 @@ def main():
     write_csv(run_dir / "classes.csv", CLASS_FIELDS,
               [row for summary in summaries for row in class_rows(summary)])
     write_csv(run_dir / "rank.csv", RANK_FIELDS, ranking)
-    if ranking:
-        write_rank_chart(run_dir / "rank.png", ranking, args.run)
+    charts = write_dataset_charts(run_dir, summaries, args.run)
 
-    print(f"\nwrote summary.csv, classes.csv, rank.csv, rank.png to {run_dir}")
+    print(f"\nwrote summary.csv, classes.csv, rank.csv"
+          + (f", {', '.join(charts)}" if charts else "") + f" to {run_dir}")
 
 
 if __name__ == "__main__":
