@@ -31,7 +31,6 @@ Usage:  python eval/summarize.py <run-name> [--bootstrap N] [--metric M]
 import argparse
 import ast
 import csv
-import math
 import re
 import sys
 from collections import Counter, defaultdict
@@ -43,7 +42,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Patch, PathPatch
+from matplotlib.patches import PathPatch
 from matplotlib.path import Path as DrawPath
 
 # ------------------------------------------------------------------- chart
@@ -62,11 +61,6 @@ PLOT_MIN_WIDTH_PX = 640
 MARGIN_PX = {"left": 90, "right": 48, "top": 76, "bottom": 150}
 
 SERIES = "#2a78d6"
-# Context behind a series, never an identity of its own -- the total a subset is
-# drawn against. Deliberately low-chroma and recessive: 2.08:1 against the
-# surface, which is under the 3:1 bar and is why any chart using it also carries
-# direct labels. Against SERIES it separates at dE 25.7 normal / 22.6 protan.
-BACKDROP = "#b3b2a6"
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 INK_SECONDARY = "#52514e"
@@ -100,12 +94,8 @@ def data_per_pixel(axes):
     return unit_x - origin_x, unit_y - origin_y
 
 
-def rounded_bar(x, height, width, corner_x, corner_y, color=SERIES, ring=0.0, zorder=2):
-    """A bar with rounded data-end and square baseline, as a closed path.
-
-    `ring` draws a surface-coloured outline, which is how a bar drawn in front of
-    another stays separable — a darker border would add ink that is not data.
-    """
+def rounded_bar(x, height, width, corner_x, corner_y):
+    """A bar with rounded data-end and square baseline, as a closed path."""
     corner_x, corner_y = min(corner_x, width / 2), min(corner_y, height)
     left, right = x - width / 2, x + width / 2
     vertices = [
@@ -126,18 +116,16 @@ def rounded_bar(x, height, width, corner_x, corner_y, color=SERIES, ring=0.0, zo
         DrawPath.LINETO,
         DrawPath.CLOSEPOLY,
     ]
-    return PathPatch(DrawPath(vertices, codes), facecolor=color,
-                     edgecolor=SURFACE if ring else "none", linewidth=ring, zorder=zorder)
+    return PathPatch(DrawPath(vertices, codes), facecolor=SERIES, edgecolor="none", zorder=2)
 
 
-def draw_bars(axes, values, color=SERIES, ring=0.0, zorder=2):
+def draw_bars(axes, values):
     """One hue for every bar — length already carries the magnitude."""
     unit_x, unit_y = data_per_pixel(axes)
     slot_px = axes.get_window_extent().width / max(len(values), 1)
     width_px = min(BAR_MAX_PX, max(1.0, slot_px - BAR_GAP_PX))
     for x, value in enumerate(values):
-        axes.add_patch(rounded_bar(x, value, width_px * unit_x, CORNER_PX * unit_x,
-                                   CORNER_PX * unit_y, color, ring, zorder))
+        axes.add_patch(rounded_bar(x, value, width_px * unit_x, CORNER_PX * unit_x, CORNER_PX * unit_y))
 
 
 def style_axes(axes, labels, y_label, y_ticks, y_limits, tick_format="{:.2f}"):
@@ -162,27 +150,6 @@ def add_titles(axes, title, subtitle=None):
     if subtitle:
         annotate(axes, subtitle, (0, 1), ("axes fraction", "axes fraction"), (0, 12), INK_SECONDARY, 9,
                  ha="left", va="bottom")
-
-
-def add_legend(axes, entries):
-    """Two series means identity can never be carried by colour alone.
-
-    Sits above the plot, under the title, in text ink — the swatch carries the
-    identity and the label stays neutral.
-    """
-    axes.legend(
-        handles=[Patch(facecolor=color, edgecolor="none", label=label)
-                 for label, color in entries],
-        loc="lower left", bbox_to_anchor=(0, 1.0), ncols=len(entries), frameon=False,
-        fontsize=9, labelcolor=INK_SECONDARY, handlelength=0.9, handleheight=0.9,
-        borderpad=0, handletextpad=0.5, columnspacing=1.6,
-    )
-
-
-def count_ticks(top, count=5):
-    """Whole-number ticks from 0 to at least `top` — half an image is not a thing."""
-    step = max(1, math.ceil(top / (count - 1)))
-    return [step * index for index in range(count)]
 
 
 def add_reference(axes, value, label):
@@ -222,7 +189,8 @@ def annotate(axes, text, xy, coords, offset, color, size, **align):
 
 
 def write_bar_chart(path, labels, values, title, y_label, subtitle=None, reference=None,
-                    y_ticks=DEFAULT_TICKS, value_format="{:.3f}", y_range=None):
+                    y_ticks=DEFAULT_TICKS, value_format="{:.3f}", y_range=None,
+                    tick_format="{:.2f}"):
     if not values:
         return
     if y_range is not None:
@@ -232,40 +200,12 @@ def write_bar_chart(path, labels, values, title, y_label, subtitle=None, referen
     else:
         y_limits = (0, max(y_ticks) * HEADROOM)
     figure, axes = make_figure(len(values))
-    style_axes(axes, labels, y_label, y_ticks, y_limits)
+    style_axes(axes, labels, y_label, y_ticks, y_limits, tick_format)
     add_titles(axes, title, subtitle)
     draw_bars(axes, values)
     label_peak(axes, values, value_format)
     if reference:
         add_reference(axes, *reference)
-    figure.savefig(path, dpi=DPI, facecolor=SURFACE, bbox_inches="tight", pad_inches=0.16)
-    plt.close(figure)
-
-
-def write_overlay_chart(path, labels, totals, subsets, title, y_label, legend,
-                        peak_format="{subset:,} of {total:,}"):
-    """A subset drawn in front of its total: gray track, blue bar, same baseline.
-
-    Counts, not a rate, so a model that agreed on 80% of forty windows cannot be
-    read as the equal of one that agreed on 80% of four hundred. The gray is the
-    total and is context rather than a second measure, so it recedes; the blue
-    bar carries a surface-coloured ring where it overlaps, which is what keeps
-    the boundary between the two readable without a border.
-    """
-    if not totals:
-        return
-    ticks = count_ticks(max(totals))
-    figure, axes = make_figure(len(totals))
-    style_axes(axes, labels, y_label, ticks, (0, ticks[-1] * HEADROOM), tick_format="{:,.0f}")
-    add_titles(axes, title)
-    add_legend(axes, legend)
-    draw_bars(axes, totals, color=BACKDROP, zorder=2)
-    draw_bars(axes, subsets, color=SERIES, ring=2.0, zorder=3)
-    # Anchored to the blue tip, not the top of the track: it labels the subset,
-    # and at the track's top it would run into the legend.
-    peak = max(range(len(subsets)), key=lambda index: subsets[index])
-    annotate(axes, peak_format.format(subset=subsets[peak], total=totals[peak]),
-             (peak, subsets[peak]), ("data", "data"), (0, 7), INK, 9, ha="center", va="bottom")
     figure.savefig(path, dpi=DPI, facecolor=SURFACE, bbox_inches="tight", pad_inches=0.16)
     plt.close(figure)
 
@@ -406,26 +346,35 @@ def load_agreement(run_dir):
     return counts
 
 
+def agreement_rate(row):
+    return safe_divide(row["agreed"], row["judged"])
+
+
 def write_agreement_charts(run_dir, counts, run):
     """One chart per dataset, `agreement-<DATASET>.png`.
 
-    Ordered by agreed count rather than by rate, so the bars descend with the
-    thing being drawn. Where coverage differs between models the ordering is
-    partly a coverage ordering — which the gray track is there to expose.
+    One bar per model: the share of its judged pairs the judge called `agree`, on
+    a full 0-100% axis rather than a zoomed one, since a rate has a real zero.
+
+    The denominator is deliberately not on the chart. It is not constant --
+    only windows carrying a reference rationale are judged, so a model whose
+    teacher pass finished short is graded on fewer -- and 80% of 40 draws the
+    same bar here as 80% of 480. `pairs` in `rationale-agreement.csv` is the
+    number to check before comparing two bars.
     """
     written = []
     for dataset in sorted({row["dataset"] for row in counts}):
         rows = sorted((row for row in counts if row["dataset"] == dataset),
-                      key=lambda row: (-row["agreed"], row["model"]))
+                      key=lambda row: (-agreement_rate(row), row["model"]))
         name = f"agreement-{safe_filename(dataset)}.png"
-        write_overlay_chart(
+        write_bar_chart(
             run_dir / name,
             labels=[row["model"] for row in rows],
-            totals=[row["judged"] for row in rows],
-            subsets=[row["agreed"] for row in rows],
+            values=[agreement_rate(row) for row in rows],
             title=f"Rationale agreement — {dataset} ({run})",
-            y_label="Windows judged",
-            legend=(("judged", BACKDROP), ("judge agreed", SERIES)),
+            y_label="% of judged pairs marked agree",
+            tick_format="{:.0%}",
+            value_format="{:.1%}",
         )
         written.append(name)
     return written
