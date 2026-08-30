@@ -14,7 +14,7 @@ NUM_PREDICT = 512
 NUM_CTX = 8192
 PARALLEL = 4
 RETRY_TEMPERATURE = 0.3
-TIME, RAM, GPUS = "48:00:00", "24G", 1
+TIME, RAM, GPUS = "12:00:00", "16G", "a100_3g.20gb:1"
 FLUSH_EVERY = 25
 MAX_CONSECUTIVE_DEGENERATE = 20
 
@@ -80,7 +80,7 @@ def generate_all(dataset):
     from langchain_ollama import ChatOllama
     folder = ROOT / "datasets" / dataset
     rows = read_csv(folder / "labels.csv")
-    todo = pending(dataset, rows)
+    todo = sorted(pending(dataset, rows), key=lambda r: r["path"])  # test refs first
     fields = list(rows[0].keys())
     by_path = {r["path"]: r for r in rows}
     kwargs = dict(model=MODEL, base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
