@@ -9,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval" / "models"))
 from helpers.pipeline import DATASETS, RATIONALE, ROOT, SUMMARY, config, read_csv, sync
 from structure import labels
 
-RUNS = ROOT / "eval" / "runs"
-BACKUP = Path.home() / "tueg-legacy"
+BACKUP = Path.home() / "save" / "TUEG-VLM-prediction"
+RUN_ROOTS = (ROOT / "eval" / "runs", BACKUP / "eval" / "runs")
 JUDGE_HEADER = ["path", "model", "correct_predictions", "correct_rationale", "correct_rationale_reason"]
 
 
@@ -41,9 +41,10 @@ def true_labels(row):
 
 
 def legacy_files(kind, models):
-    for path in sorted(RUNS.glob(f"*/{kind}/*.csv")):
-        safe, ds = path.stem.rsplit("-", 1)
-        yield path, models.get(safe), ds
+    for root in RUN_ROOTS:
+        for path in sorted(root.glob(f"*/{kind}/*.csv")):
+            safe, ds = path.stem.rsplit("-", 1)
+            yield path, models.get(safe), ds
 
 
 def append(path, header, rows):
