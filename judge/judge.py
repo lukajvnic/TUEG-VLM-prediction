@@ -9,7 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from helpers.pipeline import DATASETS, RATIONALE, ROOT, append_row, config, read_csv, submit_array, sync
+from helpers.pipeline import DATASETS, RATIONALE, ROOT, append_row, config, log_failure, read_csv, submit_array, sync
 
 TRANSIENT = (ConnectionError, TimeoutError, OSError)
 RETRY_SLEEP = 10
@@ -97,6 +97,7 @@ def judge_model(model):
                 except Exception as e:
                     failed += 1
                     print(f"failed {dataset}/{eval_row['path']}: {e}", file=sys.stderr, flush=True)
+                    log_failure("judge", dataset, eval_row["path"], model, e)
                     continue
                 append_row(out, HEADER, [eval_row["path"], model,
                                          str(correct_predictions(eval_row, truth)).lower(),

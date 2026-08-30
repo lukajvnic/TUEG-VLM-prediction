@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from helpers.pipeline import DATASETS, RATIONALE, ROOT, db, image_message, read_csv, submit_array
+from helpers.pipeline import DATASETS, RATIONALE, ROOT, db, image_message, log_failure, read_csv, submit_array
 
 MODEL = "gemma3:12b"  # not qwen2.5vl: repetition loop on these plots, ollama#10767
 NUM_PREDICT = 512
@@ -98,11 +98,13 @@ def generate_all(dataset):
                 text = future.result()
             except Exception as e:
                 print(f"failed {path}: {e}", file=sys.stderr, flush=True)
+                log_failure("rationale", dataset, path, MODEL, e)
                 streak = 0
                 continue
             if is_degenerate(text):
                 streak += 1
                 print(f"degenerate {path}: {text[:60]!r}", file=sys.stderr, flush=True)
+                log_failure("rationale", dataset, path, MODEL, f"degenerate: {text[:60]!r}")
                 if streak >= MAX_CONSECUTIVE_DEGENERATE:
                     save(dataset, fields, rows)
                     pool.shutdown(wait=False, cancel_futures=True)

@@ -112,6 +112,19 @@ def append_row(path, header, row):
         fcntl.flock(f, fcntl.LOCK_UN)
 
 
+def log_failure(stage, dataset, path, model, error):
+    import datetime
+    import os
+    logs = ROOT / "logs"
+    logs.mkdir(exist_ok=True)
+    error = " ".join(str(error).split())[:500]
+    append_row(logs / "failures.csv",
+               ["time", "stage", "dataset", "path", "model", "job", "task", "error"],
+               [datetime.datetime.now().isoformat(timespec="seconds"), stage, dataset, path, model,
+                os.environ.get("SLURM_ARRAY_JOB_ID", ""), os.environ.get("SLURM_ARRAY_TASK_ID", ""),
+                error])
+
+
 def image_message(path, text):
     import base64
     import mimetypes
@@ -143,8 +156,10 @@ export OLLAMA_BASE_URL=http://127.0.0.1:$port
 export OLLAMA_MODELS=$SCRATCH/ollama/models
 export OLLAMA_CONTEXT_LENGTH={context}
 export OLLAMA_NUM_PARALLEL={parallel}
+log_task() {{ ( flock -x 9; echo "$(date -Iseconds),$SLURM_ARRAY_JOB_ID,$SLURM_ARRAY_TASK_ID,{job},$1,$2" >&9 ) 9>>{logs}/tasks.csv; }}
+log_task start
 apptainer exec --nv $SCRATCH/ollama/ollama.sif ollama serve > {logs}/ollama-$SLURM_ARRAY_JOB_ID-$SLURM_ARRAY_TASK_ID.log 2>&1 &
-trap 'kill %1 2>/dev/null' EXIT
+trap 'code=$?; kill %1 2>/dev/null; log_task end $code' EXIT
 for i in $(seq 120); do curl -s $OLLAMA_BASE_URL > /dev/null && break; sleep 2; done
 {command}
 """

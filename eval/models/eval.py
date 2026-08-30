@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from helpers.pipeline import ROOT, append_row, config, db, read_csv
+from helpers.pipeline import ROOT, append_row, config, db, log_failure, read_csv
 from helpers.pipeline import image_message
 from structure import get_structure, labels, prompt, to_labels
 
@@ -70,6 +70,7 @@ def main():
             except Exception as e:
                 failed += 1
                 print(f"failed {rel}: {e}", file=sys.stderr)
+                log_failure("eval", dataset, rel, model, e)
                 continue
             values = to_labels(parsed, dataset)
             append_row(out, header, [rel, model, *[str(v).lower() for v in values.values()],
