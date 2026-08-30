@@ -1,5 +1,7 @@
 PyYAML
+pydantic
 langchain-core
 langchain-ollama
-pydantic
-wandb
+mne
+matplotlib
+numpy
