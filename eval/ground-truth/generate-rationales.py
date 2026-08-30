@@ -50,7 +50,8 @@ def sampled_paths(dataset):
 def pending(dataset, rows):
     sampled = sampled_paths(dataset)
     return [r for r in rows
-            if r["path"] in sampled and not r[RATIONALE].strip() and true_labels(r)]
+            if not r[RATIONALE].strip() and true_labels(r)
+            and (r["path"].startswith("train/") or r["path"] in sampled)]
 
 
 def create_prompt(dataset, row):
@@ -79,7 +80,7 @@ def generate_all(dataset):
     from langchain_ollama import ChatOllama
     folder = ROOT / "datasets" / dataset
     rows = read_csv(folder / "labels.csv")
-    todo = pending(dataset, rows)
+    todo = sorted(pending(dataset, rows), key=lambda r: r["path"])  # test refs first
     fields = list(rows[0].keys())
     by_path = {r["path"]: r for r in rows}
     kwargs = dict(model=MODEL, base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
