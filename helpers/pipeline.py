@@ -1,6 +1,15 @@
 import csv
 import sqlite3
+import sys
 from pathlib import Path
+
+limit = sys.maxsize
+while True:
+    try:
+        csv.field_size_limit(limit)
+        break
+    except OverflowError:
+        limit //= 10
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASETS = ["TUAB", "TUAR", "TUEP", "TUEV", "TUSL", "TUSZ"]

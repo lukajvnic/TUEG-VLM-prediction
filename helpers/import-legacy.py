@@ -14,16 +14,6 @@ RUN_ROOTS = (ROOT / "eval" / "runs", BACKUP / "eval" / "runs")
 JUDGE_HEADER = ["path", "model", "correct_predictions", "correct_rationale", "correct_rationale_reason"]
 
 
-def set_field_limit():
-    limit = sys.maxsize
-    while True:
-        try:
-            csv.field_size_limit(limit)
-            return
-        except OverflowError:
-            limit //= 10
-
-
 def safe_filename(value):
     return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
 
@@ -159,7 +149,6 @@ def import_rationales():
 
 
 def main():
-    set_field_limit()
     models = {safe_filename(m): m for m in config()["models"]}
     print("evals:", import_evals(models))
     print("judgements:", import_judgements(models))
