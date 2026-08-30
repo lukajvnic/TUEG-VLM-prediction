@@ -13,6 +13,7 @@ MODEL = "gemma3:12b"  # not qwen2.5vl: repetition loop on these plots, ollama#10
 NUM_PREDICT = 512
 NUM_CTX = 8192
 PARALLEL = 4
+RETRY_TEMPERATURE = 0.3
 TIME, RAM, GPUS = "48:00:00", "24G", 1
 FLUSH_EVERY = 25
 MAX_CONSECUTIVE_DEGENERATE = 20
@@ -82,11 +83,17 @@ def generate_all(dataset):
     todo = pending(dataset, rows)
     fields = list(rows[0].keys())
     by_path = {r["path"]: r for r in rows}
-    llm = ChatOllama(model=MODEL, base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
-                     num_predict=NUM_PREDICT, num_ctx=NUM_CTX, temperature=0)
+    kwargs = dict(model=MODEL, base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+                  num_predict=NUM_PREDICT, num_ctx=NUM_CTX)
+    llm = ChatOllama(temperature=0, **kwargs)
+    retry = ChatOllama(temperature=RETRY_TEMPERATURE, **kwargs)
 
     def generate(row):
-        return str(llm.invoke([image_message(folder / row["path"], create_prompt(dataset, row))]).content).strip()
+        message = image_message(folder / row["path"], create_prompt(dataset, row))
+        text = str(llm.invoke([message]).content).strip()
+        if is_degenerate(text):
+            text = str(retry.invoke([message]).content).strip()  # temp 0 makes degenerate loops deterministic
+        return text
 
     done = streak = 0
     with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
