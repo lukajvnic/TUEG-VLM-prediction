@@ -1,5 +1,6 @@
 # Python
 */__pycache__/
+__pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
@@ -17,7 +18,7 @@ env/
 .env
 .env.*
 
-# Large dataset contents (keep top-level dataset dirs and scripts)
+# Large dataset contents (keep top-level dataset dirs and manifests)
 */TUAB/data/
 */TUAB/v*/
 */TUAB/test/
@@ -48,13 +49,17 @@ env/
 */TUSZ/train/
 *.zip
 
-knowledge/
+# Pipeline state and results (derived; live where they are produced)
+pipeline.db
+logs/
+preprocessing/logs/
+datasets/*/eval-baseline.csv
+datasets/*/judge-baseline.csv
 
 CLAUDE.md
 
 *.err
 *.out
-results/*.csv
 
 # OS / editor files
 .DS_Store
@@ -67,8 +72,4 @@ Thumbs.db
 *.tmp
 *.swp
 
-datasets/_render.py
-generate-all.sh
-qc.py
 things-to-review.md
-zip-datasets.sh

@@ -1,0 +1,204 @@
+judge:
+  model: mistral-small3.2:24b
+  time: '12:00:00'
+  ram: 32G
+  gpus: 1
+  parallel-requests: 8
+  array-concurrency: 12
+  num-ctx: 4096
+  num-predict: 96
+  max-rationale-chars: 3000
+  judge-retries: 1
+
+settings:
+  array-concurrency: 78
+  eval-retries: 1
+  parallel-requests: 4
+  test-sample:
+    abundant-class-recordings: 200
+    windows-per-signature: 3
+    background-per-recording: 2
+    binary-windows-per-recording: 4
+    recordings-per-patient: 4
+  model-kwargs:
+    base_url: http://localhost:11434
+    temperature: 0
+  structured-output:
+    method: json_schema
+    
+models:
+  bakllava:7b:
+    time: '20:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  deepseek-ocr:3b:
+    time: '12:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  gemma3:4b:
+    time: '12:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  gemma3:12b:
+    time: '12:00:00'
+    ram: 24G
+    gpus: 1
+    parallel-requests: 8
+  gemma3:27b:
+    time: '24:00:00'
+    ram: 48G
+    gpus: 1
+    parallel-requests: 8
+  gemma4:e2b:
+    time: '12:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  gemma4:e4b:
+    time: '12:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  gemma4:12b:
+    time: '12:00:00'
+    ram: 24G
+    gpus: 1
+    parallel-requests: 8
+  gemma4:26b:
+    time: '24:00:00'
+    ram: 48G
+    gpus: 1
+    parallel-requests: 8
+  gemma4:31b:
+    time: '36:00:00'
+    ram: 48G
+    gpus: 1
+    parallel-requests: 8
+  glm-ocr:latest:
+    time: '20:00:00'
+    ram: 24G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  granite3.2-vision:2b:
+    time: '12:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  llama4:16x17b:
+    time: '16:00:00'
+    ram: 128G
+    gpus: 4
+    parallel-requests: 8
+  llava:7b:
+    time: '20:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  llava:13b:
+    time: '12:00:00'
+    ram: 24G
+    gpus: 1
+    parallel-requests: 8
+  llava:34b:
+    time: '36:00:00'
+    ram: 48G
+    gpus: 1
+    parallel-requests: 8
+  llava-llama3:8b:
+    time: '20:00:00'
+    ram: 24G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  llava-phi3:3.8b:
+    time: '12:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  medgemma:4b:
+    time: '12:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  medgemma1.5:4b:
+    time: '12:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  minicpm-v:8b:
+    time: '20:00:00'
+    ram: 24G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  minicpm-v4.5:8b:
+    time: '20:00:00'
+    ram: 24G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  minicpm-v4.6:1b:
+    time: 08:00:00
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  mistral-small3.1:24b:
+    time: '24:00:00'
+    ram: 32G
+    gpus: 1
+    parallel-requests: 8
+  mistral-small3.2:24b:
+    time: '24:00:00'
+    ram: 32G
+    gpus: 1
+    parallel-requests: 8
+  moondream:1.8b:
+    time: 08:00:00
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  qwen2.5vl:3b:
+    time: '12:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  qwen2.5vl:7b:
+    time: '20:00:00'
+    ram: 24G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  qwen2.5vl:32b:
+    time: '36:00:00'
+    ram: 48G
+    gpus: 1
+    parallel-requests: 8
+  qwen3-vl:2b-instruct:
+    time: '12:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  qwen3-vl:4b-instruct:
+    time: '12:00:00'
+    ram: 16G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  qwen3-vl:8b-instruct:
+    time: '20:00:00'
+    ram: 24G
+    gpus: a100_3g.20gb:1
+    parallel-requests: 4
+  qwen3-vl:8b-thinking:
+    time: '36:00:00'
+    ram: 24G
+    gpus: 1
+    parallel-requests: 8
+  qwen3-vl:30b-a3b-instruct:
+    time: 08:00:00
+    ram: 48G
+    gpus: 1
+    parallel-requests: 8
+  qwen3-vl:32b-instruct:
+    time: '36:00:00'
+    ram: 48G
+    gpus: 1
+    parallel-requests: 8
