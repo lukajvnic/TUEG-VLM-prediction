@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from base64 import b64encode
 from collections import defaultdict
@@ -10,6 +11,12 @@ from helpers.pipeline import ROOT, config, submit_array, sync
 PARALLEL_EXPR = ("$(python -c 'import base64, json, os; "
                  "print(json.loads(base64.b64decode(os.environ[\"EVAL_TASKS\"]))"
                  "[int(os.environ[\"SLURM_ARRAY_TASK_ID\"])][\"parallel\"])')")
+
+
+def staged(model):
+    name, _, tag = model.partition(":")
+    manifests = Path(os.environ.get("SCRATCH", "")) / "ollama/models/manifests/registry.ollama.ai/library"
+    return (manifests / name / (tag or "latest")).exists()
 
 
 def pending_tasks(conn):
@@ -32,7 +39,13 @@ def main():
     cfg = config()
     conn = sync()
     groups = defaultdict(list)
-    for model, dataset, count in pending_tasks(conn):
+    rows = pending_tasks(conn)
+    if os.environ.get("SCRATCH"):
+        missing = sorted({model for model, _, _ in rows if not staged(model)})
+        if missing:
+            print(f"not staged in $SCRATCH/ollama/models, skipping: {', '.join(missing)}")
+            rows = [r for r in rows if r[0] not in missing]
+    for model, dataset, count in rows:
         spec = cfg["models"][model]
         parallel = spec.get("parallel-requests", cfg["settings"]["parallel-requests"])
         groups[(spec["time"], spec["ram"], str(spec["gpus"]))].append(

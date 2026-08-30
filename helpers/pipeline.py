@@ -150,6 +150,10 @@ SBATCH = """#!/bin/bash
 #SBATCH --array=0-{last}%{concurrency}
 #SBATCH --output={logs}/{job}-%A_%a.out
 
+set -euo pipefail
+log_task() {{ ( flock -x 9; echo "$(date -Iseconds),$SLURM_ARRAY_JOB_ID,$SLURM_ARRAY_TASK_ID,{job},${{1:-}},${{2:-}}" >&9 ) 9>>{logs}/tasks.csv; }}
+log_task start
+trap 'code=$?; kill %1 2>/dev/null || true; log_task end $code' EXIT
 module load StdEnv/2023 apptainer/1.4.5
 source {root}/.venv/bin/activate
 port=$((20000 + (SLURM_ARRAY_JOB_ID + SLURM_ARRAY_TASK_ID) % 40000))
@@ -162,11 +166,9 @@ export APPTAINERENV_OLLAMA_MODELS=$OLLAMA_MODELS
 export APPTAINERENV_OLLAMA_HOST=$OLLAMA_HOST
 export APPTAINERENV_OLLAMA_NUM_PARALLEL=$OLLAMA_NUM_PARALLEL
 export APPTAINERENV_OLLAMA_CONTEXT_LENGTH=$OLLAMA_CONTEXT_LENGTH
-log_task() {{ ( flock -x 9; echo "$(date -Iseconds),$SLURM_ARRAY_JOB_ID,$SLURM_ARRAY_TASK_ID,{job},$1,$2" >&9 ) 9>>{logs}/tasks.csv; }}
-log_task start
 apptainer exec --nv $SCRATCH/ollama/ollama.sif ollama serve > {logs}/ollama-$SLURM_ARRAY_JOB_ID-$SLURM_ARRAY_TASK_ID.log 2>&1 &
-trap 'code=$?; kill %1 2>/dev/null; log_task end $code' EXIT
 for i in $(seq 120); do curl -s $OLLAMA_BASE_URL > /dev/null && break; sleep 2; done
+curl -s $OLLAMA_BASE_URL > /dev/null || {{ echo "ollama never became ready" >&2; exit 1; }}
 {command}
 """
 
@@ -180,5 +182,7 @@ def submit_array(job, time, ram, gpus, last, concurrency, parallel, command, env
                            logs=logs, command=command, root=ROOT)
     exports = "".join(f",{k}={v}" for k, v in env.items())
     result = subprocess.run(["sbatch", f"--export=ALL{exports}"], input=script,
-                            text=True, capture_output=True, check=True)
+                            text=True, capture_output=True)
+    if result.returncode:
+        raise SystemExit(f"sbatch failed: {result.stderr.strip()}")
     return result.stdout.strip()
