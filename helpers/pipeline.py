@@ -57,6 +57,8 @@ def config():
 
 def db():
     conn = sqlite3.connect(ROOT / "pipeline.db")
+    conn.execute("PRAGMA journal_mode=MEMORY")  # derived db: rebuildable, skip lustre fsync cost
+    conn.execute("PRAGMA synchronous=OFF")
     conn.execute(SCHEMA)
     return conn
 
@@ -89,6 +91,7 @@ def sync():
             for img in images for model in models])
         conn.executemany("INSERT OR IGNORE INTO valid VALUES (?)",
                          [(f"{ds}/{img['path']}",) for img in images])
+        print(f"sync {ds}: {len(images)} images, {len(evaled)} evals, {len(judged)} judgements", flush=True)
     conn.execute("DELETE FROM pipeline WHERE path NOT IN (SELECT path FROM valid)")
     conn.execute(f"DELETE FROM pipeline WHERE model NOT IN ({','.join('?' * len(models))})", models)
     conn.commit()
