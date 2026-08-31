@@ -3,7 +3,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from helpers.pipeline import DATASETS, ROOT, config, db, read_csv
+from helpers.pipeline import DATASETS, ROOT, SCOPE_UPDATE, config, db, read_csv
 
 BINARY = {"TUEP", "TUAB"}
 PATIENT_LEVEL = {"TUEP"}
@@ -91,6 +91,7 @@ def main():
         recordings = len({parse_name(p)[1] for p in chosen})
         print(f"{ds}: {len(rows)} test -> {len(chosen)} sampled ({recordings} recordings)")
         total += len(chosen)
+    conn.execute(SCOPE_UPDATE)
     conn.commit()
     print(f"total: {total}")
 

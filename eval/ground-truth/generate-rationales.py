@@ -41,17 +41,15 @@ def true_labels(row):
     return [c for c, v in row.items() if c not in ("path", RATIONALE) and v.strip().lower() == "true"]
 
 
-def sampled_paths(dataset):
-    rows = db().execute("SELECT DISTINCT path FROM pipeline WHERE dataset = ? AND sampled = 1",
-                        (dataset,))
+def eligible_paths(dataset):
+    rows = db().execute("SELECT DISTINCT path FROM pipeline WHERE dataset = ? "
+                        "AND scope IN ('full', 'rationale')", (dataset,))
     return {p.split("/", 1)[1] for (p,) in rows}
 
 
 def pending(dataset, rows):
-    sampled = sampled_paths(dataset)
-    return [r for r in rows
-            if not r[RATIONALE].strip() and true_labels(r)
-            and (r["path"].startswith("train/") or r["path"] in sampled)]
+    eligible = eligible_paths(dataset)
+    return [r for r in rows if r["path"] in eligible and not r[RATIONALE].strip()]
 
 
 def create_prompt(dataset, row):

@@ -11,10 +11,10 @@ JOB_NAMES = {"eval": "eeg-vlm-eval", "judge": "eeg-vlm-judge", "rationale": "eeg
 
 PENDING = {
     "rationale": "SELECT DISTINCT dataset, path FROM pipeline "
-                 "WHERE preprocessed = 1 AND rationale = 0 AND (split = 'train' OR sampled = 1)",
-    "eval": "SELECT dataset, path, model FROM pipeline WHERE sampled = 1 AND evaled = 0",
+                 "WHERE scope IN ('full', 'rationale') AND rationale = 0",
+    "eval": "SELECT dataset, path, model FROM pipeline WHERE scope = 'full' AND evaled = 0",
     "judge": "SELECT dataset, path, model FROM pipeline "
-             "WHERE sampled = 1 AND evaled = 1 AND rationale = 1 AND judged = 0",
+             "WHERE scope = 'full' AND evaled = 1 AND rationale = 1 AND judged = 0",
 }
 
 

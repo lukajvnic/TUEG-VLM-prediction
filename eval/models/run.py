@@ -21,7 +21,7 @@ def staged(model):
 
 def pending_tasks(conn):
     return conn.execute(
-        "SELECT model, dataset, COUNT(*) FROM pipeline WHERE sampled = 1 AND evaled = 0 "
+        "SELECT model, dataset, COUNT(*) FROM pipeline WHERE scope = 'full' AND evaled = 0 "
         "GROUP BY model, dataset ORDER BY model, dataset").fetchall()
 
 

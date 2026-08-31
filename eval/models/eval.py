@@ -24,7 +24,7 @@ def task():
 def pending(dataset, model, out):
     done = {r["path"] for r in read_csv(out) if r["model"] == model}
     rows = db().execute(
-        "SELECT DISTINCT path FROM pipeline WHERE dataset = ? AND sampled = 1", (dataset,))
+        "SELECT DISTINCT path FROM pipeline WHERE dataset = ? AND scope = 'full'", (dataset,))
     return [rel for (p,) in rows if (rel := p.split("/", 1)[1]) not in done]
 
 

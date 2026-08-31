@@ -115,7 +115,7 @@ def main():
         return
     conn = sync()
     models = [m for (m,) in conn.execute(
-        "SELECT DISTINCT model FROM pipeline WHERE evaled = 1 AND rationale = 1 AND judged = 0 "
+        "SELECT DISTINCT model FROM pipeline WHERE scope = 'full' AND evaled = 1 AND rationale = 1 AND judged = 0 "
         "ORDER BY model")]
     if not models:
         print("nothing to judge")

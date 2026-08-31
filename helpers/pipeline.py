@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS pipeline (
     model TEXT,
     dataset TEXT,
     split TEXT,
+    labeled INTEGER DEFAULT 0,
+    scope TEXT DEFAULT 'none',
     sampled INTEGER DEFAULT 0,
     preprocessed INTEGER DEFAULT 0,
     rationale INTEGER DEFAULT 0,
@@ -30,13 +32,21 @@ CREATE TABLE IF NOT EXISTS pipeline (
 )"""
 
 UPSERT = """
-INSERT INTO pipeline (path, model, dataset, split, preprocessed, rationale, evaled, judged)
-VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+INSERT INTO pipeline (path, model, dataset, split, labeled, preprocessed, rationale, evaled, judged)
+VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
 ON CONFLICT(path, model) DO UPDATE SET
+    labeled = excluded.labeled,
     preprocessed = excluded.preprocessed,
     rationale = excluded.rationale,
     evaled = excluded.evaled,
     judged = excluded.judged
+"""
+
+SCOPE_UPDATE = """
+UPDATE pipeline SET scope = CASE
+    WHEN sampled = 1 THEN 'full'
+    WHEN split = 'train' AND labeled = 1 THEN 'rationale'
+    ELSE 'none' END
 """
 
 SUMMARY = """
@@ -63,6 +73,10 @@ def db():
     return conn
 
 
+def has_labels(row):
+    return any(v.strip().lower() == "true" for c, v in row.items() if c not in ("path", RATIONALE))
+
+
 def read_csv(path):
     if not path.exists():
         return []
@@ -84,7 +98,7 @@ def sync():
         evaled = pairs_in(folder / "eval-baseline.csv")
         judged = pairs_in(folder / "judge-baseline.csv")
         conn.executemany(UPSERT, [
-            (f"{ds}/{img['path']}", model, ds, img["path"].split("/")[0],
+            (f"{ds}/{img['path']}", model, ds, img["path"].split("/")[0], int(has_labels(img)),
              int(bool((img[RATIONALE] or "").strip())),
              int((img["path"], model) in evaled),
              int((img["path"], model) in judged))
@@ -94,6 +108,7 @@ def sync():
         print(f"sync {ds}: {len(images)} images, {len(evaled)} evals, {len(judged)} judgements", flush=True)
     conn.execute("DELETE FROM pipeline WHERE path NOT IN (SELECT path FROM valid)")
     conn.execute(f"DELETE FROM pipeline WHERE model NOT IN ({','.join('?' * len(models))})", models)
+    conn.execute(SCOPE_UPDATE)
     conn.commit()
     return conn
 
