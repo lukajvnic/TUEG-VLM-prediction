@@ -35,7 +35,8 @@ def start_server():
     print("starting cpu ollama via apptainer...")
     env = {**os.environ, "OLLAMA_MODELS": f"{os.environ['SCRATCH']}/ollama/models"}
     proc = subprocess.Popen(
-        ["apptainer", "exec", f"{os.environ['SCRATCH']}/ollama/ollama.sif", "ollama", "serve"],
+        ["bash", "-lc", "module load StdEnv/2023 apptainer/1.4.5 && "
+         f"exec apptainer exec {os.environ['SCRATCH']}/ollama/ollama.sif ollama serve"],
         env=env, stdout=open("/tmp/diagnose-ollama.log", "w"), stderr=subprocess.STDOUT)
     atexit.register(proc.kill)
     for _ in range(60):
