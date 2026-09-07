@@ -191,12 +191,12 @@ curl -s $OLLAMA_BASE_URL > /dev/null || {{ echo "ollama never became ready" >&2;
 """
 
 
-def submit_array(job, time, ram, gpus, last, concurrency, parallel, command, env):
+def submit_array(job, time, ram, gpus, last, concurrency, parallel, command, env, context=CONTEXT_LENGTH):
     import subprocess
     logs = ROOT / "logs"
     logs.mkdir(exist_ok=True)
     script = SBATCH.format(job=job, account=ACCOUNT, time=time, ram=ram, gpus=gpus, last=last,
-                           concurrency=concurrency, context=CONTEXT_LENGTH, parallel=parallel,
+                           concurrency=concurrency, context=context, parallel=parallel,
                            logs=logs, command=command, root=ROOT)
     exports = "".join(f",{k}={v}" for k, v in env.items())
     result = subprocess.run(["sbatch", f"--export=ALL{exports}"], input=script,
