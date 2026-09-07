@@ -157,11 +157,7 @@ models:
     ram: 16G
     gpus: a100_3g.20gb:1
     parallel-requests: 4
-  qwen2.5vl:3b:
-    time: '12:00:00'
-    ram: 16G
-    gpus: a100_3g.20gb:1
-    parallel-requests: 4
+  # qwen2.5vl:3b - dropped: image-deterministic zero-token stream failures, see knowledge/known-issues.md
   qwen2.5vl:7b:
     time: '20:00:00'
     ram: 24G
