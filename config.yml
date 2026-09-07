@@ -6,7 +6,7 @@ judge:
   parallel-requests: 8
   array-concurrency: 12
   num-ctx: 4096
-  num-predict: 96
+  num-predict: 160
   max-rationale-chars: 3000
   judge-retries: 1
 
