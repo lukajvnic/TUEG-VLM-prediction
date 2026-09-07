@@ -58,7 +58,8 @@ def pick_images():
             break
     dataset = failing[0].split("/")[0]
     control = next(f"{dataset}/{r['path']}" for r in read_csv(ROOT / "datasets" / dataset / "eval-baseline.csv")
-                   if r["model"] == MODEL and f"{dataset}/{r['path']}" not in failing)
+                   if r["model"] == MODEL and f"{dataset}/{r['path']}" not in failing
+                   and (ROOT / "datasets" / dataset / r["path"]).exists())
     return failing, control
 
 
@@ -82,13 +83,14 @@ def generate(image, schema):
 def main():
     start_server()
     failing, control = pick_images()
-    for image in [*failing, control]:
+    for image in [control, *failing]:
         kind = "CONTROL" if image == control else "FAILING"
         schema = get_structure(image.split("/")[0]).model_json_schema()
         print(f"\n{kind} {image}")
         print(f"  constrained:   {generate(image, schema)}", flush=True)
         print(f"  unconstrained: {generate(image, None)}", flush=True)
-    print("\nreading: constrained FAILED/empty + unconstrained fine on failing images = grammar stall")
+    print("\nif CONTROL itself times out, the cpu is too slow and the test is inconclusive")
+    print("reading: constrained FAILED/empty + unconstrained fine on failing images = grammar stall")
     print("both fail on failing images (control fine) = model seizes on the image itself")
 
 
