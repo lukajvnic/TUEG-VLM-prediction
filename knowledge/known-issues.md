@@ -168,6 +168,17 @@ failure mode is a requeue rather than lost work. The largest uncertainty by far 
 `qwen3-vl:8b-thinking`: its cost is set by how many reasoning tokens it emits
 before the JSON, which could plausibly be half or double the 3.5× assumed here.
 
+### qwen3-vl:8b-thinking truncated JSON at 16k context (fixed 2026-09-08)
+~992 eval units failed with "Invalid json output" or partial schema objects
+(e.g. a TUSZOutput with 2 of ~10 fields), concentrated on the long-schema
+datasets (TUAR 530, TUSZ 444) and near-absent on binary ones (TUAB 11, TUEP 4).
+Cause: reasoning tokens exhausted the 16384 context (~4k of it prompt) before
+the constrained JSON completed; `temperature: 0` made every retry fail
+identically, so requeues burned attempts (963 on TUAR alone) without progress.
+Fix: `context: 32768`, `parallel-requests: 4` (KV cache doubles; 8 in flight
+would not fit the A100's 40 GB). `run.py` reads `context` at submit time, so
+the fix applies on resubmission without touching running jobs.
+
 ### qwen3-vl:235b-a22b does not fit Narval
 Its Q4 weights are ~142 GB against 160 GB of VRAM on 4× A100-40GB — too little
 headroom for activations, the vision tower and KV cache, so Ollama would offload

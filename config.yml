@@ -184,11 +184,11 @@ models:
     gpus: a100_3g.20gb:1
     parallel-requests: 4
   qwen3-vl:8b-thinking:
-    context: 16384
+    context: 32768
     time: '36:00:00'
     ram: 24G
     gpus: 1
-    parallel-requests: 8
+    parallel-requests: 4
   qwen3-vl:30b-a3b-instruct:
     time: 08:00:00
     ram: 48G

@@ -58,7 +58,10 @@ calls lives in `eval/scripts/`.
   - **13 mid/large** → `gpus: 1` (full A100), 8 in flight
   - **1 MoE** (`llama4:16x17b`, 67 GB) → `gpus: 4`
   - `qwen3-vl:8b-thinking` keeps a full A100 despite its size: it emits several
-    times the tokens of any other model and is the run's long pole.
+    times the tokens of any other model and is the run's long pole. It runs at
+    `context: 32768` and 4 requests in flight (2026-09-08, was 16384/8): at 16k
+    its reasoning exhausted the window before the JSON finished on the long-schema
+    datasets — see known-issues.md.
   - The same assignments are mirrored into `config-base.yml` so retries don't
     revert them.
 
