@@ -15,6 +15,8 @@ PENDING = {
     "eval": "SELECT dataset, path, model FROM pipeline WHERE scope = 'full' AND evaled = 0",
     "judge": "SELECT dataset, path, model FROM pipeline "
              "WHERE scope = 'full' AND evaled = 1 AND rationale = 1 AND judged = 0",
+    "judge-gpt": "SELECT dataset, path, model FROM pipeline "
+                 "WHERE scope = 'full' AND evaled = 1 AND rationale = 1 AND judged_gpt = 0",
 }
 
 
@@ -57,7 +59,7 @@ def report_failures(open_failures):
     print(f"\nopen failures ({len(open_failures)} records):")
     for (stage, model, ds), rows in sorted(groups.items(), key=lambda kv: -len(kv[1])):
         example = next((r for r in rows if r["job"]), rows[-1])
-        where = (f"logs/{JOB_NAMES[stage]}-{example['job']}_{example['task']}.out"
+        where = (f"logs/{JOB_NAMES.get(stage, stage)}-{example['job']}_{example['task']}.out"
                  if example["job"] else "local run")
         print(f"  {stage} {model} {ds}: {len({r['path'] for r in rows})} units, "
               f"{len(rows)} attempts ({where})")
@@ -84,9 +86,9 @@ def report_tasks(tasks):
 
 def main():
     conn = sync()
-    for ds, images, sampled, rationales, evaled, judged in conn.execute(SUMMARY):
+    for ds, images, sampled, rationales, evaled, judged, judged_gpt, done, total in conn.execute(SUMMARY):
         print(f"{ds}: {images} images, {sampled} sampled, {rationales} rationales, "
-              f"{evaled} evaled, {judged} judged")
+              f"{evaled} evaled, {judged} judged, {judged_gpt} gpt judged, {done}/{total} done")
     pending = pending_sets(conn)
     failures = read_rows("failures.csv",
                          ["time", "stage", "dataset", "path", "model", "job", "task", "error"])

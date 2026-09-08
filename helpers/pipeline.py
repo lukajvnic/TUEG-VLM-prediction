@@ -28,18 +28,21 @@ CREATE TABLE IF NOT EXISTS pipeline (
     rationale INTEGER DEFAULT 0,
     evaled INTEGER DEFAULT 0,
     judged INTEGER DEFAULT 0,
+    judged_gpt INTEGER DEFAULT 0,
+    done INTEGER DEFAULT 0,
     PRIMARY KEY (path, model)
 )"""
 
 UPSERT = """
-INSERT INTO pipeline (path, model, dataset, split, labeled, preprocessed, rationale, evaled, judged)
-VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+INSERT INTO pipeline (path, model, dataset, split, labeled, preprocessed, rationale, evaled, judged, judged_gpt)
+VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
 ON CONFLICT(path, model) DO UPDATE SET
     labeled = excluded.labeled,
     preprocessed = excluded.preprocessed,
     rationale = excluded.rationale,
     evaled = excluded.evaled,
-    judged = excluded.judged
+    judged = excluded.judged,
+    judged_gpt = excluded.judged_gpt
 """
 
 SCOPE_UPDATE = """
@@ -49,13 +52,23 @@ UPDATE pipeline SET scope = CASE
     ELSE 'none' END
 """
 
+DONE_UPDATE = """
+UPDATE pipeline SET done = CASE scope
+    WHEN 'full' THEN rationale AND evaled AND judged AND judged_gpt
+    WHEN 'rationale' THEN rationale
+    ELSE 1 END
+"""
+
 SUMMARY = """
 SELECT dataset,
        COUNT(DISTINCT path),
        COUNT(DISTINCT CASE WHEN sampled THEN path END),
        COUNT(DISTINCT CASE WHEN rationale THEN path END),
        SUM(evaled),
-       SUM(judged)
+       SUM(judged),
+       SUM(judged_gpt),
+       SUM(done),
+       COUNT(*)
 FROM pipeline GROUP BY dataset ORDER BY dataset
 """
 
@@ -70,6 +83,10 @@ def db():
     conn.execute("PRAGMA journal_mode=MEMORY")  # derived db: rebuildable, skip lustre fsync cost
     conn.execute("PRAGMA synchronous=OFF")
     conn.execute(SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pipeline)")}
+    for col in ("judged_gpt", "done"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE pipeline ADD COLUMN {col} INTEGER DEFAULT 0")
     return conn
 
 
@@ -97,25 +114,30 @@ def sync():
         images = read_csv(folder / "labels.csv")
         evaled = pairs_in(folder / "eval-baseline.csv")
         judged = pairs_in(folder / "judge-baseline.csv")
+        judged_gpt = pairs_in(folder / "judge-gpt.csv")
         conn.executemany(UPSERT, [
             (f"{ds}/{img['path']}", model, ds, img["path"].split("/")[0], int(has_labels(img)),
              int(bool((img[RATIONALE] or "").strip())),
              int((img["path"], model) in evaled),
-             int((img["path"], model) in judged))
+             int((img["path"], model) in judged),
+             int((img["path"], model) in judged_gpt))
             for img in images for model in models])
         conn.executemany("INSERT OR IGNORE INTO valid VALUES (?)",
                          [(f"{ds}/{img['path']}",) for img in images])
-        print(f"sync {ds}: {len(images)} images, {len(evaled)} evals, {len(judged)} judgements", flush=True)
+        print(f"sync {ds}: {len(images)} images, {len(evaled)} evals, "
+              f"{len(judged)} judgements, {len(judged_gpt)} gpt judgements", flush=True)
     conn.execute("DELETE FROM pipeline WHERE path NOT IN (SELECT path FROM valid)")
     conn.execute(f"DELETE FROM pipeline WHERE model NOT IN ({','.join('?' * len(models))})", models)
     conn.execute(SCOPE_UPDATE)
+    conn.execute(DONE_UPDATE)
     conn.commit()
     return conn
 
 
 if __name__ == "__main__":
-    for ds, images, sampled, rationales, evaled, judged in sync().execute(SUMMARY):
-        print(f"{ds}: {images} images, {sampled} sampled, {rationales} rationales, {evaled} evaled, {judged} judged")
+    for ds, images, sampled, rationales, evaled, judged, judged_gpt, done, total in sync().execute(SUMMARY):
+        print(f"{ds}: {images} images, {sampled} sampled, {rationales} rationales, "
+              f"{evaled} evaled, {judged} judged, {judged_gpt} gpt judged, {done}/{total} done")
 
 
 def append_row(path, header, row):

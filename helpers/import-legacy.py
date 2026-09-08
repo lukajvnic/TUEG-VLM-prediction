@@ -153,9 +153,9 @@ def main():
     print("evals:", import_evals(models))
     print("judgements:", import_judgements(models))
     print("rationales:", import_rationales())
-    for ds, images, sampled, rationales, evaled, judged in sync().execute(SUMMARY):
+    for ds, images, sampled, rationales, evaled, judged, judged_gpt, done, total in sync().execute(SUMMARY):
         print(f"{ds}: {images} images, {sampled} sampled, {rationales} rationales, "
-              f"{evaled} evaled, {judged} judged")
+              f"{evaled} evaled, {judged} judged, {judged_gpt} gpt judged, {done}/{total} done")
 
 
 if __name__ == "__main__":
