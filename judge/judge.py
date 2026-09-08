@@ -39,10 +39,10 @@ class AgreementVerdict(BaseModel):
     reason: str = Field(description="At most 15 words.")
 
 
-def pairs(dataset, model):
+def pairs(dataset, model, out_name="judge-baseline.csv"):
     folder = ROOT / "datasets" / dataset
     truths = {r["path"]: r for r in read_csv(folder / "labels.csv")}
-    done = {r["path"] for r in read_csv(folder / "judge-baseline.csv") if r["model"] == model}
+    done = {r["path"] for r in read_csv(folder / out_name) if r["model"] == model}
     return [(row, truths[row["path"]])
             for row in read_csv(folder / "eval-baseline.csv")
             if row["model"] == model and row["path"] not in done
