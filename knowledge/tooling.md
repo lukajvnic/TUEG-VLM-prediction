@@ -53,6 +53,7 @@ section of [eval-pipeline.md](eval-pipeline.md).
 | Script | Purpose |
 |---|---|
 | `eval/run-judge.py` | Driver: `check` (join coverage, no GPU), `submit` (array job), `report` (aggregate CSVs). |
+| `judge/dedup.py` | Drops duplicate (path, model) rows from judge CSVs, keeps first; `--dry-run`, `--file`. |
 | `eval/scripts/judge.py` | Worker — one array task per model; joins results ↔ references, judges each pair, resumable per pair. |
 | `eval/scripts/judge_array.sbatch` | Per-task Ollama-in-Apptainer wrapper for `judge.py`. |
 | `eval/config.yml` → `judge:` key | Judge model + resources. Read live, never from a run's frozen copy. |

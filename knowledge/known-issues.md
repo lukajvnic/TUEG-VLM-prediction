@@ -168,6 +168,15 @@ failure mode is a requeue rather than lost work. The largest uncertainty by far 
 `qwen3-vl:8b-thinking`: its cost is set by how many reasoning tokens it emits
 before the JSON, which could plausibly be half or double the 3.5× assumed here.
 
+### judge-gpt.csv had duplicate rows from concurrent runs (2026-09-09)
+Two instances of judge/judge-openai.py overlapped (an earlier one never died),
+so both judged the same pending pairs: TUAB ended up with 76,248 rows against
+~74k eval pairs. Duplicates never corrupted pipeline.db (sync uses sets) but
+waste API spend and would double-count in analysis. `judge/dedup.py` drops
+duplicate (path, model) rows keeping the first; it supports `--dry-run` and
+`--file` (works on judge-baseline.csv too). Run it only while no judge is
+appending, and check `pgrep -af judge-openai` before starting a new run.
+
 ### qwen3-vl:8b-thinking truncated JSON at 16k context (fixed 2026-09-08)
 ~992 eval units failed with "Invalid json output" or partial schema objects
 (e.g. a TUSZOutput with 2 of ~10 fields), concentrated on the long-schema
