@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from helpers.pipeline import DATASETS, RATIONALE, ROOT, db, image_message, log_failure, read_csv, submit_array
+from helpers.pipeline import DATASETS, RATIONALE, ROOT, config, db, image_message, log_failure, read_csv, submit_array
 
 MODEL = "gemma3:12b"  # not qwen2.5vl: repetition loop on these plots, ollama#10767
 NUM_PREDICT = 512
@@ -18,23 +18,11 @@ TIME, RAM, GPUS = "12:00:00", "16G", "a100_3g.20gb:1"
 FLUSH_EVERY = 25
 MAX_CONSECUTIVE_DEGENERATE = 20
 
-IMAGE_INTRO = ("This image is a multi-channel EEG waveform plot: time runs along the horizontal "
-               "axis and each row is the signal from one electrode channel. ")
-
-LABEL_CLAUSES = {
-    "TUAB": "This recording is labeled {labels}.",
-    "TUEP": "This recording is from a person labeled {labels}.",
-    "TUAR": "This recording contains these artifacts: {labels}.",
-    "TUEV": "This recording contains these events: {labels}.",
-    "TUSL": "This recording contains these events: {labels}.",
-    "TUSZ": "This recording contains these seizure labels: {labels}.",
-}
-
-GROUNDED = ("Justify this labeling using only visible EEG features. For each finding, give the "
-            "specific evidence: which channel(s) it appears on, where along the time axis, and "
-            "what the curve looks like there (shape, frequency, amplitude). State every label "
-            "explicitly. Write a focused 3-5 sentence mini-report; do not describe the image "
-            "format, define terminology, repeat yourself, or add unsupported findings.")
+# wording lives under config.yml's `prompts:` key
+_PROMPTS = config()["prompts"]
+IMAGE_INTRO = _PROMPTS["intro"]
+LABEL_CLAUSES = _PROMPTS["rationale"]["label-clauses"]
+GROUNDED = _PROMPTS["rationale"]["grounded"]
 
 
 def true_labels(row):

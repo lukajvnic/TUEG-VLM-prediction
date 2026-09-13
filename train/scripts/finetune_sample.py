@@ -17,7 +17,7 @@ from transformers import (
 )
 
 ROOT = Path(__file__).parents[2]
-CONFIG_PATH = ROOT / "train" / "config.yml"
+CONFIG_PATH = ROOT / "config.yml"
 
 # Each JSONL line is expected to look like:
 # {"instruction": "Review this EEG image...", "input": "", "output":
@@ -27,7 +27,7 @@ CONFIG_PATH = ROOT / "train" / "config.yml"
 
 def load_config():
     with CONFIG_PATH.open() as file:
-        return yaml.safe_load(file)
+        return yaml.safe_load(file)["train"]
 
 
 def get_messages(example, include_answer):

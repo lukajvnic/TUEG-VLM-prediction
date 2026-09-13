@@ -199,3 +199,47 @@ models:
     ram: 48G
     gpus: 1
     parallel-requests: 8
+
+prompts:
+  intro: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. "
+  no-meta: "Do not describe the image format or define terminology."
+  eval:
+    binary: "Based only on these waveforms, {task}. In the text_rationale field, describe the specific evidence for your decision: which channel(s) support it, where along the time axis, and what the curve looks like there (shape, frequency, amplitude, symmetry). "
+    tasks:
+      TUAB: classify the brain activity as normal or abnormal
+      TUEP: classify the recording as epileptic or non-epileptic
+    multilabel: "From these {kind} - {listed} - select every one present, based only on the waveforms. In the text_rationale field, for each category you mark as present, describe the specific evidence in the waveform: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). "
+    multilabel-suffix: " Set a category's boolean to true only when it is present."
+    kinds:
+      TUAR: artifact categories
+      TUEV: event categories
+      TUSL: labels
+      TUSZ: seizure/background categories
+  rationale:
+    label-clauses:
+      TUAB: "This recording is labeled {labels}."
+      TUEP: "This recording is from a person labeled {labels}."
+      TUAR: "This recording contains these artifacts: {labels}."
+      TUEV: "This recording contains these events: {labels}."
+      TUSL: "This recording contains these events: {labels}."
+      TUSZ: "This recording contains these seizure labels: {labels}."
+    grounded: "Justify this labeling using only visible EEG features. For each finding, give the specific evidence: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). State every label explicitly. Write a focused 3-5 sentence mini-report; do not describe the image format, define terminology, repeat yourself, or add unsupported findings."
+
+train:
+  model: Qwen/Qwen2.5-VL-7B-Instruct
+  dataset: TUEP
+  output-dir: checkpoints/TUEP
+  resume-from-checkpoint:
+  lora:
+    rank: 16
+    alpha: 32
+    dropout: 0.05
+  training:
+    epochs: 3
+    batch-size: 1
+    gradient-accumulation: 8
+    learning-rate: 0.0002
+    eval-steps: 100
+    save-steps: 100
+    save-total-limit: 2
+    logging-steps: 10
