@@ -8,14 +8,16 @@ One line per train-split window with a ground-truth rationale:
   against structure.get_structure() before writing.
 - images: [path relative to the dataset dir], as the collator expects.
 
-The val split is patient-level: a stable hash sends ~1 in VAL_EVERY train
-patients to sft_val.jsonl, so no patient appears in both files. Test-split
-rows never qualify (path prefix filter), preserving the patient-level
-train/test split.
+The val split is patient-level: patients are ranked by a stable hash and the
+first VAL_FRACTION of them (at least MIN_VAL_PATIENTS, so tiny datasets keep a
+usable val set) go to sft_val.jsonl; no patient appears in both files.
+Test-split rows never qualify (path prefix filter), preserving the
+patient-level train/test split.
 """
 import argparse
 import hashlib
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -24,16 +26,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval" / "models"))
 from helpers.pipeline import DATASETS, RATIONALE, ROOT, read_csv
 from structure import BINARY, classes, get_structure, prompt
 
-VAL_EVERY = 20  # ~5% of train patients go to sft_val.jsonl
+VAL_FRACTION = 0.05   # of train patients
+MIN_VAL_PATIENTS = 3  # floor so tiny datasets still get a usable val set
 
 
 def patient(path):
     return Path(path).name.split("_")[0]
 
 
-def is_val(path):
-    digest = hashlib.md5(patient(path).encode()).hexdigest()
-    return int(digest, 16) % VAL_EVERY == 0
+def val_patients(patients):
+    ranked = sorted(patients, key=lambda p: hashlib.md5(p.encode()).hexdigest())
+    count = max(math.ceil(len(ranked) * VAL_FRACTION), MIN_VAL_PATIENTS)
+    return set(ranked[:min(count, len(ranked) // 2)])
 
 
 def output_json(dataset, row):
@@ -53,20 +57,22 @@ def build(dataset, dry_run):
     eligible = [r for r in rows if r["path"].startswith("train/") and r[RATIONALE].strip()]
     instruction = prompt(dataset)
 
-    train, val, missing = [], [], 0
+    lines, missing = [], 0
     for row in eligible:
         if not (folder / row["path"]).exists():
             missing += 1
             continue
-        line = {"instruction": instruction, "input": "",
-                "output": output_json(dataset, row), "images": [row["path"]]}
-        (val if is_val(row["path"]) else train).append(line)
+        lines.append({"instruction": instruction, "input": "",
+                      "output": output_json(dataset, row), "images": [row["path"]]})
+
+    held_out = val_patients({patient(l["images"][0]) for l in lines})
+    train = [l for l in lines if patient(l["images"][0]) not in held_out]
+    val = [l for l in lines if patient(l["images"][0]) in held_out]
 
     train_patients = {patient(l["images"][0]) for l in train}
-    val_patients = {patient(l["images"][0]) for l in val}
-    assert not train_patients & val_patients, "patient overlap between train and val"
+    assert not train_patients & held_out, "patient overlap between train and val"
     print(f"{dataset}: {len(train)} train ({len(train_patients)} patients), "
-          f"{len(val)} val ({len(val_patients)} patients), "
+          f"{len(val)} val ({len(held_out)} patients), "
           f"{missing} missing images skipped, "
           f"{len(rows) - len(eligible)} rows ineligible (test split or no rationale)")
 
