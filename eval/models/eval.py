@@ -13,6 +13,7 @@ from structure import get_structure, labels, prompt, to_labels
 
 TRANSIENT = (ConnectionError, TimeoutError, OSError)
 RETRY_SLEEP = 10
+RETRY_TEMPERATURE = 0.3  # a parse failure at temperature 0 is image-deterministic; one sampled retry breaks the tie
 PROGRESS_EVERY = 50
 
 
@@ -28,16 +29,22 @@ def pending(dataset, model, out):
     return [rel for (p,) in rows if (rel := p.split("/", 1)[1]) not in done]
 
 
-def init_model(model, dataset, settings):
+def init_model(model, dataset, settings, temperature=None):
     from langchain_ollama import ChatOllama
     kwargs = dict(settings["model-kwargs"])
     kwargs["base_url"] = os.environ.get("OLLAMA_BASE_URL", kwargs.get("base_url"))
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     return ChatOllama(model=model, **kwargs).with_structured_output(
         get_structure(dataset), include_raw=True, **settings["structured-output"])
 
 
-def evaluate(llm, image, text, retries):
-    for attempt in range(retries + 1):
+def evaluate(llms, image, text, retries):
+    # llms = (greedy, sampled). Transient errors retry greedy; a parse failure gets one sampled attempt at the
+    # end, since greedy would return the identical invalid JSON (gemma4:12b / minicpm-v4.6 on TUSZ, 2026-09-21)
+    greedy, sampled = llms
+    attempts = [greedy] * (retries + 1) + [sampled]
+    for i, llm in enumerate(attempts):
         try:
             result = llm.invoke([image_message(image, text)])
             if result["parsed"] is None:
@@ -45,7 +52,9 @@ def evaluate(llm, image, text, retries):
             return result["parsed"]
         except Exception as e:
             error = e
-            if attempt < retries and isinstance(e, TRANSIENT):
+            if isinstance(e, TRANSIENT):
+                if i >= retries:
+                    raise
                 time.sleep(RETRY_SLEEP)
     raise error
 
@@ -57,11 +66,11 @@ def main():
     out = folder / "eval-baseline.csv"
     header = ["path", "model", *labels(dataset), "rationale"]
     todo = pending(dataset, model, out)
-    llm = init_model(model, dataset, settings)
+    llms = (init_model(model, dataset, settings), init_model(model, dataset, settings, RETRY_TEMPERATURE))
     text = prompt(dataset)
     ok = failed = 0
     with ThreadPoolExecutor(max_workers=task()["parallel"]) as pool:
-        futures = {pool.submit(evaluate, llm, folder / rel, text, settings["eval-retries"]): rel
+        futures = {pool.submit(evaluate, llms, folder / rel, text, settings["eval-retries"]): rel
                    for rel in todo}
         for future in as_completed(futures):
             rel = futures[future]

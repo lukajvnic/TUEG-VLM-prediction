@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from helpers.pipeline import DATASETS, RATIONALE, ROOT, append_row, config, log_failure, read_csv, submit_array, sync
 
 TRANSIENT = (ConnectionError, TimeoutError, OSError)
+RETRY_TEMPERATURE = 0.3  # one sampled retry after a deterministic parse failure
 RETRY_SLEEP = 10
 PROGRESS_EVERY = 100
 HEADER = ["path", "model", "correct_predictions", "correct_rationale", "correct_rationale_reason"]
@@ -36,7 +37,7 @@ A confident tone is not correctness. A generic description that would fit any EE
 class AgreementVerdict(BaseModel):
     same_conclusion: bool = Field(description="True if both texts report the same finding(s) present or absent.")
     same_evidence: bool = Field(description="True if both texts cite the same channels, time region and morphology.")
-    reason: str = Field(description="At most 15 words.")
+    reason: str = Field(default="", description="At most 15 words.")  # informational; its absence is not a failure
 
 
 def pairs(dataset, model, out_name="judge-baseline.csv"):
@@ -54,12 +55,15 @@ def correct_predictions(eval_row, truth):
     return all(eval_row[c].strip().lower() == truth[c].strip().lower() for c in cols)
 
 
-def judge_pair(llm, eval_row, truth, max_chars, retries):
+def judge_pair(llms, eval_row, truth, max_chars, retries):
+    # llms = (greedy, sampled): transient errors retry greedy, a parse failure gets one sampled attempt at the end
     candidate = eval_row["rationale"].strip()[:max_chars]
     if not candidate:
         return False, "empty candidate rationale"
     text = JUDGE_PROMPT.format(reference=truth[RATIONALE].strip()[:max_chars], candidate=candidate)
-    for attempt in range(retries + 1):
+    greedy, sampled = llms
+    attempts = [greedy] * (retries + 1) + [sampled]
+    for i, llm in enumerate(attempts):
         try:
             result = llm.invoke(text)
             if result["parsed"] is None:
@@ -68,7 +72,9 @@ def judge_pair(llm, eval_row, truth, max_chars, retries):
             return verdict.same_conclusion and verdict.same_evidence, verdict.reason
         except Exception as e:
             error = e
-            if attempt < retries and isinstance(e, TRANSIENT):
+            if isinstance(e, TRANSIENT):
+                if i >= retries:
+                    raise
                 time.sleep(RETRY_SLEEP)
     raise error
 
@@ -77,10 +83,12 @@ def judge_model(model):
     from langchain_ollama import ChatOllama
     cfg = config()
     jc = cfg["judge"]
-    llm = ChatOllama(model=jc["model"], base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
-                     num_ctx=jc["num-ctx"], num_predict=jc["num-predict"], temperature=0,
-                     ).with_structured_output(AgreementVerdict, include_raw=True,
-                                              **cfg["settings"]["structured-output"])
+    def judge_llm(temperature):
+        return ChatOllama(model=jc["model"], base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+                          num_ctx=jc["num-ctx"], num_predict=jc["num-predict"], temperature=temperature,
+                          ).with_structured_output(AgreementVerdict, include_raw=True,
+                                                   **cfg["settings"]["structured-output"])
+    llms = (judge_llm(0), judge_llm(RETRY_TEMPERATURE))
     for dataset in DATASETS:
         todo = pairs(dataset, model)
         if not todo:
@@ -88,7 +96,7 @@ def judge_model(model):
         out = ROOT / "datasets" / dataset / "judge-baseline.csv"
         ok = failed = 0
         with ThreadPoolExecutor(max_workers=jc["parallel-requests"]) as pool:
-            futures = {pool.submit(judge_pair, llm, e, t, jc["max-rationale-chars"],
+            futures = {pool.submit(judge_pair, llms, e, t, jc["max-rationale-chars"],
                                    jc["judge-retries"]): (e, t) for e, t in todo}
             for future in as_completed(futures):
                 eval_row, truth = futures[future]
