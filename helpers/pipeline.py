@@ -241,8 +241,8 @@ def sync():
     # zero_shot = 1 for the Ollama roster, 0 for backend: hf entries (the base-as-is and the fine-tunes), so
     # "what is left for the zero-shot benchmark" is WHERE zero_shot AND NOT done
     hf = [m for m in models if specs[m].get("backend", "ollama") == "hf"]
-    conn.execute(f"UPDATE pipeline SET zero_shot = CASE WHEN model IN ({','.join('?' * len(hf)) or "''"}) "
-                 "THEN 0 ELSE 1 END", hf)
+    placeholders = ",".join("?" * len(hf)) or "''"
+    conn.execute(f"UPDATE pipeline SET zero_shot = CASE WHEN model IN ({placeholders}) THEN 0 ELSE 1 END", hf)
     conn.execute(SCOPE_UPDATE)
     conn.execute(DONE_UPDATE)
     conn.commit()
