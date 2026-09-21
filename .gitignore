@@ -51,10 +51,15 @@ env/
 
 # Pipeline state and results (derived; live where they are produced)
 pipeline.db
+checkpoints/
+hf-checkpoints/
+datasets/*/sft_*.jsonl
 logs/
 preprocessing/logs/
 datasets/*/eval-baseline.csv
 datasets/*/judge-baseline.csv
+datasets/*/judge-gpt.csv
+datasets/*/summary*.csv
 
 CLAUDE.md
 

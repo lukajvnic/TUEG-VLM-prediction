@@ -3,31 +3,11 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from helpers.pipeline import DATASETS, DONE_UPDATE, ROOT, SCOPE_UPDATE, config, db, read_csv
+from helpers.pipeline import DATASETS, DONE_UPDATE, ROOT, SCOPE_UPDATE, config, db, parse_name, positives, read_csv, spread
 
 BINARY = {"TUEP", "TUAB"}
 PATIENT_LEVEL = {"TUEP"}
 BACKGROUND = {"bckg"}
-NON_LABELS = ("path", "ground_truth_rationale")
-
-
-def parse_name(path):
-    patient, scan, window = Path(path).stem.rsplit("_", 2)
-    return patient, f"{patient}_{scan}", int(window)
-
-
-def spread(items, cap):
-    if cap is None or cap <= 0 or cap >= len(items):
-        return list(items)
-    if cap == 1:
-        return [items[len(items) // 2]]
-    picked = {round(i * (len(items) - 1) / (cap - 1)) for i in range(cap)}
-    return [items[i] for i in sorted(picked)]
-
-
-def positives(row):
-    return frozenset(c for c in row if c not in NON_LABELS and row[c].strip().lower() == "true")
-
 
 def abundant_classes(rows, threshold):
     by_class = defaultdict(set)
@@ -80,7 +60,7 @@ def select(rows, dataset, policy):
 def main():
     policy = config()["settings"]["test-sample"]
     conn = db()
-    conn.execute("UPDATE pipeline SET sampled = 0")
+    conn.execute("UPDATE pipeline SET sampled = 0 WHERE split = 'test'")
     total = 0
     for ds in DATASETS:
         rows = [r for r in read_csv(ROOT / "datasets" / ds / "labels.csv")

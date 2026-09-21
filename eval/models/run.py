@@ -41,7 +41,7 @@ def main():
     cfg = config()
     conn = sync()
     groups = defaultdict(list)
-    rows = pending_tasks(conn)
+    rows = [r for r in pending_tasks(conn) if cfg["models"][r[0]].get("backend", "ollama") == "ollama"]
     if os.environ.get("SCRATCH"):
         missing = sorted({model for model, _, _ in rows if not staged(model)})
         if missing:

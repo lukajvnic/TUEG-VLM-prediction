@@ -1,4 +1,5 @@
 import csv
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ while True:
 ROOT = Path(__file__).resolve().parents[1]
 DATASETS = ["TUAB", "TUAR", "TUEP", "TUEV", "TUSL", "TUSZ"]
 RATIONALE = "ground_truth_rationale"
+HASHES = "hashes.csv"  # path,md5 per rendered PNG, written by helpers/hash-images.py
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pipeline (
@@ -47,8 +49,8 @@ ON CONFLICT(path, model) DO UPDATE SET
 
 SCOPE_UPDATE = """
 UPDATE pipeline SET scope = CASE
-    WHEN sampled = 1 THEN 'full'
-    WHEN split = 'train' AND labeled = 1 THEN 'rationale'
+    WHEN split = 'test' AND sampled = 1 THEN 'full'
+    WHEN split = 'train' AND sampled = 1 AND labeled = 1 THEN 'rationale'
     ELSE 'none' END
 """
 
@@ -62,7 +64,8 @@ UPDATE pipeline SET done = CASE scope
 SUMMARY = """
 SELECT dataset,
        COUNT(DISTINCT path),
-       COUNT(DISTINCT CASE WHEN sampled THEN path END),
+       COUNT(DISTINCT CASE WHEN sampled AND split = 'test' THEN path END),
+       COUNT(DISTINCT CASE WHEN sampled AND split = 'train' THEN path END),
        COUNT(DISTINCT CASE WHEN rationale THEN path END),
        SUM(evaled),
        SUM(judged),
@@ -90,8 +93,54 @@ def db():
     return conn
 
 
+# phrases that say the writer could not see what it was asked to justify; checked only on rows whose
+# label is a positive finding, since "no evidence of spikes" is the right thing to say for normal/bckg
+HEDGE = re.compile(r"\b(cannot (be )?(determine|confirm|identify|verify|assess)|can't (determine|confirm|identify)"
+                   r"|unable to|not possible to|difficult to (identify|determine|discern|confirm)"
+                   r"|as an ai|i (cannot|can't|am unable)|without (more|additional|further) (information|context|data))\b",
+                   re.I)
+NEGATIVE_LABELS = {"normal", "no_epilepsy", "bckg"}
+
+
+def is_degenerate(text):
+    words = text.split()
+    return len(text) < 40 or len(words) < 8 or len(set(text)) < 12 or len(set(words)) / len(words) < 0.2
+
+
+def rationale_problems(text, positives):
+    text = text.strip()
+    if not text:
+        return []
+    problems = []
+    if is_degenerate(text):
+        problems.append("degenerate")
+    if text[-1] not in ".!?\")":
+        problems.append("truncated")  # ran into the num_predict cap mid-sentence
+    if positives - NEGATIVE_LABELS and HEDGE.search(text):
+        problems.append("hedge")
+    return problems
+
+
 def has_labels(row):
     return any(v.strip().lower() == "true" for c, v in row.items() if c not in ("path", RATIONALE))
+
+
+def positives(row):
+    return frozenset(c for c, v in row.items() if c not in ("path", RATIONALE) and v.strip().lower() == "true")
+
+
+def parse_name(path):
+    patient, scan, window = Path(path).stem.rsplit("_", 2)
+    return patient, f"{patient}_{scan}", int(window)
+
+
+def spread(items, cap):
+    if cap is None or cap <= 0 or cap >= len(items):
+        return list(items)
+    if cap == 1:
+        return [items[len(items) // 2]]
+    picked = {round(i * (len(items) - 1) / (cap - 1)) for i in range(cap)}
+    return [items[i] for i in sorted(picked)]
 
 
 def read_csv(path):
@@ -101,12 +150,65 @@ def read_csv(path):
         return list(csv.DictReader(f))
 
 
+def read_hashes(dataset):
+    return {r["path"]: r["md5"] for r in read_csv(ROOT / "datasets" / dataset / HASHES)}
+
+
+def duplicate_images():
+    """Byte-identical renders across all six corpora (measured 2026-09-21: 2,352 groups, 85 spanning
+    different patient tokens). Returns (hashes per dataset, md5 -> [(dataset, path)] for repeated images,
+    patient -> canonical patient), where patients sharing an image are merged into one."""
+    hashes = {ds: read_hashes(ds) for ds in DATASETS}
+    for ds in DATASETS:
+        if not hashes[ds]:
+            sys.exit(f"datasets/{ds}/{HASHES} missing - run helpers/hash-images.py {ds}")
+    by_hash = {}
+    for ds in DATASETS:
+        for path, md5 in hashes[ds].items():
+            by_hash.setdefault(md5, []).append((ds, path))
+    groups = {md5: items for md5, items in by_hash.items() if len(items) > 1}
+    parent = {}
+
+    def find(x):
+        while parent.get(x, x) != x:
+            x = parent[x]
+        return x
+
+    for items in groups.values():
+        patients = sorted({parse_name(p)[0] for _, p in items})
+        for other in patients[1:]:
+            a, b = find(patients[0]), find(other)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+    canon = {p: find(p) for p in parent}
+    return hashes, groups, canon
+
+
 def pairs_in(path):
     return {(r["path"], r["model"]) for r in read_csv(path)}
 
 
+def base_spec(cfg, key):
+    # `bases:` maps an Ollama tag to its HF weights (+ resources, trust-remote-code); a bare HF repo id also works
+    bases = cfg.get("bases", {})
+    spec = dict(bases[key]) if key in bases else {"repo": key}
+    spec.setdefault("gpus", cfg["train"]["gpus"])
+    spec.setdefault("ram", cfg["train"]["ram"])
+    return spec
+
+
+def checkpoint_dir(model_key, dataset):
+    return ROOT / "checkpoints" / model_key.replace(":", "-") / dataset
+
+
+def model_datasets(spec):
+    # a model entry may name the datasets it is evaluated on (fine-tunes); Ollama models run on all six
+    return [ds for ds in DATASETS if ds in spec.get("datasets", DATASETS)]
+
+
 def sync():
-    models = list(config()["models"])
+    specs = config()["models"]
+    models = list(specs)
     conn = db()
     conn.execute("CREATE TEMP TABLE valid (path TEXT PRIMARY KEY)")
     for ds in DATASETS:
@@ -115,19 +217,26 @@ def sync():
         evaled = pairs_in(folder / "eval-baseline.csv")
         judged = pairs_in(folder / "judge-baseline.csv")
         judged_gpt = pairs_in(folder / "judge-gpt.csv")
+        ds_models = [m for m in models if ds in model_datasets(specs[m])]
         conn.executemany(UPSERT, [
             (f"{ds}/{img['path']}", model, ds, img["path"].split("/")[0], int(has_labels(img)),
              int(bool((img[RATIONALE] or "").strip())),
              int((img["path"], model) in evaled),
              int((img["path"], model) in judged),
              int((img["path"], model) in judged_gpt))
-            for img in images for model in models])
+            for img in images for model in ds_models])
+        conn.executemany("DELETE FROM pipeline WHERE dataset = ? AND model = ?",
+                         [(ds, m) for m in models if m not in ds_models])
         conn.executemany("INSERT OR IGNORE INTO valid VALUES (?)",
                          [(f"{ds}/{img['path']}",) for img in images])
         print(f"sync {ds}: {len(images)} images, {len(evaled)} evals, "
               f"{len(judged)} judgements, {len(judged_gpt)} gpt judgements", flush=True)
     conn.execute("DELETE FROM pipeline WHERE path NOT IN (SELECT path FROM valid)")
     conn.execute(f"DELETE FROM pipeline WHERE model NOT IN ({','.join('?' * len(models))})", models)
+    # `sampled` is a property of the path, set by the samplers on the rows that existed at the time;
+    # rows for a model added to config.yml later inherit it here instead of needing the samplers re-run
+    conn.execute("UPDATE pipeline SET sampled = 1 WHERE sampled = 0 "
+                 "AND path IN (SELECT path FROM pipeline WHERE sampled = 1)")
     conn.execute(SCOPE_UPDATE)
     conn.execute(DONE_UPDATE)
     conn.commit()
@@ -135,8 +244,8 @@ def sync():
 
 
 if __name__ == "__main__":
-    for ds, images, sampled, rationales, evaled, judged, judged_gpt, done, total in sync().execute(SUMMARY):
-        print(f"{ds}: {images} images, {sampled} sampled, {rationales} rationales, "
+    for ds, images, sampled, train_sampled, rationales, evaled, judged, judged_gpt, done, total in sync().execute(SUMMARY):
+        print(f"{ds}: {images} images, {sampled} sampled, {train_sampled} train sampled, {rationales} rationales, "
               f"{evaled} evaled, {judged} judged, {judged_gpt} gpt judged, {done}/{total} done")
 
 

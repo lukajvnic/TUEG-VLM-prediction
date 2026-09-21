@@ -19,16 +19,19 @@ def classes(dataset):
     return [f.removeprefix("has_") for f in FIELDS[dataset]]
 
 
-def get_structure(dataset):
+def get_structure(dataset, rationale_first=False):
+    # zero-shot models answer labels then rationale; the fine-tune writes the rationale first so the
+    # label is decided with the description in context (config.yml train.rationale-first)
     fields = {f: (bool, Field(description=f"Whether {f.split('_', 1)[1].upper()} is present."))
               for f in FIELDS[dataset]}
-    return create_model(f"{dataset}Output", **fields,
-                        text_rationale=(str, Field(description="Text rationale for the prediction.")))
+    rationale = {"text_rationale": (str, Field(description="Text rationale for the prediction."))}
+    ordered = {**rationale, **fields} if rationale_first else {**fields, **rationale}
+    return create_model(f"{dataset}Output", **ordered)
 
 
 def to_labels(parsed, dataset):
     if dataset in BINARY:
-        field, pos, neg, _ = BINARY[dataset]
+        field, pos, neg = BINARY[dataset]
         return {pos: getattr(parsed, field), neg: not getattr(parsed, field)}
     return {c: getattr(parsed, f"has_{c}") for c in classes(dataset)}
 

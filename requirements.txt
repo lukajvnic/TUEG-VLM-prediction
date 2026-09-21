@@ -6,3 +6,12 @@ mne
 matplotlib
 numpy
 openai
+Pillow
+# fine-tune track (train/, eval/score.py): torch + transformers stack, same venv
+torch
+transformers
+peft
+accelerate
+bitsandbytes
+huggingface_hub
+lm-format-enforcer

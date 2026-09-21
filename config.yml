@@ -20,6 +20,13 @@ settings:
     background-per-recording: 2
     binary-windows-per-recording: 4
     recordings-per-patient: 4
+  train-sample:
+    recordings-per-patient: 8
+    background-per-recording: 1
+    majority-ratio: 1.5
+    reject-bad-rationales: true
+    exclude-cross-dataset-test-patients: true   # 117 patients are train in one corpus and test in another; also
+                                                # drops train windows byte-identical to a test image in any corpus
   model-kwargs:
     base_url: http://localhost:11434
     temperature: 0
@@ -183,12 +190,13 @@ models:
     ram: 24G
     gpus: a100_3g.20gb:1
     parallel-requests: 4
-  qwen3-vl:8b-thinking:
-    context: 32768
-    time: '36:00:00'
-    ram: 24G
-    gpus: 1
-    parallel-requests: 4
+  # qwen3-vl:8b-thinking - dropped 2026-09-17: thinking loops exhaust context with no Ollama budget, see knowledge/known-issues.md
+  # qwen3-vl:8b-thinking:
+  #   context: 32768
+  #   time: '36:00:00'
+  #   ram: 24G
+  #   gpus: 1
+  #   parallel-requests: 4
   qwen3-vl:30b-a3b-instruct:
     time: 08:00:00
     ram: 48G
@@ -199,6 +207,84 @@ models:
     ram: 48G
     gpus: 1
     parallel-requests: 8
+  # HF-side models: scored by train/predict.py, skipped by the Ollama dispatcher. No `checkpoint` = the
+  # base model as-is, the like-for-like "before" for the fine-tunes (the Ollama qwen2.5vl:7b row is a
+  # different quantisation and image resize). `rationale-first` there defaults to false, the zero-shot order.
+  # `base` is a `bases:` key below (or an HF repo id); `checkpoint` is where train/run.py put the adapter
+  # (checkpoints/<base key with : as ->/<DS>). Register a fine-tune here once it has a manifest.json.
+  qwen2.5vl:7b-hf:
+    backend: hf
+    base: qwen2.5vl:7b
+    datasets: [TUAB, TUEP]
+    time: '12:00:00'
+    ram: 64G
+    gpus: 1
+    cpus: 8
+  qwen2.5vl:7b-sft-TUAB:
+    backend: hf
+    base: qwen2.5vl:7b
+    checkpoint: checkpoints/qwen2.5vl-7b/TUAB
+    datasets: [TUAB]
+    time: '06:00:00'
+    ram: 64G
+    gpus: 1
+    cpus: 8
+  qwen2.5vl:7b-sft-TUEP:
+    backend: hf
+    base: qwen2.5vl:7b
+    checkpoint: checkpoints/qwen2.5vl-7b/TUEP
+    datasets: [TUEP]
+    time: '06:00:00'
+    ram: 64G
+    gpus: 1
+    cpus: 8
+  qwen2.5vl:7b-sft-pooled:      # the main track: one run per base over all six corpora (train.dataset: pooled)
+    backend: hf
+    base: qwen2.5vl:7b
+    checkpoint: checkpoints/qwen2.5vl-7b/pooled
+    time: '12:00:00'
+    ram: 64G
+    gpus: 1
+    cpus: 8
+
+# HF weights behind each Ollama tag, for the fine-tune track (every model is to be fine-tuned, 2026-09-21).
+# gpus/ram override train: for bases that do not fit one A100-40GB in bf16 (Narval nodes have 4 x 40 GB).
+# `status` marks a base the generic trainer cannot take yet; run.py train refuses it and hf-install --all skips it.
+# Repo ids were looked up on the Hub 2026-09-21; gated ones (google/*, meta-llama/*) need the licence accepted.
+bases:
+  bakllava:7b: {repo: llava-hf/bakLlava-v1-hf}
+  deepseek-ocr:3b: {repo: deepseek-ai/DeepSeek-OCR, trust-remote-code: true, family: deepseek-ocr, status: custom code - train with Unsloth from helpers/export-sft.py --format unsloth, score via predict.py's custom family}
+  gemma3:4b: {repo: google/gemma-3-4b-it}
+  gemma3:12b: {repo: google/gemma-3-12b-it}
+  gemma3:27b: {repo: google/gemma-3-27b-it, gpus: 2, ram: 128G}
+  gemma4:e2b: {repo: google/gemma-4-E2B-it}
+  gemma4:e4b: {repo: google/gemma-4-E4B-it}
+  gemma4:12b: {repo: google/gemma-4-12B-it}
+  gemma4:26b: {repo: google/gemma-4-26B-A4B-it, gpus: 2, ram: 128G}
+  gemma4:31b: {repo: google/gemma-4-31B-it, gpus: 2, ram: 128G}
+  glm-ocr:latest: {repo: zai-org/GLM-OCR}  # native transformers 4.x with an image chat template per its card; generic path, verify on the cluster
+  granite3.2-vision:2b: {repo: ibm-granite/granite-vision-3.2-2b}
+  llama4:16x17b: {repo: meta-llama/Llama-4-Scout-17B-16E-Instruct, gpus: 4, ram: 256G, quantize-4bit: true}  # 109B params, 218 GB bf16: NF4 on a whole node is the only fit (maintainer 2026-09-21)
+  llava:7b: {repo: llava-hf/llava-1.5-7b-hf}
+  llava:13b: {repo: llava-hf/llava-1.5-13b-hf}
+  llava:34b: {repo: llava-hf/llava-v1.6-34b-hf, gpus: 2, ram: 128G}
+  llava-llama3:8b: {repo: xtuner/llava-llama-3-8b-v1_1-transformers}
+  llava-phi3:3.8b: {repo: xtuner/llava-phi-3-mini-hf}
+  medgemma:4b: {repo: google/medgemma-4b-it}
+  medgemma1.5:4b: {repo: google/medgemma-1.5-4b-it}
+  minicpm-v:8b: {repo: openbmb/MiniCPM-V-2_6, trust-remote-code: true, family: minicpm, status: custom code - train with OpenBMB finetune_lora.sh from export-sft.py --format minicpm, score via predict.py's custom family}
+  minicpm-v4.5:8b: {repo: openbmb/MiniCPM-V-4_5, trust-remote-code: true, family: minicpm, status: custom code - train with LLaMA-Factory (template minicpm_v) from export-sft.py --format llamafactory, score via predict.py's custom family}
+  minicpm-v4.6:1b: {repo: openbmb/MiniCPM-V-4.6}  # native transformers per its card (AutoModelForImageTextToText); the Hub repo is the 4.6 release, the Ollama :1b tag's exact twin is unverified
+  mistral-small3.1:24b: {repo: mistralai/Mistral-Small-3.1-24B-Instruct-2503, gpus: 2, ram: 128G}
+  mistral-small3.2:24b: {repo: mistralai/Mistral-Small-3.2-24B-Instruct-2506, gpus: 2, ram: 128G}
+  moondream:1.8b: {repo: vikhyatk/moondream2, trust-remote-code: true, family: moondream, status: fine-tune deferred (maintainer 2026-09-21) - no local LoRA path, hosted service pending the data-use check; FINETUNE-TODO item 21}
+  qwen2.5vl:7b: {repo: Qwen/Qwen2.5-VL-7B-Instruct}
+  qwen2.5vl:32b: {repo: Qwen/Qwen2.5-VL-32B-Instruct, gpus: 2, ram: 128G}
+  qwen3-vl:2b-instruct: {repo: Qwen/Qwen3-VL-2B-Instruct}
+  qwen3-vl:4b-instruct: {repo: Qwen/Qwen3-VL-4B-Instruct}
+  qwen3-vl:8b-instruct: {repo: Qwen/Qwen3-VL-8B-Instruct}
+  qwen3-vl:30b-a3b-instruct: {repo: Qwen/Qwen3-VL-30B-A3B-Instruct, gpus: 2, ram: 128G}
+  qwen3-vl:32b-instruct: {repo: Qwen/Qwen3-VL-32B-Instruct, gpus: 2, ram: 128G}
 
 prompts:
   intro: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. "
@@ -226,19 +312,34 @@ prompts:
     grounded: "Justify this labeling using only visible EEG features. For each finding, give the specific evidence: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). State every label explicitly. Write a focused 3-5 sentence mini-report; do not describe the image format, define terminology, repeat yourself, or add unsupported findings."
 
 train:
-  model: Qwen/Qwen2.5-VL-7B-Instruct
-  dataset: TUEP
-  output-dir: checkpoints/TUEP
-  resume-from-checkpoint:
+  model: qwen2.5vl:7b         # a `bases:` key; `train/run.py --model KEY --dataset DS` overrides both per job
+  dataset: pooled             # all six corpora in one run (helpers/build-sft-jsonl.py pooled); a corpus name = a per-corpus ablation
+  resume-from-checkpoint:     # adapter dir to resume; the output dir is always checkpoints/<model key>/<dataset>
+  rationale-first: true       # target JSON is text_rationale then the booleans; predict.py reads it back from manifest.json
+  quantize-4bit: false        # bf16 LoRA; 4-bit would also quantize the vision tower
+  time: '12:00:00'
+  ram: 64G
+  gpus: 1
+  cpus: 8
+  val:
+    fraction: 0.05            # of train patients, patient-level, every class represented
+    min-patients: 10          # 3 gave TUEP a 17-window val set (4 patients); capped at half the pool
+    generate: 64              # about this many val windows, whole recordings, generated at each eval step for the
+                              # recording-level balanced accuracy that picks the checkpoint (0 = loss only)
   lora:
     rank: 16
     alpha: 32
     dropout: 0.05
+    vision: true              # also adapt the vision tower (attention, MLP, merger); false = language layers only
+    vision-lr-scale: 0.5
   training:
-    epochs: 3
+    epochs: 2
     batch-size: 1
     gradient-accumulation: 8
     learning-rate: 0.0002
+    warmup-ratio: 0.03
+    lr-scheduler: cosine
+    weight-decay: 0.0
     eval-steps: 100
     save-steps: 100
     save-total-limit: 2

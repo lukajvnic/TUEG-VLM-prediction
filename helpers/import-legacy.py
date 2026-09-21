@@ -153,8 +153,8 @@ def main():
     print("evals:", import_evals(models))
     print("judgements:", import_judgements(models))
     print("rationales:", import_rationales())
-    for ds, images, sampled, rationales, evaled, judged, judged_gpt, done, total in sync().execute(SUMMARY):
-        print(f"{ds}: {images} images, {sampled} sampled, {rationales} rationales, "
+    for ds, images, sampled, train_sampled, rationales, evaled, judged, judged_gpt, done, total in sync().execute(SUMMARY):
+        print(f"{ds}: {images} images, {sampled} sampled, {train_sampled} train sampled, {rationales} rationales, "
               f"{evaled} evaled, {judged} judged, {judged_gpt} gpt judged, {done}/{total} done")
 
 

@@ -86,8 +86,8 @@ def report_tasks(tasks):
 
 def main():
     conn = sync()
-    for ds, images, sampled, rationales, evaled, judged, judged_gpt, done, total in conn.execute(SUMMARY):
-        print(f"{ds}: {images} images, {sampled} sampled, {rationales} rationales, "
+    for ds, images, sampled, train_sampled, rationales, evaled, judged, judged_gpt, done, total in conn.execute(SUMMARY):
+        print(f"{ds}: {images} images, {sampled} sampled, {train_sampled} train sampled, {rationales} rationales, "
               f"{evaled} evaled, {judged} judged, {judged_gpt} gpt judged, {done}/{total} done")
     pending = pending_sets(conn)
     failures = read_rows("failures.csv",

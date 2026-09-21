@@ -7,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from helpers.pipeline import DATASETS, RATIONALE, ROOT, config, db, image_message, log_failure, read_csv, submit_array
+from helpers.pipeline import (DATASETS, RATIONALE, ROOT, config, db, image_message, is_degenerate, log_failure,
+                              read_csv, submit_array)
 
 MODEL = "gemma3:12b"  # not qwen2.5vl: repetition loop on these plots, ollama#10767
 NUM_PREDICT = 512
@@ -43,13 +44,6 @@ def pending(dataset, rows):
 def create_prompt(dataset, row):
     labels = ", ".join(true_labels(row))
     return f"{IMAGE_INTRO}{LABEL_CLAUSES[dataset].format(labels=labels)} {GROUNDED}"
-
-
-def is_degenerate(text):
-    words = text.split()
-    if len(text) < 40 or len(words) < 8:
-        return True
-    return len(set(text)) < 12 or len(set(words)) / len(words) < 0.2
 
 
 def save(dataset, fields, rows):
