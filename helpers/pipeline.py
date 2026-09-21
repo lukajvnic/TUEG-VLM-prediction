@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS pipeline (
     judged INTEGER DEFAULT 0,
     judged_gpt INTEGER DEFAULT 0,
     done INTEGER DEFAULT 0,
+    zero_shot INTEGER DEFAULT 1,
     PRIMARY KEY (path, model)
 )"""
 
@@ -87,9 +88,9 @@ def db():
     conn.execute("PRAGMA synchronous=OFF")
     conn.execute(SCHEMA)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(pipeline)")}
-    for col in ("judged_gpt", "done"):
+    for col, default in (("judged_gpt", 0), ("done", 0), ("zero_shot", 1)):
         if col not in cols:
-            conn.execute(f"ALTER TABLE pipeline ADD COLUMN {col} INTEGER DEFAULT 0")
+            conn.execute(f"ALTER TABLE pipeline ADD COLUMN {col} INTEGER DEFAULT {default}")
     return conn
 
 
@@ -237,6 +238,11 @@ def sync():
     # rows for a model added to config.yml later inherit it here instead of needing the samplers re-run
     conn.execute("UPDATE pipeline SET sampled = 1 WHERE sampled = 0 "
                  "AND path IN (SELECT path FROM pipeline WHERE sampled = 1)")
+    # zero_shot = 1 for the Ollama roster, 0 for backend: hf entries (the base-as-is and the fine-tunes), so
+    # "what is left for the zero-shot benchmark" is WHERE zero_shot AND NOT done
+    hf = [m for m in models if specs[m].get("backend", "ollama") == "hf"]
+    conn.execute(f"UPDATE pipeline SET zero_shot = CASE WHEN model IN ({','.join('?' * len(hf)) or "''"}) "
+                 "THEN 0 ELSE 1 END", hf)
     conn.execute(SCOPE_UPDATE)
     conn.execute(DONE_UPDATE)
     conn.commit()

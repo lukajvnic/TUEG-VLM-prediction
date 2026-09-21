@@ -4,15 +4,18 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from helpers.pipeline import ROOT, SUMMARY, sync
+from helpers.pipeline import ROOT, SUMMARY, config, sync
 
 TOP_ERRORS = 3
-JOB_NAMES = {"eval": "eeg-vlm-eval", "judge": "eeg-vlm-judge", "rationale": "eeg-vlm-rationales"}
+JOB_NAMES = {"eval": "eeg-vlm-eval", "predict": "eeg-vlm-predict", "judge": "eeg-vlm-judge",
+             "rationale": "eeg-vlm-rationales"}
 
+# eval = Ollama models (eval/models/run.py); predict = backend: hf models (train/run.py predict)
 PENDING = {
     "rationale": "SELECT DISTINCT dataset, path FROM pipeline "
                  "WHERE scope IN ('full', 'rationale') AND rationale = 0",
-    "eval": "SELECT dataset, path, model FROM pipeline WHERE scope = 'full' AND evaled = 0",
+    "eval": "SELECT dataset, path, model FROM pipeline WHERE scope = 'full' AND evaled = 0 AND model NOT IN ({hf})",
+    "predict": "SELECT dataset, path, model FROM pipeline WHERE scope = 'full' AND evaled = 0 AND model IN ({hf})",
     "judge": "SELECT dataset, path, model FROM pipeline "
              "WHERE scope = 'full' AND evaled = 1 AND rationale = 1 AND judged = 0",
     "judge-gpt": "SELECT dataset, path, model FROM pipeline "
@@ -30,7 +33,10 @@ def read_rows(name, header):
 
 
 def pending_sets(conn):
-    return {stage: {(r[0], r[1].split("/", 1)[1], *r[2:]) for r in conn.execute(query)}
+    hf = [name for name, spec in config()["models"].items() if spec.get("backend", "ollama") == "hf"]
+    placeholders = ",".join("?" * len(hf)) or "''"
+    return {stage: {(r[0], r[1].split("/", 1)[1], *r[2:])
+                    for r in conn.execute(query.format(hf=placeholders), hf if "{hf}" in query else ())}
             for stage, query in PENDING.items()}
 
 
