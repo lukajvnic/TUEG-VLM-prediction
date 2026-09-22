@@ -1,6 +1,6 @@
 judge:
   model: mistral-small3.2:24b
-  time: '12:00:00'
+  time: '01:00:00'
   ram: 32G
   gpus: 1
   parallel-requests: 8
