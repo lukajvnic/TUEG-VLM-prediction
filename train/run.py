@@ -56,22 +56,32 @@ def submit(text, env=None):
 def train(args):
     cfg = config()
     spec = cfg["train"]
-    model, dataset = args.model or spec["model"], args.dataset or spec["dataset"]
-    base = base_spec(cfg, model)
-    if base.get("status"):
-        sys.exit(f"{model}: {base['status']} - see config.yml bases:")
-    out = checkpoint_dir(model, dataset)
-    text = script("eeg-vlm-train", spec["time"], base["ram"], spec["cpus"], base["gpus"],
-                  f"python {ROOT}/train/scripts/finetune_sample.py")
-    env = {"TRAIN_MODEL": model, "TRAIN_DATASET": dataset}
-    if args.dry_run:
-        print(text)
-        print(f"# env: {env}  base: {base['repo']}  -> {out}")
-        return
-    for name in ("sft_train.jsonl", "sft_val.jsonl"):
-        if not (ROOT / "datasets" / dataset / name).exists():
-            sys.exit(f"missing datasets/{dataset}/{name} - run helpers/build-sft-jsonl.py {dataset} first")
-    print(f"{submit(text, env)} - {model} on {dataset} -> {out}, {spec['time']}/{base['ram']}/gpu:{base['gpus']}")
+    dataset = args.dataset or spec["dataset"]
+    if args.model:
+        models = [args.model]
+    else:  # every base without a `status` (the custom-code ones train outside this script)
+        models = [k for k, v in cfg.get("bases", {}).items() if not v.get("status")]
+    if not args.dry_run:
+        for name in ("sft_train.jsonl", "sft_val.jsonl"):
+            if not (ROOT / "datasets" / dataset / name).exists():
+                sys.exit(f"missing datasets/{dataset}/{name} - run helpers/build-sft-jsonl.py {dataset} first")
+    for model in models:
+        base = base_spec(cfg, model)
+        if base.get("status"):
+            sys.exit(f"{model}: {base['status']} - see config.yml bases:")
+        out = checkpoint_dir(model, dataset)
+        if (out / "manifest.json").exists():
+            print(f"{model} on {dataset}: {out}/manifest.json exists (finished), skipping")
+            continue
+        text = script("eeg-vlm-train", spec["time"], base["ram"], spec["cpus"], base["gpus"],
+                      f"python {ROOT}/train/scripts/finetune_sample.py")
+        env = {"TRAIN_MODEL": model, "TRAIN_DATASET": dataset}
+        if args.dry_run:
+            if model == models[0]:
+                print(text)
+            print(f"# {model} on {dataset} -> {out}  base: {base['repo']}  {spec['time']}/{base['ram']}/gpu:{base['gpus']}")
+            continue
+        print(f"{submit(text, env)} - {model} on {dataset} -> {out}, {spec['time']}/{base['ram']}/gpu:{base['gpus']}")
 
 
 def predict(args):
@@ -104,10 +114,10 @@ def predict(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="fine-tune track jobs: train (config.yml train:) or predict (backend: hf models)")
+    parser = argparse.ArgumentParser(description="fine-tune track jobs: train (one job per `bases:` entry) or predict (backend: hf models)")
     parser.add_argument("command", nargs="?", choices=["train", "predict"], default="train")
     parser.add_argument("--dry-run", action="store_true", help="print the sbatch script(s), submit nothing")
-    parser.add_argument("--model", help="train: a `bases:` key (Ollama tag) instead of config.yml train.model")
+    parser.add_argument("--model", help="train: only this `bases:` key (Ollama tag); default is every base without a `status`")
     parser.add_argument("--dataset", help="train: dataset instead of config.yml train.dataset")
     args = parser.parse_args()
     (train if args.command == "train" else predict)(args)
