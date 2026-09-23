@@ -23,7 +23,7 @@ log_task() {{ ( flock -x 9; echo "$(date -Iseconds),{job_env},{task_env},{job},$
 log_task start
 trap 'log_task end $?' EXIT
 module load StdEnv/2023 python/3.11 cuda
-source {root}/.venv/bin/activate
+source {root}/{venv}/bin/activate
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export HF_HOME=$SCRATCH/hf-cache
 export TOKENIZERS_PARALLELISM=false
@@ -32,13 +32,13 @@ cd {root}
 """
 
 
-def script(job, time, ram, cpus, gpus, command, array_last=None):
+def script(job, time, ram, cpus, gpus, command, array_last=None, venv=".venv"):
     logs = ROOT / "logs"
     logs.mkdir(exist_ok=True)
     single = array_last is None
     return SBATCH.format(
         job=job, account=ACCOUNT, time=time, ram=ram, cpus=cpus, gpus=gpus, logs=logs, root=ROOT,
-        command=command,
+        command=command, venv=venv,
         array="" if single else f"#SBATCH --array=0-{array_last}\n",
         jobid="%j" if single else "%A_%a",
         job_env="$SLURM_JOB_ID" if single else "$SLURM_ARRAY_JOB_ID",

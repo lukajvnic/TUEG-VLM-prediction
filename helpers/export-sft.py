@@ -8,7 +8,9 @@ generic trainer trains on, so the data (windows, val split, rationale-first targ
   --format llamafactory  data/<name>.json + a dataset_info.json entry (MiniCPM-V 4.5 via template minicpm_v,
                          also any generic base if LLaMA-Factory is preferred)
   --format minicpm       the OpenBMB finetune/ JSON (id, image, conversations) for MiniCPM-V 2.6's finetune_lora.sh
-  --format unsloth       messages-with-image JSONL for Unsloth's vision trainer (DeepSeek-OCR)
+  --format unsloth       messages-with-image JSONL for Unsloth's generic vision trainer. Not used by
+                         train/custom/unsloth_deepseek_ocr.py, which reads sft_*.jsonl itself (DeepSeek-OCR's
+                         collator wants its own role tags); kept for any other base tried through Unsloth.
 
 Image paths are absolute so the consumer can run from anywhere. Nothing here decides what is trained on.
 """
