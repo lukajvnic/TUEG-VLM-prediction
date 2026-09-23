@@ -246,46 +246,95 @@ models:
     ram: 64G
     gpus: 1
     cpus: 8
+  minicpm-v:8b-sft-pooled:      # custom stack (train/run-custom.py); scored via predict.py CustomFamily
+    backend: hf
+    base: minicpm-v:8b
+    checkpoint: checkpoints/minicpm-v-8b/pooled
+    time: '12:00:00'
+    ram: 64G
+    gpus: 1
+    cpus: 8
+  minicpm-v4.5:8b-sft-pooled:   # custom stack (train/run-custom.py); scored via predict.py CustomFamily
+    backend: hf
+    base: minicpm-v4.5:8b
+    checkpoint: checkpoints/minicpm-v4.5-8b/pooled
+    time: '12:00:00'
+    ram: 64G
+    gpus: 1
+    cpus: 8
+  deepseek-ocr:3b-sft-pooled:   # custom stack (train/run-custom.py); scored via predict.py CustomFamily
+    backend: hf
+    base: deepseek-ocr:3b
+    checkpoint: checkpoints/deepseek-ocr-3b/pooled
+    time: '12:00:00'
+    ram: 64G
+    gpus: 1
+    cpus: 8
 
 # HF weights behind each Ollama tag, for the fine-tune track (every model is to be fine-tuned, 2026-09-21).
+# chat-template: a Jinja template for bases whose processor ships none or a broken one. processor-kwargs: AutoProcessor
+# overrides. template-kwargs: apply_chat_template kwargs (thinking switches). answer-suffix: a stop token appended to
+# the training target when the template renders none. processor-files-from: copy another base's processor/tokenizer
+# files into this snapshot (hf-install.py). All applied identically by the trainer and predict.py.
 # gpus/ram/time override train: for bases that do not fit one A100-40GB in bf16 (Narval nodes have 4 x 40 GB).
 # 2-GPU bases are model-parallel (no speedup), so they get 48 h; llama4 in NF4 on 4 GPUs gets 72 h. All guesses until measured.
 # `status` marks a base the generic trainer cannot take yet; run.py train refuses it and hf-install --all skips it.
 # Repo ids were looked up on the Hub 2026-09-21; gated ones (google/*, meta-llama/*) need the licence accepted.
 bases:
-  bakllava:7b: {repo: llava-hf/bakLlava-v1-hf}
-  deepseek-ocr:3b: {repo: deepseek-ai/DeepSeek-OCR, trust-remote-code: true, family: deepseek-ocr, status: custom code - train with Unsloth from helpers/export-sft.py --format unsloth, score via predict.py's custom family}
+  bakllava:7b:
+    repo: llava-hf/bakLlava-v1-hf
+    # the repo template ends the assistant turn with the literal typo `<\s>` (never the real </s>), so a fine-tune
+    # would learn no stop token; same [INST] form with </s> (2026-09-23)
+    chat-template: "{% for message in messages %}{% if message['role'] == 'user' %}[INST] {% for c in message['content'] %}{% if c['type'] == 'image' %}<image>\n{% elif c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %} [/INST]{% elif message['role'] == 'assistant' %} {% for c in message['content'] %}{{ c['text'] }}{% endfor %}</s>{% endif %}{% endfor %}"
+  deepseek-ocr:3b: {repo: unsloth/DeepSeek-OCR, trust-remote-code: true, family: deepseek-ocr, status: custom code - train/run-custom.py (Unsloth), score via predict.py's custom family}  # unsloth's mirror of deepseek-ai/DeepSeek-OCR: same config + weights, modeling code patched for transformers >= 4.48 (the original imports LlamaFlashAttention2 and only loads on 4.46); train and score from the same repo so adapter keys match (2026-09-23)
   gemma3:4b: {repo: google/gemma-3-4b-it}
   gemma3:12b: {repo: google/gemma-3-12b-it}
   gemma3:27b: {repo: google/gemma-3-27b-it, gpus: 2, ram: 128G, time: '48:00:00'}
   gemma4:e2b: {repo: google/gemma-4-E2B-it}
   gemma4:e4b: {repo: google/gemma-4-E4B-it}
-  gemma4:12b: {repo: google/gemma-4-12B-it}
-  gemma4:26b: {repo: google/gemma-4-26B-A4B-it, gpus: 2, ram: 128G, time: '48:00:00'}
-  gemma4:31b: {repo: google/gemma-4-31B-it, gpus: 2, ram: 128G, time: '48:00:00'}
-  glm-ocr:latest: {repo: zai-org/GLM-OCR}  # native transformers 4.x with an image chat template per its card; generic path, verify on the cluster
+  gemma4:12b: {repo: google/gemma-4-12B-it, status: 'model_type gemma4_unified (Gemma4UnifiedForConditionalGeneration, saved by transformers 5.10) is not in 5.8.0, the wheelhouse version; needs a venv with transformers >= 5.10 (2026-09-23)'}
+  gemma4:26b: {repo: google/gemma-4-26B-A4B-it, gpus: 2, ram: 128G, time: '48:00:00'}  # MoE: experts are fused parameters, LoRA reaches attention + vision only
+  gemma4:31b: {repo: google/gemma-4-31B-it, gpus: 3, ram: 192G, time: '48:00:00'}  # 63 GB bf16
+  glm-ocr:latest: {repo: zai-org/GLM-OCR, template-kwargs: {enable_thinking: false}, answer-suffix: '<|user|>'}  # enable_thinking false puts the empty <think></think> in the prompt (train and score alike) instead of the target; the template renders no stop token after the answer, <|user|> is one of its eos ids. config saved by transformers 5.17: loads on 5.8 (unknown keys kept), weight names unverified
   granite3.2-vision:2b: {repo: ibm-granite/granite-vision-3.2-2b}
-  llama4:16x17b: {repo: meta-llama/Llama-4-Scout-17B-16E-Instruct, gpus: 4, ram: 256G, time: '72:00:00', quantize-4bit: true}  # 109B params, 218 GB bf16: NF4 on a whole node is the only fit (maintainer 2026-09-21)
-  llava:7b: {repo: llava-hf/llava-1.5-7b-hf}
-  llava:13b: {repo: llava-hf/llava-1.5-13b-hf}
-  llava:34b: {repo: llava-hf/llava-v1.6-34b-hf, gpus: 2, ram: 128G, time: '48:00:00'}
-  llava-llama3:8b: {repo: xtuner/llava-llama-3-8b-v1_1-transformers}
-  llava-phi3:3.8b: {repo: xtuner/llava-phi-3-mini-hf}
+  llama4:16x17b: {repo: meta-llama/Llama-4-Scout-17B-16E-Instruct, gpus: 4, ram: 256G, time: '72:00:00', quantize-4bit: true,
+                 status: 'NF4 cannot shrink it: transformers 5.8 stores the 16 experts per layer as one 3-D parameter (Llama4TextExperts), bitsandbytes only converts nn.Linear, so ~96B expert params stay bf16 (~190 GB) on a 160 GB node and LoRA never touches the experts; needs an MoE-aware quantiser or a pre-quantised checkpoint (2026-09-23)'}
+  # 109B params, 218 GB bf16. The 4-bit path was the plan (maintainer 2026-09-21); the status above is why it is off
+  llava:7b:
+    repo: llava-hf/llava-1.5-7b-hf
+    # the llava-1.5 template renders no stop token after the assistant turn; same USER:/ASSISTANT: form with </s>
+    chat-template: "{% for message in messages %}{% if message['role'] == 'user' %}USER: {% for c in message['content'] %}{% if c['type'] == 'image' %}<image>\n{% elif c['type'] == 'text' %}{{ c['text'] }} {% endif %}{% endfor %}{% elif message['role'] == 'assistant' %}ASSISTANT: {% for c in message['content'] %}{{ c['text'] }}{% endfor %}</s>{% endif %}{% endfor %}{% if add_generation_prompt %}ASSISTANT:{% endif %}"
+  llava:13b:
+    repo: llava-hf/llava-1.5-13b-hf
+    chat-template: "{% for message in messages %}{% if message['role'] == 'user' %}USER: {% for c in message['content'] %}{% if c['type'] == 'image' %}<image>\n{% elif c['type'] == 'text' %}{{ c['text'] }} {% endif %}{% endfor %}{% elif message['role'] == 'assistant' %}ASSISTANT: {% for c in message['content'] %}{{ c['text'] }}{% endfor %}</s>{% endif %}{% endfor %}{% if add_generation_prompt %}ASSISTANT:{% endif %}"
+  llava:34b: {repo: llava-hf/llava-v1.6-34b-hf, gpus: 3, ram: 192G, time: '48:00:00'}  # 69.5 GB bf16: 2 x 40 GB leaves ~5% for activations
+  llava-llama3:8b:
+    repo: xtuner/llava-llama-3-8b-v1_1-transformers
+    processor-kwargs: {patch_size: 14, vision_feature_select_strategy: default, num_additional_image_tokens: 1}   # no processor_config.json in the repo: llava-1.5 values (576 image tokens)
+    # its processor has no chat template (failed 2026-09-23); this is the Llama 3 format from the model card,
+    # `<image>` where LlavaProcessor expands the image. Applied by the trainer and predict.py.
+    chat-template: "{% for message in messages %}<|start_header_id|>{{ message['role'] }}<|end_header_id|>\n\n{% for c in message['content'] %}{% if c['type'] == 'image' %}<image>\n{% elif c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %}<|eot_id|>{% endfor %}{% if add_generation_prompt %}<|start_header_id|>assistant<|end_header_id|>\n\n{% endif %}"
+  llava-phi3:3.8b:
+    repo: xtuner/llava-phi-3-mini-hf
+    # no processor_config.json (patch_size would be None) and no usable chat template; Phi-3 format, <image> where
+    # LlavaProcessor expands it, tokenizer adds BOS itself (2026-09-23)
+    processor-kwargs: {patch_size: 14, vision_feature_select_strategy: default, num_additional_image_tokens: 1}
+    chat-template: "{% for m in messages %}{% if m['role'] == 'user' %}<|user|>\n{% for c in m['content'] %}{% if c['type'] == 'image' %}<image>\n{% elif c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %}<|end|>\n{% elif m['role'] == 'assistant' %}<|assistant|>\n{% for c in m['content'] %}{{ c['text'] }}{% endfor %}<|end|>\n{% endif %}{% endfor %}{% if add_generation_prompt %}<|assistant|>\n{% endif %}"
   medgemma:4b: {repo: google/medgemma-4b-it}
   medgemma1.5:4b: {repo: google/medgemma-1.5-4b-it}
   minicpm-v:8b: {repo: openbmb/MiniCPM-V-2_6, trust-remote-code: true, family: minicpm, status: custom code - train with OpenBMB finetune_lora.sh from export-sft.py --format minicpm, score via predict.py's custom family}
   minicpm-v4.5:8b: {repo: openbmb/MiniCPM-V-4_5, trust-remote-code: true, family: minicpm, status: custom code - train with LLaMA-Factory (template minicpm_v) from export-sft.py --format llamafactory, score via predict.py's custom family}
-  minicpm-v4.6:1b: {repo: openbmb/MiniCPM-V-4.6}  # native transformers per its card (AutoModelForImageTextToText); the Hub repo is the 4.6 release, the Ollama :1b tag's exact twin is unverified
+  minicpm-v4.6:1b: {repo: openbmb/MiniCPM-V-4.6, template-kwargs: {enable_thinking: false}}  # native transformers per its card (AutoModelForImageTextToText); the Hub repo is the 4.6 release, the Ollama :1b tag's exact twin is unverified
   mistral-small3.1:24b: {repo: mistralai/Mistral-Small-3.1-24B-Instruct-2503, gpus: 2, ram: 128G, time: '48:00:00'}
-  mistral-small3.2:24b: {repo: mistralai/Mistral-Small-3.2-24B-Instruct-2506, gpus: 2, ram: 128G, time: '48:00:00'}
+  mistral-small3.2:24b: {repo: mistralai/Mistral-Small-3.2-24B-Instruct-2506, gpus: 2, ram: 128G, time: '48:00:00', processor-files-from: mistral-small3.1:24b}  # the 3.2 repo ships only weights + tekken.json (no processor/tokenizer configs, no template); hf-install copies 3.1's, same vocab and encoder
   moondream:1.8b: {repo: vikhyatk/moondream2, trust-remote-code: true, family: moondream, status: fine-tune deferred (maintainer 2026-09-21) - no local LoRA path, hosted service pending the data-use check; FINETUNE-TODO item 21}
   qwen2.5vl:7b: {repo: Qwen/Qwen2.5-VL-7B-Instruct}
-  qwen2.5vl:32b: {repo: Qwen/Qwen2.5-VL-32B-Instruct, gpus: 2, ram: 128G, time: '48:00:00'}
+  qwen2.5vl:32b: {repo: Qwen/Qwen2.5-VL-32B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}  # 68 GB bf16
   qwen3-vl:2b-instruct: {repo: Qwen/Qwen3-VL-2B-Instruct}
   qwen3-vl:4b-instruct: {repo: Qwen/Qwen3-VL-4B-Instruct}
   qwen3-vl:8b-instruct: {repo: Qwen/Qwen3-VL-8B-Instruct}
-  qwen3-vl:30b-a3b-instruct: {repo: Qwen/Qwen3-VL-30B-A3B-Instruct, gpus: 2, ram: 128G, time: '48:00:00'}
-  qwen3-vl:32b-instruct: {repo: Qwen/Qwen3-VL-32B-Instruct, gpus: 2, ram: 128G, time: '48:00:00'}
+  qwen3-vl:30b-a3b-instruct: {repo: Qwen/Qwen3-VL-30B-A3B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}  # 62 GB bf16; MoE experts are fused parameters, LoRA reaches attention + vision only
+  qwen3-vl:32b-instruct: {repo: Qwen/Qwen3-VL-32B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}  # 67 GB bf16
 
 prompts:
   intro: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. "
@@ -315,7 +364,7 @@ prompts:
 train:
   model: qwen2.5vl:7b         # a `bases:` key; `train/run.py --model KEY --dataset DS` overrides both per job
   dataset: pooled             # all six corpora in one run (helpers/build-sft-jsonl.py pooled); a corpus name = a per-corpus ablation
-  resume-from-checkpoint:     # adapter dir to resume; the output dir is always checkpoints/<model key>/<dataset>
+  resume-from-checkpoint:     # a checkpoint-N dir (trainer state + adapter) to resume from; the output dir is always checkpoints/<model key>/<dataset>
   rationale-first: true       # target JSON is text_rationale then the booleans; predict.py reads it back from manifest.json
   quantize-4bit: false        # bf16 LoRA; 4-bit would also quantize the vision tower
   time: '24:00:00'          # unmeasured (2026-09-23): ~13k passes at ~3k visual tokens plus 16 evals; a 7B is guessed at 8-11 h. `bases:` overrides per base

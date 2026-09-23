@@ -19,7 +19,37 @@ MAX_NEW_TOKENS = 512
 RETRY_TEMPERATURE = 0.3
 PROGRESS_EVERY = 50
 # module-name fragments that mark the image side of a VLM (Qwen `visual`, SigLIP/CLIP `vision_tower`, projectors)
+MINICPM_SYSTEM = "You are a helpful assistant."  # LLaMA-Factory template minicpm_v default_system
 VISION_HINTS = ["visual", "vision", "multi_modal_projector", "mm_projector", "merger", "image_newline"]
+SKIP_HINTS = ["audio"]  # gemma4's audio tower and embed_audio: neither language nor vision, left frozen
+# gemma4 26B/31B: the generation prompt ends with an empty thinking channel that the rendered assistant turn
+# never contains; the collator splices it in so the trained target starts exactly where generation starts
+EMPTY_THOUGHT = "<|channel>thought\n<channel|>"
+_TEMPLATE_KWARGS = {}  # id(processor) -> `bases:` template-kwargs (e.g. enable_thinking: false)
+
+
+def load_processor(source, base, remote):
+    # `bases:` may carry processor-kwargs (llava repos without processor_config.json need patch_size etc.),
+    # a chat-template (repos that ship none) and template-kwargs (thinking switches), applied identically by
+    # the trainer and by scoring
+    from transformers import AutoProcessor
+    processor = AutoProcessor.from_pretrained(source, trust_remote_code=remote, **base.get("processor-kwargs", {}))
+    if base.get("chat-template"):
+        processor.chat_template = base["chat-template"]  # saved with the checkpoint by processor.save_pretrained
+    _TEMPLATE_KWARGS[id(processor)] = base.get("template-kwargs", {})
+    return processor
+
+
+def render(processor, messages, add_generation_prompt):
+    return processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=add_generation_prompt,
+                                         **_TEMPLATE_KWARGS.get(id(processor), {}))
+
+
+def encode_kwargs(processor, text):
+    # apply_chat_template(tokenize=False) already wrote the template's BOS (gemma, mistral); tokenising that text
+    # with add_special_tokens would prepend a second one
+    bos = getattr(getattr(processor, "tokenizer", None), "bos_token", None)
+    return {"add_special_tokens": False} if bos and text.startswith(bos) else {}
 
 
 def is_vision(name):
@@ -33,6 +63,8 @@ def lora_targets(model):
     language, vision = [], []
     for name, module in model.named_modules():
         if not isinstance(module, torch.nn.Linear) or name.endswith("lm_head") or "embed" in name:
+            continue
+        if any(hint in name for hint in SKIP_HINTS):
             continue
         (vision if is_vision(name) else language).append(name)
     return language, vision
@@ -63,7 +95,7 @@ class CustomFamily:
         if name == "minicpm":  # MiniCPM-V 2.6 / 4.5: AutoModel + model.chat(image=, msgs=, tokenizer=)
             from transformers import AutoModel, AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True)
-            model = AutoModel.from_pretrained(source, trust_remote_code=True, torch_dtype=torch.bfloat16,
+            model = AutoModel.from_pretrained(source, trust_remote_code=True, dtype=torch.bfloat16,
                                               attn_implementation="sdpa")
         elif name == "moondream":  # moondream2: AutoModelForCausalLM + model.query(image, question)
             from transformers import AutoModelForCausalLM
@@ -72,7 +104,7 @@ class CustomFamily:
             from transformers import AutoModel, AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True)
             model = AutoModel.from_pretrained(source, trust_remote_code=True, use_safetensors=True,
-                                              torch_dtype=torch.bfloat16)
+                                              dtype=torch.bfloat16)
         else:
             raise ValueError(f"unknown custom family {name!r}")
         if checkpoint is not None:
@@ -87,13 +119,17 @@ class CustomFamily:
             if self.name == "minicpm":
                 return str(self.model.chat(image=None, msgs=[{"role": "user", "content": [image, text]}],
                                            tokenizer=self.tokenizer, sampling=bool(temperature),
+                                           system_prompt=MINICPM_SYSTEM,  # what LLaMA-Factory's minicpm_v template trained with
                                            temperature=temperature or 0.0, max_new_tokens=MAX_NEW_TOKENS)).strip()
             if self.name == "moondream":
                 return str(self.model.query(image, text)["answer"]).strip()
         if self.name == "deepseek-ocr":
+            import tempfile
+            # infer() makedirs output_path unconditionally and only returns the text with eval_mode=True
+            # (otherwise it streams to stdout and returns None); save_results=False keeps the dir empty
             out = self.model.infer(self.tokenizer, prompt=f"<image>\n{text}", image_file=str(image_path),
-                                   output_path=None, base_size=1024, image_size=640, crop_mode=True,
-                                   save_results=False)
+                                   output_path=tempfile.gettempdir(), base_size=1024, image_size=640,
+                                   crop_mode=True, save_results=False, eval_mode=True)
             return str(out).strip()
         raise ValueError(self.name)
 
@@ -102,7 +138,7 @@ def load(spec):
     # a spec without `checkpoint` is the base model as-is: the like-for-like "before" for its fine-tunes.
     # `base` is a `bases:` key (Ollama tag) or an HF repo id; any architecture AutoModelForImageTextToText knows
     import torch
-    from transformers import AutoModelForImageTextToText, AutoProcessor
+    from transformers import AutoModelForImageTextToText
     base = base_spec(config(), spec["base"])
     local = snapshot_dir(base["repo"])
     source = str(local) if (local / "config.json").exists() else base["repo"]
@@ -113,30 +149,38 @@ def load(spec):
             {"rationale_first": spec.get("rationale-first", False)}
         print(f"loading {source} via custom family {base['family']}" + (f" + {checkpoint}" if checkpoint else ""), flush=True)
         return CustomFamily(base["family"], source, checkpoint), None, manifest
-    model = AutoModelForImageTextToText.from_pretrained(source, torch_dtype=torch.bfloat16, device_map="auto",
+    model = AutoModelForImageTextToText.from_pretrained(source, dtype=torch.bfloat16, device_map="auto",
                                                         trust_remote_code=remote)
     if "checkpoint" not in spec:
         print(f"loading {source} (no adapter)", flush=True)
         model.eval()
-        return model, AutoProcessor.from_pretrained(source, trust_remote_code=remote), \
-            {"rationale_first": spec.get("rationale-first", False)}
+        return model, load_processor(source, base, remote), {"rationale_first": spec.get("rationale-first", False)}
     from peft import PeftModel
     checkpoint = ROOT / spec["checkpoint"]
     if not (checkpoint / "manifest.json").exists():
         sys.exit(f"{checkpoint} has no manifest.json - training did not finish")
     manifest = json.loads((checkpoint / "manifest.json").read_text())
     print(f"loading {source} + {checkpoint}", flush=True)
-    processor = AutoProcessor.from_pretrained(str(checkpoint), trust_remote_code=remote)
+    processor = load_processor(str(checkpoint), base, remote)
     model = PeftModel.from_pretrained(model, str(checkpoint)).merge_and_unload()
     model.eval()
     return model, processor, manifest
 
 
+_TOKENIZER_DATA = {}
+
+
 def enforcer(processor, structure):
-    # same schema Ollama's json mode constrains the zero-shot models to
+    # same schema Ollama's json mode constrains the zero-shot models to. The vocabulary table is built once per
+    # tokenizer (it decodes every token id); a pooled run builds six enforcers from it
     from lmformatenforcer import JsonSchemaParser
-    from lmformatenforcer.integrations.transformers import build_transformers_prefix_allowed_tokens_fn
-    return build_transformers_prefix_allowed_tokens_fn(processor.tokenizer, JsonSchemaParser(structure.model_json_schema()))
+    from lmformatenforcer.integrations.transformers import (build_token_enforcer_tokenizer_data,
+                                                             build_transformers_prefix_allowed_tokens_fn)
+    tokenizer = processor.tokenizer
+    if id(tokenizer) not in _TOKENIZER_DATA:
+        _TOKENIZER_DATA[id(tokenizer)] = build_token_enforcer_tokenizer_data(tokenizer)
+    return build_transformers_prefix_allowed_tokens_fn(_TOKENIZER_DATA[id(tokenizer)],
+                                                       JsonSchemaParser(structure.model_json_schema()))
 
 
 def generate(model, processor, image_path, text, prefix_fn, temperature=None):
@@ -145,9 +189,10 @@ def generate(model, processor, image_path, text, prefix_fn, temperature=None):
     if isinstance(model, CustomFamily):
         return model.generate(image_path, text, temperature)
     messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": text}]}]
-    chat = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    chat = render(processor, messages, True)
     with Image.open(image_path) as image:
-        inputs = processor(text=[chat], images=[image.convert("RGB")], return_tensors="pt").to(model.device)
+        inputs = processor(text=[chat], images=[image.convert("RGB")], return_tensors="pt",
+                           **encode_kwargs(processor, chat)).to(model.device)
     sampling = dict(do_sample=True, temperature=temperature) if temperature else dict(do_sample=False)
     with torch.inference_mode():
         out = model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS, prefix_allowed_tokens_fn=prefix_fn,

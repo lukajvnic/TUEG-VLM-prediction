@@ -187,10 +187,16 @@ def main():
         source, load_in_4bit=bool(base.get("quantize-4bit", train["quantize-4bit"])), auto_model=AutoModel,
         trust_remote_code=True, unsloth_force_compile=True, use_gradient_checkpointing="unsloth")
     module = sys.modules[type(model).__module__]  # the remote-code module: format_messages, text_encode, ...
+    # leaf names, matched across all experts (model.layers.N.mlp.experts.M.*, shared_experts) and, when the
+    # vision side is on, the SAM (qkv/proj/lin1/lin2) and CLIP (q/k/v/out_proj, fc1/fc2) towers. The single
+    # linear projector is left alone. unsloth's finetune_*_layers flags would only reach attention and the
+    # dense layer-0 MLP here (its regex wants model.layers.N.{self_attn,mlp}.<leaf> or a vision tag)
+    targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    if lora["vision"]:
+        targets += ["qkv", "proj", "lin1", "lin2", "out_proj", "fc1", "fc2"]
     model = FastVisionModel.get_peft_model(
-        model, finetune_vision_layers=lora["vision"], finetune_language_layers=True,
-        finetune_attention_modules=True, finetune_mlp_modules=True,
-        r=lora["rank"], lora_alpha=lora["alpha"], lora_dropout=lora["dropout"], bias="none", random_state=3407)
+        model, target_modules=targets, r=lora["rank"], lora_alpha=lora["alpha"], lora_dropout=lora["dropout"],
+        bias="none", random_state=3407)
     model.print_trainable_parameters()
     FastVisionModel.for_training(model)
 

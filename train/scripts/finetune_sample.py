@@ -19,7 +19,7 @@ import torch
 import yaml
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from PIL import Image
-from transformers import AutoModelForImageTextToText, AutoProcessor, Trainer, TrainingArguments
+from transformers import AutoModelForImageTextToText, Trainer, TrainingArguments
 
 ROOT = Path(__file__).parents[2]
 CONFIG_PATH = ROOT / "config.yml"
@@ -71,13 +71,13 @@ def resolve_model(repo_id):
     return str(local) if (local / "config.json").exists() else repo_id
 
 
-def get_messages(example, include_answer):
+def get_messages(example, include_answer, answer_suffix=""):
     prompt = example["instruction"]
     if example.get("input"):
         prompt = f"{prompt}\n\n{example['input']}"
     messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": prompt}]}]
-    if include_answer:
-        messages.append({"role": "assistant", "content": [{"type": "text", "text": example["output"]}]})
+    if include_answer:  # answer_suffix: `bases:` answer-suffix, the stop token for templates that render none
+        messages.append({"role": "assistant", "content": [{"type": "text", "text": example["output"] + answer_suffix}]})
     return messages
 
 
@@ -86,27 +86,30 @@ class DataCollator:
     # same text generation starts from) through the processor, so image-token expansion and the template's
     # own markers are counted for whatever base this is; no per-model marker string
 
-    def __init__(self, processor, dataset_dir):
+    def __init__(self, processor, dataset_dir, base):
         self.processor = processor
         self.dataset_dir = dataset_dir
+        self.answer_suffix = base.get("answer-suffix", "")
 
     def __call__(self, examples):
         images, prompts, full = [], [], []
+        empty = runner.EMPTY_THOUGHT
         for example in examples:
             with Image.open(self.dataset_dir / example["images"][0]) as image:
                 images.append(image.convert("RGB"))
-            prompt = self.processor.apply_chat_template(get_messages(example, False), tokenize=False,
-                                                        add_generation_prompt=True)
-            text = self.processor.apply_chat_template(get_messages(example, True), tokenize=False,
-                                                      add_generation_prompt=False)
+            prompt = runner.render(self.processor, get_messages(example, False), True)
+            text = runner.render(self.processor, get_messages(example, True, self.answer_suffix), False)
+            if not text.startswith(prompt) and prompt.endswith(empty) and text.startswith(prompt[:-len(empty)]):
+                text = prompt + text[len(prompt) - len(empty):]  # gemma4: keep the empty thinking channel in the prompt
             if not text.startswith(prompt):
                 raise ValueError("chat template: the full turn does not start with the generation prompt; "
                                  "answer masking would be wrong for this base")
             prompts.append(prompt)
             full.append(text)
-        batch = self.processor(text=full, images=images, padding=True, return_tensors="pt")
+        extra = runner.encode_kwargs(self.processor, full[0])
+        batch = self.processor(text=full, images=images, padding=True, return_tensors="pt", **extra)
         prompt_lengths = self.processor(text=prompts, images=images, padding=True,
-                                        return_tensors="pt")["attention_mask"].sum(dim=1)
+                                        return_tensors="pt", **extra)["attention_mask"].sum(dim=1)
         labels = batch["input_ids"].clone()
         labels[batch["attention_mask"] == 0] = -100
         for row, mask in enumerate(batch["attention_mask"]):
@@ -123,13 +126,16 @@ def init_model(config):
     base = config["base"]
     source = resolve_model(base["repo"])
     print(f"loading {source}", flush=True)
-    loading = dict(torch_dtype=dtype, device_map="auto", trust_remote_code=base.get("trust-remote-code", False))
+    loading = dict(dtype=dtype, device_map="auto", trust_remote_code=base.get("trust-remote-code", False))
     if config["quantize-4bit"]:
         from transformers import BitsAndBytesConfig
         loading["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=dtype,
-            llm_int8_skip_modules=runner.VISION_HINTS)  # never quantise the image side
-    processor = AutoProcessor.from_pretrained(source, trust_remote_code=loading["trust_remote_code"])
+            # never quantise the image side. Passing any list drops transformers' default skips, so lm_head is
+            # named too. bitsandbytes matches these as module-name prefixes/suffixes, not substrings: it covers
+            # llama4 (top-level `vision_model`, `multi_modal_projector`), not e.g. Qwen's `model.visual`
+            llm_int8_skip_modules=[*runner.VISION_HINTS, "lm_head"])
+    processor = runner.load_processor(source, base, loading["trust_remote_code"])
     model = AutoModelForImageTextToText.from_pretrained(source, **loading)
     model.config.use_cache = False
     if config["quantize-4bit"]:
@@ -243,7 +249,7 @@ def init_trainer(config, model, processor, data, dataset_dir):
         per_device_eval_batch_size=settings["batch-size"],
         gradient_accumulation_steps=settings["gradient-accumulation"],
         learning_rate=settings["learning-rate"],
-        warmup_ratio=settings["warmup-ratio"],
+        warmup_steps=settings["warmup-ratio"],  # a float < 1 is a ratio; warmup_ratio is deprecated in transformers 5
         lr_scheduler_type=settings["lr-scheduler"],
         weight_decay=settings["weight-decay"],
         bf16=use_bf16,
@@ -278,7 +284,7 @@ def init_trainer(config, model, processor, data, dataset_dir):
         args=arguments,
         train_dataset=data["train"],
         eval_dataset=data["validation"],
-        data_collator=DataCollator(processor, dataset_dir),
+        data_collator=DataCollator(processor, dataset_dir, config["base"]),
         processing_class=processor,
         optimizers=(build_optimizer(model, config), None),
         generation=generation,

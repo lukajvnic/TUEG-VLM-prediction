@@ -20,6 +20,11 @@ def snapshot_dir(repo_id, root=None):
     return (root or checkpoint_root()) / re.sub(r"[^A-Za-z0-9._-]+", "--", repo_id)
 
 
+IGNORE = ["consolidated*.safetensors"]  # Mistral ships its weights twice (48 GB consolidated + shards); transformers reads the shards
+PROCESSOR_FILES = ["preprocessor_config.json", "processor_config.json", "tokenizer.json", "tokenizer_config.json",
+                   "special_tokens_map.json", "chat_template.json", "chat_template.jinja"]
+
+
 def is_complete(repo_id, destination, token):
     from huggingface_hub import snapshot_download
     from huggingface_hub.utils import HfHubHTTPError
@@ -27,7 +32,7 @@ def is_complete(repo_id, destination, token):
         return False
     try:
         files = snapshot_download(repo_id=repo_id, repo_type="model", local_dir=destination,
-                                  token=token, dry_run=True)
+                                  token=token, dry_run=True, ignore_patterns=IGNORE)
     except (HfHubHTTPError, OSError):
         return False
     return bool(files) and all(not f.will_download for f in files)
@@ -61,12 +66,30 @@ def main():
             continue
         try:
             snapshot_download(repo_id=repo_id, repo_type="model", local_dir=destination,
-                              token=args.token, max_workers=8)
+                              token=args.token, max_workers=8, ignore_patterns=IGNORE)
         except Exception as e:  # gated repo without licence acceptance, network, disk
             failed.append(repo_id)
             print(f"FAILED {repo_id}: {e}", file=sys.stderr)
+    copy_processor_files(cfg, keys, args.output_dir)
     if failed:
         sys.exit(f"failed: {', '.join(failed)}")
+
+
+def copy_processor_files(cfg, keys, root):
+    # `processor-files-from`: a repo that ships weights only (Mistral-Small-3.2) borrows a sibling's processor and
+    # tokenizer files; only files the destination lacks are copied, so a later upstream fix wins
+    import shutil
+    for key in keys:
+        base = base_spec(cfg, key)
+        if not base.get("processor-files-from"):
+            continue
+        src = snapshot_dir(base_spec(cfg, base["processor-files-from"])["repo"], root)
+        dst = snapshot_dir(base["repo"], root)
+        if not dst.is_dir():
+            continue
+        copied = [f for f in PROCESSOR_FILES if (src / f).exists() and not (dst / f).exists()
+                  and not shutil.copy2(src / f, dst / f) is None]
+        print(f"{key}: copied {len(copied)} processor files from {base['processor-files-from']}: {', '.join(copied) or 'none'}")
 
 
 if __name__ == "__main__":

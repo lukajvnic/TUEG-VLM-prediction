@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from helpers.pipeline import ROOT, base_spec, checkpoint_dir, config
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from run import script, submit  # noqa: E402
+from run import job_name, queued, script, submit  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "train"))
 import importlib
@@ -63,6 +63,7 @@ def main():
     spec = cfg["train"]
     dataset = args.dataset or spec["dataset"]
     keys = [args.model] if args.model else [k for k, v in cfg["bases"].items() if v.get("family") in STACKS]
+    pending = queued()
     for model in keys:
         base = base_spec(cfg, model)
         family = base.get("family")
@@ -73,6 +74,9 @@ def main():
         out = checkpoint_dir(model, dataset)
         if (out / "manifest.json").exists():
             print(f"{model} on {dataset}: {out}/manifest.json exists (finished), skipping")
+            continue
+        if job_name(model) in pending:
+            print(f"{model}: {job_name(model)} is already queued or running, skipping")
             continue
         if stack == "llamafactory":
             export = ROOT / "datasets" / dataset / "export-llamafactory" / "dataset_info.json"
@@ -89,7 +93,7 @@ def main():
             command = f"python {ROOT}/train/custom/unsloth_deepseek_ocr.py"
         if not (ROOT / venv / "bin" / "activate").exists() and not args.dry_run:
             sys.exit(f"{model}: {venv} missing - see knowledge/operations.md 4d (custom stacks)")
-        text = script("eeg-vlm-train", base["time"], base["ram"], spec["cpus"], base["gpus"], command, venv=venv)
+        text = script(job_name(model), base["time"], base["ram"], spec["cpus"], base["gpus"], command, venv=venv)
         env = {"TRAIN_MODEL": model, "TRAIN_DATASET": dataset}
         line = f"{model} on {dataset} -> {out}  stack: {stack} ({venv})  {base['time']}/{base['ram']}/gpu:{base['gpus']}"
         if args.dry_run:
