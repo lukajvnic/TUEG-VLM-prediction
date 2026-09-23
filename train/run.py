@@ -73,15 +73,15 @@ def train(args):
         if (out / "manifest.json").exists():
             print(f"{model} on {dataset}: {out}/manifest.json exists (finished), skipping")
             continue
-        text = script("eeg-vlm-train", spec["time"], base["ram"], spec["cpus"], base["gpus"],
+        text = script("eeg-vlm-train", base["time"], base["ram"], spec["cpus"], base["gpus"],
                       f"python {ROOT}/train/scripts/finetune_sample.py")
         env = {"TRAIN_MODEL": model, "TRAIN_DATASET": dataset}
         if args.dry_run:
             if model == models[0]:
                 print(text)
-            print(f"# {model} on {dataset} -> {out}  base: {base['repo']}  {spec['time']}/{base['ram']}/gpu:{base['gpus']}")
+            print(f"# {model} on {dataset} -> {out}  base: {base['repo']}  {base['time']}/{base['ram']}/gpu:{base['gpus']}")
             continue
-        print(f"{submit(text, env)} - {model} on {dataset} -> {out}, {spec['time']}/{base['ram']}/gpu:{base['gpus']}")
+        print(f"{submit(text, env)} - {model} on {dataset} -> {out}, {base['time']}/{base['ram']}/gpu:{base['gpus']}")
 
 
 def predict(args):

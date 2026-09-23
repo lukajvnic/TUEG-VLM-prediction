@@ -195,6 +195,7 @@ def base_spec(cfg, key):
     spec = dict(bases[key]) if key in bases else {"repo": key}
     spec.setdefault("gpus", cfg["train"]["gpus"])
     spec.setdefault("ram", cfg["train"]["ram"])
+    spec.setdefault("time", cfg["train"]["time"])
     return spec
 
 

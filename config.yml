@@ -248,7 +248,8 @@ models:
     cpus: 8
 
 # HF weights behind each Ollama tag, for the fine-tune track (every model is to be fine-tuned, 2026-09-21).
-# gpus/ram override train: for bases that do not fit one A100-40GB in bf16 (Narval nodes have 4 x 40 GB).
+# gpus/ram/time override train: for bases that do not fit one A100-40GB in bf16 (Narval nodes have 4 x 40 GB).
+# 2-GPU bases are model-parallel (no speedup), so they get 48 h; llama4 in NF4 on 4 GPUs gets 72 h. All guesses until measured.
 # `status` marks a base the generic trainer cannot take yet; run.py train refuses it and hf-install --all skips it.
 # Repo ids were looked up on the Hub 2026-09-21; gated ones (google/*, meta-llama/*) need the licence accepted.
 bases:
@@ -256,18 +257,18 @@ bases:
   deepseek-ocr:3b: {repo: deepseek-ai/DeepSeek-OCR, trust-remote-code: true, family: deepseek-ocr, status: custom code - train with Unsloth from helpers/export-sft.py --format unsloth, score via predict.py's custom family}
   gemma3:4b: {repo: google/gemma-3-4b-it}
   gemma3:12b: {repo: google/gemma-3-12b-it}
-  gemma3:27b: {repo: google/gemma-3-27b-it, gpus: 2, ram: 128G}
+  gemma3:27b: {repo: google/gemma-3-27b-it, gpus: 2, ram: 128G, time: '48:00:00'}
   gemma4:e2b: {repo: google/gemma-4-E2B-it}
   gemma4:e4b: {repo: google/gemma-4-E4B-it}
   gemma4:12b: {repo: google/gemma-4-12B-it}
-  gemma4:26b: {repo: google/gemma-4-26B-A4B-it, gpus: 2, ram: 128G}
-  gemma4:31b: {repo: google/gemma-4-31B-it, gpus: 2, ram: 128G}
+  gemma4:26b: {repo: google/gemma-4-26B-A4B-it, gpus: 2, ram: 128G, time: '48:00:00'}
+  gemma4:31b: {repo: google/gemma-4-31B-it, gpus: 2, ram: 128G, time: '48:00:00'}
   glm-ocr:latest: {repo: zai-org/GLM-OCR}  # native transformers 4.x with an image chat template per its card; generic path, verify on the cluster
   granite3.2-vision:2b: {repo: ibm-granite/granite-vision-3.2-2b}
-  llama4:16x17b: {repo: meta-llama/Llama-4-Scout-17B-16E-Instruct, gpus: 4, ram: 256G, quantize-4bit: true}  # 109B params, 218 GB bf16: NF4 on a whole node is the only fit (maintainer 2026-09-21)
+  llama4:16x17b: {repo: meta-llama/Llama-4-Scout-17B-16E-Instruct, gpus: 4, ram: 256G, time: '72:00:00', quantize-4bit: true}  # 109B params, 218 GB bf16: NF4 on a whole node is the only fit (maintainer 2026-09-21)
   llava:7b: {repo: llava-hf/llava-1.5-7b-hf}
   llava:13b: {repo: llava-hf/llava-1.5-13b-hf}
-  llava:34b: {repo: llava-hf/llava-v1.6-34b-hf, gpus: 2, ram: 128G}
+  llava:34b: {repo: llava-hf/llava-v1.6-34b-hf, gpus: 2, ram: 128G, time: '48:00:00'}
   llava-llama3:8b: {repo: xtuner/llava-llama-3-8b-v1_1-transformers}
   llava-phi3:3.8b: {repo: xtuner/llava-phi-3-mini-hf}
   medgemma:4b: {repo: google/medgemma-4b-it}
@@ -275,16 +276,16 @@ bases:
   minicpm-v:8b: {repo: openbmb/MiniCPM-V-2_6, trust-remote-code: true, family: minicpm, status: custom code - train with OpenBMB finetune_lora.sh from export-sft.py --format minicpm, score via predict.py's custom family}
   minicpm-v4.5:8b: {repo: openbmb/MiniCPM-V-4_5, trust-remote-code: true, family: minicpm, status: custom code - train with LLaMA-Factory (template minicpm_v) from export-sft.py --format llamafactory, score via predict.py's custom family}
   minicpm-v4.6:1b: {repo: openbmb/MiniCPM-V-4.6}  # native transformers per its card (AutoModelForImageTextToText); the Hub repo is the 4.6 release, the Ollama :1b tag's exact twin is unverified
-  mistral-small3.1:24b: {repo: mistralai/Mistral-Small-3.1-24B-Instruct-2503, gpus: 2, ram: 128G}
-  mistral-small3.2:24b: {repo: mistralai/Mistral-Small-3.2-24B-Instruct-2506, gpus: 2, ram: 128G}
+  mistral-small3.1:24b: {repo: mistralai/Mistral-Small-3.1-24B-Instruct-2503, gpus: 2, ram: 128G, time: '48:00:00'}
+  mistral-small3.2:24b: {repo: mistralai/Mistral-Small-3.2-24B-Instruct-2506, gpus: 2, ram: 128G, time: '48:00:00'}
   moondream:1.8b: {repo: vikhyatk/moondream2, trust-remote-code: true, family: moondream, status: fine-tune deferred (maintainer 2026-09-21) - no local LoRA path, hosted service pending the data-use check; FINETUNE-TODO item 21}
   qwen2.5vl:7b: {repo: Qwen/Qwen2.5-VL-7B-Instruct}
-  qwen2.5vl:32b: {repo: Qwen/Qwen2.5-VL-32B-Instruct, gpus: 2, ram: 128G}
+  qwen2.5vl:32b: {repo: Qwen/Qwen2.5-VL-32B-Instruct, gpus: 2, ram: 128G, time: '48:00:00'}
   qwen3-vl:2b-instruct: {repo: Qwen/Qwen3-VL-2B-Instruct}
   qwen3-vl:4b-instruct: {repo: Qwen/Qwen3-VL-4B-Instruct}
   qwen3-vl:8b-instruct: {repo: Qwen/Qwen3-VL-8B-Instruct}
-  qwen3-vl:30b-a3b-instruct: {repo: Qwen/Qwen3-VL-30B-A3B-Instruct, gpus: 2, ram: 128G}
-  qwen3-vl:32b-instruct: {repo: Qwen/Qwen3-VL-32B-Instruct, gpus: 2, ram: 128G}
+  qwen3-vl:30b-a3b-instruct: {repo: Qwen/Qwen3-VL-30B-A3B-Instruct, gpus: 2, ram: 128G, time: '48:00:00'}
+  qwen3-vl:32b-instruct: {repo: Qwen/Qwen3-VL-32B-Instruct, gpus: 2, ram: 128G, time: '48:00:00'}
 
 prompts:
   intro: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. "
@@ -317,7 +318,7 @@ train:
   resume-from-checkpoint:     # adapter dir to resume; the output dir is always checkpoints/<model key>/<dataset>
   rationale-first: true       # target JSON is text_rationale then the booleans; predict.py reads it back from manifest.json
   quantize-4bit: false        # bf16 LoRA; 4-bit would also quantize the vision tower
-  time: '12:00:00'
+  time: '24:00:00'          # unmeasured (2026-09-23): ~13k passes at ~3k visual tokens plus 16 evals; a 7B is guessed at 8-11 h. `bases:` overrides per base
   ram: 64G
   gpus: 1
   cpus: 8
