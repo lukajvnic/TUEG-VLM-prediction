@@ -38,7 +38,8 @@ def image_path(dataset, line):
 
 
 def llamafactory(dataset, lines):
-    return [{"conversations": [{"from": "human", "value": "<image>" + line["instruction"]},
+    # "<image>\n": MiniCPM's chat() joins image and text with a newline, so score-time prompts match training
+    return [{"conversations": [{"from": "human", "value": "<image>\n" + line["instruction"]},
                                {"from": "gpt", "value": line["output"]}],
              "images": [image_path(dataset, line)]} for line in lines]
 

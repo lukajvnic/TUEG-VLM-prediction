@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from helpers.pipeline import DATASETS, ROOT, append_row, config, log_failure, read_csv
+from helpers.pipeline import DATASETS, ROOT, append_row, config, eval_rows, log_failure, read_csv
 from judge import HEADER, JUDGE_PROMPT, AgreementVerdict, correct_predictions, pairs
 
 MODEL = "gpt-5.6-luna"
@@ -50,8 +50,7 @@ def main():
     from openai import OpenAI
     client = OpenAI(api_key=load_key())
     max_chars = config()["judge"]["max-rationale-chars"]
-    models = sorted({r["model"] for ds in DATASETS
-                     for r in read_csv(ROOT / "datasets" / ds / "eval-baseline.csv")})
+    models = sorted({r["model"] for ds in DATASETS for r in eval_rows(ROOT / "datasets" / ds)})
     for dataset in DATASETS:
         out = ROOT / "datasets" / dataset / OUT_NAME
         todo = [(e, t) for model in models for e, t in pairs(dataset, model, OUT_NAME)]

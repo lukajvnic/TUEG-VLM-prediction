@@ -9,7 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from helpers.pipeline import DATASETS, RATIONALE, ROOT, append_row, config, log_failure, read_csv, submit_array, sync
+from helpers.pipeline import DATASETS, RATIONALE, ROOT, append_row, config, eval_rows, log_failure, read_csv, submit_array, sync
 
 TRANSIENT = (ConnectionError, TimeoutError, OSError)
 RETRY_TEMPERATURE = 0.3  # one sampled retry after a deterministic parse failure
@@ -45,7 +45,7 @@ def pairs(dataset, model, out_name="judge-baseline.csv"):
     truths = {r["path"]: r for r in read_csv(folder / "labels.csv")}
     done = {r["path"] for r in read_csv(folder / out_name) if r["model"] == model}
     return [(row, truths[row["path"]])
-            for row in read_csv(folder / "eval-baseline.csv")
+            for row in eval_rows(folder)
             if row["model"] == model and row["path"] not in done
             and row["path"] in truths and truths[row["path"]][RATIONALE].strip()]
 

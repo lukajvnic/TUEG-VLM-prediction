@@ -189,6 +189,19 @@ def pairs_in(path):
     return {(r["path"], r["model"]) for r in read_csv(path)}
 
 
+def eval_file(folder, model, spec):
+    # zero-shot (Ollama) rows share eval-baseline.csv; every `backend: hf` model (the fine-tunes and the bare
+    # -hf bases) writes its own eval-<model>.csv, ':' written as '-' (2026-09-24)
+    if spec.get("backend", "ollama") == "hf":
+        return folder / f"eval-{model.replace(':', '-')}.csv"
+    return folder / "eval-baseline.csv"
+
+
+def eval_rows(folder):
+    # every prediction row in a dataset folder: eval-baseline.csv plus the per-model eval-*.csv files
+    return [row for path in sorted(folder.glob("eval-*.csv")) for row in read_csv(path)]
+
+
 def base_spec(cfg, key):
     # `bases:` maps an Ollama tag to its HF weights (+ resources, trust-remote-code); a bare HF repo id also works
     bases = cfg.get("bases", {})
@@ -216,7 +229,7 @@ def sync():
     for ds in DATASETS:
         folder = ROOT / "datasets" / ds
         images = read_csv(folder / "labels.csv")
-        evaled = pairs_in(folder / "eval-baseline.csv")
+        evaled = {(r["path"], r["model"]) for r in eval_rows(folder)}
         judged = pairs_in(folder / "judge-baseline.csv")
         judged_gpt = pairs_in(folder / "judge-gpt.csv")
         ds_models = [m for m in models if ds in model_datasets(specs[m])]

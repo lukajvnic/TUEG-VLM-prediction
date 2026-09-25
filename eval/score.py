@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "models"))
-from helpers.pipeline import DATASETS, ROOT, db, parse_name, read_csv
+from helpers.pipeline import DATASETS, ROOT, db, eval_rows, parse_name, read_csv
 from structure import BINARY, labels
 
 MIN_SUPPORT = 20          # recordings a class needs before it counts toward macro-F1 / balanced accuracy
@@ -197,7 +197,7 @@ def write(path, fields, rows):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="recording-level scores per model per dataset from eval-baseline.csv")
+    parser = argparse.ArgumentParser(description="recording-level scores per model per dataset from eval-baseline.csv and eval-<model>.csv")
     parser.add_argument("datasets", nargs="*", default=DATASETS)
     parser.add_argument("--models", nargs="*", help="restrict to these model names")
     parser.add_argument("--bootstrap", type=int, default=BOOTSTRAP, help="resamples for the CI (0 = skip)")
@@ -209,7 +209,7 @@ def main():
             "SELECT DISTINCT path FROM pipeline WHERE dataset = ? AND scope = 'full'", (dataset,))}
         truth = {r["path"]: r for r in read_csv(folder / "labels.csv")}
         by_model = defaultdict(list)
-        for row in read_csv(folder / "eval-baseline.csv"):
+        for row in eval_rows(folder):
             by_model[row["model"]].append(row)
         summaries = [s for model, rows in sorted(by_model.items())
                      if (not args.models or model in args.models)

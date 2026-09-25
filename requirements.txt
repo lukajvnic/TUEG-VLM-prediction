@@ -16,3 +16,4 @@ accelerate
 bitsandbytes
 huggingface_hub
 lm-format-enforcer
+tiktoken      # llava-v1.6-34b's tokenizer load under transformers 5 needs it (failed 2026-09-24)

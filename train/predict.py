@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval" / "models"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from helpers.pipeline import ROOT, append_row, base_spec, config, db, is_degenerate, log_failure, read_csv
+from helpers.pipeline import ROOT, append_row, base_spec, config, db, eval_file, is_degenerate, log_failure, read_csv
 from structure import get_structure, labels, prompt, to_labels
 
 snapshot_dir = import_module("hf-install").snapshot_dir
@@ -233,7 +233,7 @@ def main():
     name, dataset = task()["model"], task()["dataset"]
     spec = config()["models"][name]
     folder = ROOT / "datasets" / dataset
-    out = folder / "eval-baseline.csv"
+    out = eval_file(folder, name, spec)  # datasets/<DS>/eval-<model>.csv for hf models
     header = ["path", "model", *labels(dataset), "rationale"]
     todo = pending(dataset, name, out)
     if not todo:

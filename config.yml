@@ -270,6 +270,34 @@ models:
     ram: 64G
     gpus: 1
     cpus: 8
+  # Every other fine-tune (2026-09-24), one array task per (model, dataset); TUSZ (8,460 windows) sets the walltime:
+  # ~5 s/image on a 7B is ~12 h, so 24 h for 1-GPU bases and 48 h on 2 GPUs for the 24-34B ones (unmeasured)
+  bakllava:7b-sft-pooled:         {backend: hf, base: bakllava:7b, checkpoint: checkpoints/bakllava-7b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  gemma3:4b-sft-pooled:           {backend: hf, base: gemma3:4b, checkpoint: checkpoints/gemma3-4b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  gemma3:12b-sft-pooled:          {backend: hf, base: gemma3:12b, checkpoint: checkpoints/gemma3-12b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  gemma3:27b-sft-pooled:          {backend: hf, base: gemma3:27b, checkpoint: checkpoints/gemma3-27b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
+  gemma4:e2b-sft-pooled:          {backend: hf, base: gemma4:e2b, checkpoint: checkpoints/gemma4-e2b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  gemma4:e4b-sft-pooled:          {backend: hf, base: gemma4:e4b, checkpoint: checkpoints/gemma4-e4b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  gemma4:26b-sft-pooled:          {backend: hf, base: gemma4:26b, checkpoint: checkpoints/gemma4-26b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
+  gemma4:31b-sft-pooled:          {backend: hf, base: gemma4:31b, checkpoint: checkpoints/gemma4-31b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
+  glm-ocr:latest-sft-pooled:      {backend: hf, base: glm-ocr:latest, checkpoint: checkpoints/glm-ocr-latest/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  granite3.2-vision:2b-sft-pooled: {backend: hf, base: granite3.2-vision:2b, checkpoint: checkpoints/granite3.2-vision-2b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  llava:7b-sft-pooled:            {backend: hf, base: llava:7b, checkpoint: checkpoints/llava-7b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  llava:13b-sft-pooled:           {backend: hf, base: llava:13b, checkpoint: checkpoints/llava-13b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  llava:34b-sft-pooled:           {backend: hf, base: llava:34b, checkpoint: checkpoints/llava-34b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
+  llava-llama3:8b-sft-pooled:     {backend: hf, base: llava-llama3:8b, checkpoint: checkpoints/llava-llama3-8b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  llava-phi3:3.8b-sft-pooled:     {backend: hf, base: llava-phi3:3.8b, checkpoint: checkpoints/llava-phi3-3.8b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  medgemma:4b-sft-pooled:         {backend: hf, base: medgemma:4b, checkpoint: checkpoints/medgemma-4b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  medgemma1.5:4b-sft-pooled:      {backend: hf, base: medgemma1.5:4b, checkpoint: checkpoints/medgemma1.5-4b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  minicpm-v4.6:1b-sft-pooled:     {backend: hf, base: minicpm-v4.6:1b, checkpoint: checkpoints/minicpm-v4.6-1b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  mistral-small3.1:24b-sft-pooled: {backend: hf, base: mistral-small3.1:24b, checkpoint: checkpoints/mistral-small3.1-24b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
+  mistral-small3.2:24b-sft-pooled: {backend: hf, base: mistral-small3.2:24b, checkpoint: checkpoints/mistral-small3.2-24b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
+  qwen2.5vl:32b-sft-pooled:       {backend: hf, base: qwen2.5vl:32b, checkpoint: checkpoints/qwen2.5vl-32b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
+  qwen3-vl:2b-instruct-sft-pooled: {backend: hf, base: qwen3-vl:2b-instruct, checkpoint: checkpoints/qwen3-vl-2b-instruct/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  qwen3-vl:4b-instruct-sft-pooled: {backend: hf, base: qwen3-vl:4b-instruct, checkpoint: checkpoints/qwen3-vl-4b-instruct/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  qwen3-vl:8b-instruct-sft-pooled: {backend: hf, base: qwen3-vl:8b-instruct, checkpoint: checkpoints/qwen3-vl-8b-instruct/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
+  qwen3-vl:30b-a3b-instruct-sft-pooled: {backend: hf, base: qwen3-vl:30b-a3b-instruct, checkpoint: checkpoints/qwen3-vl-30b-a3b-instruct/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
+  qwen3-vl:32b-instruct-sft-pooled: {backend: hf, base: qwen3-vl:32b-instruct, checkpoint: checkpoints/qwen3-vl-32b-instruct/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
 
 # HF weights behind each Ollama tag, for the fine-tune track (every model is to be fine-tuned, 2026-09-21).
 # chat-template: a Jinja template for bases whose processor ships none or a broken one. processor-kwargs: AutoProcessor
