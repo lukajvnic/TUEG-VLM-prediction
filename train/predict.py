@@ -173,6 +173,13 @@ _TOKENIZER_DATA = {}
 def enforcer(processor, structure):
     # same schema Ollama's json mode constrains the zero-shot models to. The vocabulary table is built once per
     # tokenizer (it decodes every token id); a pooled run builds six enforcers from it
+    try:
+        import transformers.tokenization_utils  # noqa: F401  slow-tokenizer module, removed in transformers 5
+    except ImportError:
+        # lm-format-enforcer (0.11.3, 2026-09-25) still imports PreTrainedTokenizerBase from there and reports the
+        # failure as "transformers is not installed"; it only needs the class, which lives in tokenization_utils_base
+        import transformers.tokenization_utils_base as tokenization_utils
+        sys.modules["transformers.tokenization_utils"] = tokenization_utils
     from lmformatenforcer import JsonSchemaParser
     from lmformatenforcer.integrations.transformers import (build_token_enforcer_tokenizer_data,
                                                              build_transformers_prefix_allowed_tokens_fn)

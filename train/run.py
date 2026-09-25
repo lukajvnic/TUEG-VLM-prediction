@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import os
 import subprocess
@@ -117,10 +118,34 @@ def train(args):
         print(f"{submit(text, env)} - {model} on {dataset} -> {out}, {base['time']}/{base['ram']}/gpu:{base['gpus']}")
 
 
+PREDICT_RECORD = ROOT / "logs" / "predict-tasks.csv"  # array job, task index, model, dataset per submitted task
+
+
+def active_predict_tasks():
+    # (model, dataset) pairs whose array task is still queued or running: their rows are not in any eval file
+    # yet, so a resubmission would run them twice and append duplicate rows
+    if not PREDICT_RECORD.exists():
+        return set()
+    try:
+        result = subprocess.run(["squeue", "-u", os.environ.get("USER", ""), "-h", "-r", "-o", "%F %K"],
+                                text=True, capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    live = {tuple(line.split()) for line in result.stdout.splitlines() if line.strip()} if result.returncode == 0 else set()
+    with PREDICT_RECORD.open() as f:
+        return {(job, task, model, dataset)[2:] for job, task, model, dataset in csv.reader(f) if (job, task) in live}
+
+
+def record_predict_tasks(job, tasks):
+    with PREDICT_RECORD.open("a") as f:
+        csv.writer(f).writerows([job, str(i), t["model"], t["dataset"]] for i, t in enumerate(tasks))
+
+
 def predict(args):
     specs = config()["models"]
     conn = sync()
     groups = defaultdict(list)
+    active = active_predict_tasks()
     for name, spec in specs.items():
         if spec.get("backend", "ollama") != "hf":
             continue
@@ -130,6 +155,9 @@ def predict(args):
         for dataset, count in conn.execute(
                 "SELECT dataset, COUNT(*) FROM pipeline WHERE model = ? AND scope = 'full' AND evaled = 0 "
                 "GROUP BY dataset ORDER BY dataset", (name,)):
+            if (name, dataset) in active:
+                print(f"{name} {dataset}: a predict task is still queued or running, skipping")
+                continue
             groups[(spec["time"], spec["ram"], spec["cpus"], spec["gpus"])].append(
                 {"model": name, "dataset": dataset, "pending": count})
     if not groups:
@@ -143,7 +171,9 @@ def predict(args):
             print(f"# tasks: {listed}")
             continue
         payload = b64encode(json.dumps(tasks).encode()).decode()
-        print(f"{submit(text, {'PREDICT_TASKS': payload})} - {listed}, {time}/{ram}/gpu:{gpus}")
+        submitted = submit(text, {"PREDICT_TASKS": payload})  # "Submitted batch job N"
+        record_predict_tasks(submitted.split()[-1], tasks)
+        print(f"{submitted} - {listed}, {time}/{ram}/gpu:{gpus}")
 
 
 def main():

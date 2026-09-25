@@ -242,7 +242,7 @@ models:
     backend: hf
     base: qwen2.5vl:7b
     checkpoint: checkpoints/qwen2.5vl-7b/pooled
-    time: '12:00:00'
+    time: '24:00:00'            # TUSZ is 8,460 windows per task; 12 h timed out risk (2026-09-24)
     ram: 64G
     gpus: 1
     cpus: 8
