@@ -41,8 +41,22 @@ def version(name):
     return v(name)
 
 
+# the wheelhouse bitsandbytes' CPU library faults (SIGILL) on Narval's EPYCs, login and compute nodes alike; on a
+# GPU node the CUDA library loads instead and everything is fine. So on a GPU-less node these imports, and the
+# packages that import bitsandbytes eagerly, are checked by installed version only (2026-09-26)
+NEEDS_GPU = {"bitsandbytes", "unsloth", "unsloth_zoo", "trl", "peft"}
+
+
+def has_gpu():
+    return import_module("torch").cuda.is_available()
+
+
 def imports(names):
+    gpu = has_gpu()
     for name in names:
+        if name in NEEDS_GPU and not gpu:
+            check(f"{name} installed (import skipped: no GPU here, see NEEDS_GPU)", lambda n=name: version_of(n) or (_ for _ in ()).throw(ModuleNotFoundError(n)))
+            continue
         check(f"import {name}", lambda n=name: import_module(n) and version_of(n))
 
 
@@ -100,8 +114,8 @@ def generic_base(key, base, runner):
 def main_venv():
     imports(["torch", "torchvision", "transformers", "peft", "accelerate", "PIL", "yaml", "pydantic",
              "sentencepiece", "google.protobuf", "tiktoken", "lmformatenforcer"])
-    check("torch.cuda (False on a login node is fine)", lambda: import_module("torch").cuda.is_available())
-    check("bitsandbytes (only 4-bit bases need it)", lambda: version_of("bitsandbytes"))
+    check("torch.cuda (False on a login node: partial preflight, see cluster-setup.sh PREFLIGHT_GPU)", has_gpu)
+    check("bitsandbytes installed (only 4-bit bases need it)", lambda: version_of("bitsandbytes"))
     runner = import_module("predict")
     from structure import get_structure
     cfg = config()
@@ -165,13 +179,7 @@ def unsloth_venv():
         if base.get("family") == "deepseek-ocr":
             custom_base(key, base)
     check("datasets/pooled/sft_train.jsonl", lambda: (ROOT / "datasets/pooled/sft_train.jsonl").stat().st_size)
-    # last: unsloth probes for an accelerator at import and, on a GPU-less login node, dies with SIGILL inside
-    # torch.accelerator (2026-09-26); its own switch skips the probe. Compute nodes import it normally
-    import os
-    if not import_module("torch").cuda.is_available():
-        os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
-        print("      (no GPU here: UNSLOTH_ZOO_DISABLE_GPU_INIT=1 for the import check)")
-    check("import unsloth", lambda: version_of("unsloth") or import_module("unsloth").__version__)
+    imports(["unsloth"])  # last: slowest; skipped without a GPU (it imports bitsandbytes)
 
 
 def main():

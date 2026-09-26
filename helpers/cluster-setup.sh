@@ -3,11 +3,21 @@
 #   bash helpers/cluster-setup.sh            # all three
 #   bash helpers/cluster-setup.sh unsloth    # one of: main llamafactory unsloth
 # Idempotent: existing venvs are kept, pins re-applied, then helpers/preflight.py must pass or the script exits 1.
+# On the login node the preflight skips imports that load bitsandbytes (its wheelhouse CPU library faults on
+# these EPYCs; the CUDA library is what a GPU node loads). PREFLIGHT_GPU=1 runs each preflight on a GPU node
+# through a 15-minute srun instead, which covers those too (queue wait included).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 module load StdEnv/2023 gcc python/3.11 cuda arrow   # arrow before any venv: pyarrow only exists through the module
 LF_DIR=${LF_DIR:-$SCRATCH/LLaMA-Factory}
 which=${1:-all}
+preflight() {
+  if [ "${PREFLIGHT_GPU:-0}" = 1 ]; then
+    srun --account=def-milad777 --gres=gpu:1 --mem=24G --cpus-per-task=2 --time=00:15:00 python helpers/preflight.py "$1"
+  else
+    python helpers/preflight.py "$1"
+  fi
+}
 
 venv() { [ -d "$1" ] || virtualenv --no-download "$1"; source "$1/bin/activate"; }  # Alliance's virtualenv sees module packages
 
@@ -15,7 +25,7 @@ if [ "$which" = all ] || [ "$which" = main ]; then
   echo "=== .venv: generic trainer + predict"
   venv .venv
   pip install --no-index -r requirements.txt || pip install -r requirements.txt
-  python helpers/preflight.py main
+  preflight main
   deactivate
 fi
 
@@ -29,7 +39,7 @@ if [ "$which" = all ] || [ "$which" = llamafactory ]; then
   # above those, so pin below. --no-deps on datasets: its pyarrow requirement would hit the wheelhouse dummy wheel
   pip install "transformers==4.56.2" pydantic
   pip install --no-deps "datasets==3.6.0"
-  python helpers/preflight.py llamafactory
+  preflight llamafactory
   deactivate
 fi
 
@@ -42,7 +52,7 @@ if [ "$which" = all ] || [ "$which" = unsloth ]; then
   pip install "transformers==4.56.2" "trl==0.22.2" "peft>=0.18" accelerate bitsandbytes tyro protobuf sentencepiece \
       hf_transfer cut_cross_entropy einops addict easydict PyYAML matplotlib pydantic dill multiprocess xxhash pandas
   pip install --no-deps "datasets==3.6.0"
-  python helpers/preflight.py unsloth
+  preflight unsloth
   deactivate
 fi
 echo "=== done"
