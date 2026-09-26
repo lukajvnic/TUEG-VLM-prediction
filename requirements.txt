@@ -10,7 +10,7 @@ Pillow
 # fine-tune track (train/, eval/score.py): torch + transformers stack, same venv
 torch
 torchvision   # transformers 5 image processors import it; without it every VLM load dies with a bare ImportError (2026-09-23)
-transformers
+transformers  # unpinned: the wheelhouse gave 5.8.0 on 2026-09-23 (the 24 first fine-tunes) and 5.14.1 on 09-26; helpers/preflight.py checks whatever is installed
 peft
 accelerate
 bitsandbytes

@@ -49,7 +49,7 @@ def imports(names):
 def version_of(module):
     try:
         return version({"PIL": "Pillow", "yaml": "PyYAML", "lmformatenforcer": "lm-format-enforcer",
-                        "cut_cross_entropy": "cut-cross-entropy"}.get(module, module))
+                        "cut_cross_entropy": "cut-cross-entropy", "google.protobuf": "protobuf"}.get(module, module))
     except Exception:
         return ""
 
@@ -99,7 +99,7 @@ def generic_base(key, base, runner):
 
 def main_venv():
     imports(["torch", "torchvision", "transformers", "peft", "accelerate", "PIL", "yaml", "pydantic",
-             "sentencepiece", "protobuf", "tiktoken", "lmformatenforcer"])
+             "sentencepiece", "google.protobuf", "tiktoken", "lmformatenforcer"])
     check("torch.cuda (False on a login node is fine)", lambda: import_module("torch").cuda.is_available())
     check("bitsandbytes (only 4-bit bases need it)", lambda: version_of("bitsandbytes"))
     runner = import_module("predict")
@@ -111,6 +111,20 @@ def main_venv():
             continue
         processor = generic_base(key, base, runner)
         first = first or processor
+    # the enforcer's transformers integration reports any failed import as "transformers is not installed";
+    # import each name it needs separately so the real one shows, after the shim predict.enforcer() installs
+    check("predict.py carries the tokenization_utils shim",
+          lambda: "tokenization_utils_base" in (ROOT / "train/predict.py").read_text() or (_ for _ in ()).throw(RuntimeError("not pulled")))
+    try:
+        import transformers.tokenization_utils  # noqa: F401
+    except ImportError:
+        import transformers.tokenization_utils_base as tub
+        sys.modules["transformers.tokenization_utils"] = tub
+    for mod, name in [("transformers", "AutoModelForCausalLM"), ("transformers.generation.logits_process", "LogitsProcessor"),
+                      ("transformers.generation.logits_process", "PrefixConstrainedLogitsProcessor"),
+                      ("transformers.tokenization_utils", "PreTrainedTokenizerBase"), ("lmformatenforcer", "JsonSchemaParser"),
+                      ("lmformatenforcer.integrations.transformers", "build_transformers_prefix_allowed_tokens_fn")]:
+        check(f"enforcer import {mod}.{name}", lambda m=mod, n=name: getattr(import_module(m), n) and "")
     if first is not None:
         check("lm-format-enforcer under this transformers", lambda: runner.enforcer(first, get_structure("TUAB", True)) and "built")
     check("datasets/pooled/sft_train.jsonl", lambda: (ROOT / "datasets/pooled/sft_train.jsonl").stat().st_size)

@@ -320,7 +320,7 @@ bases:
   gemma3:27b: {repo: google/gemma-3-27b-it, gpus: 2, ram: 128G, time: '48:00:00'}
   gemma4:e2b: {repo: google/gemma-4-E2B-it}
   gemma4:e4b: {repo: google/gemma-4-E4B-it}
-  gemma4:12b: {repo: google/gemma-4-12B-it, status: 'model_type gemma4_unified (Gemma4UnifiedForConditionalGeneration, saved by transformers 5.10) is not in 5.8.0, the wheelhouse version; needs a venv with transformers >= 5.10 (2026-09-23)'}
+  gemma4:12b: {repo: google/gemma-4-12B-it}  # gemma4_unified: needs transformers >= 5.10; the cluster .venv moved to 5.14.1 on 2026-09-26, so it is back in (was `status` from 09-23)
   gemma4:26b: {repo: google/gemma-4-26B-A4B-it, gpus: 2, ram: 128G, time: '48:00:00'}  # MoE: experts are fused parameters, LoRA reaches attention + vision only
   gemma4:31b: {repo: google/gemma-4-31B-it, gpus: 3, ram: 192G, time: '48:00:00'}  # 63 GB bf16
   glm-ocr:latest: {repo: zai-org/GLM-OCR, template-kwargs: {enable_thinking: false}, answer-suffix: '<|user|>'}  # enable_thinking false puts the empty <think></think> in the prompt (train and score alike) instead of the target; the template renders no stop token after the answer, <|user|> is one of its eos ids. config saved by transformers 5.17: loads on 5.8 (unknown keys kept), weight names unverified
