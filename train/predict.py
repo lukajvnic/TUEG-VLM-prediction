@@ -87,7 +87,8 @@ def pending(dataset, model, out):
 class CustomFamily:
     """Bases whose model code is their own (config.yml bases: `family`): loaded and prompted through their API.
     No logits access from those APIs, so decoding is unconstrained; the JSON is parsed and retried like the rest.
-    Written from the model cards (2026-09-21), unverified on a GPU."""
+    Runs in the venv that trained the family (train/run.py PREDICT_VENVS, transformers 4.56): their remote code
+    does not import under transformers 5. Written from the model cards (2026-09-21), unverified on a GPU."""
 
     def __init__(self, name, source, checkpoint):
         import torch
@@ -95,8 +96,8 @@ class CustomFamily:
         if name == "minicpm":  # MiniCPM-V 2.6 / 4.5: AutoModel + model.chat(image=, msgs=, tokenizer=)
             from transformers import AutoModel, AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True)
-            model = AutoModel.from_pretrained(source, trust_remote_code=True, dtype=torch.bfloat16,
-                                              attn_implementation="sdpa")
+            model = AutoModel.from_pretrained(source, trust_remote_code=True, torch_dtype=torch.bfloat16,
+                                              attn_implementation="sdpa")  # torch_dtype: this runs on transformers 4.56
         elif name == "moondream":  # moondream2: AutoModelForCausalLM + model.query(image, question)
             from transformers import AutoModelForCausalLM
             model = AutoModelForCausalLM.from_pretrained(source, trust_remote_code=True, device_map={"": "cuda"})
@@ -104,7 +105,7 @@ class CustomFamily:
             from transformers import AutoModel, AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True)
             model = AutoModel.from_pretrained(source, trust_remote_code=True, use_safetensors=True,
-                                              dtype=torch.bfloat16)
+                                              torch_dtype=torch.bfloat16)
         else:
             raise ValueError(f"unknown custom family {name!r}")
         if checkpoint is not None:

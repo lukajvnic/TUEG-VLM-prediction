@@ -118,6 +118,10 @@ def train(args):
         print(f"{submit(text, env)} - {model} on {dataset} -> {out}, {base['time']}/{base['ram']}/gpu:{base['gpus']}")
 
 
+# custom-code families are scored in the venv that trained them: their remote code targets transformers 4.x
+# (DeepSeek-OCR imports LlamaFlashAttention2, MiniCPM uses 4.x mask utils) and does not import under the main
+# venv's 5.8. Keys are `bases:` family names; anything else scores in .venv
+PREDICT_VENVS = {"minicpm": ".venv-llamafactory", "deepseek-ocr": ".venv-unsloth"}
 PREDICT_RECORD = ROOT / "logs" / "predict-tasks.csv"  # array job, task index, model, dataset per submitted task
 
 
@@ -134,6 +138,10 @@ def active_predict_tasks():
     live = {tuple(line.split()) for line in result.stdout.splitlines() if line.strip()} if result.returncode == 0 else set()
     with PREDICT_RECORD.open() as f:
         return {(job, task, model, dataset)[2:] for job, task, model, dataset in csv.reader(f) if (job, task) in live}
+
+
+def predict_venv(base):
+    return PREDICT_VENVS.get(base.get("family"), ".venv")
 
 
 def record_predict_tasks(job, tasks):
@@ -158,13 +166,13 @@ def predict(args):
             if (name, dataset) in active:
                 print(f"{name} {dataset}: a predict task is still queued or running, skipping")
                 continue
-            groups[(spec["time"], spec["ram"], spec["cpus"], spec["gpus"])].append(
+            groups[(spec["time"], spec["ram"], spec["cpus"], spec["gpus"], predict_venv(base_spec(config(), spec["base"])))].append(
                 {"model": name, "dataset": dataset, "pending": count})
     if not groups:
         print("nothing to predict")
         return
-    for (time, ram, cpus, gpus), tasks in sorted(groups.items()):
-        text = script("eeg-vlm-predict", time, ram, cpus, gpus, f"python {ROOT}/train/predict.py", len(tasks) - 1)
+    for (time, ram, cpus, gpus, venv), tasks in sorted(groups.items()):
+        text = script("eeg-vlm-predict", time, ram, cpus, gpus, f"python {ROOT}/train/predict.py", len(tasks) - 1, venv=venv)
         listed = ", ".join(f"{t['model']} {t['dataset']} ({t['pending']})" for t in tasks)
         if args.dry_run:
             print(text)
@@ -173,7 +181,7 @@ def predict(args):
         payload = b64encode(json.dumps(tasks).encode()).decode()
         submitted = submit(text, {"PREDICT_TASKS": payload})  # "Submitted batch job N"
         record_predict_tasks(submitted.split()[-1], tasks)
-        print(f"{submitted} - {listed}, {time}/{ram}/gpu:{gpus}")
+        print(f"{submitted} - {listed}, {time}/{ram}/gpu:{gpus} ({venv})")
 
 
 def main():
