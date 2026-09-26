@@ -115,11 +115,7 @@ def main_venv():
     # import each name it needs separately so the real one shows, after the shim predict.enforcer() installs
     check("predict.py carries the tokenization_utils shim",
           lambda: "tokenization_utils_base" in (ROOT / "train/predict.py").read_text() or (_ for _ in ()).throw(RuntimeError("not pulled")))
-    try:
-        import transformers.tokenization_utils  # noqa: F401
-    except ImportError:
-        import transformers.tokenization_utils_base as tub
-        sys.modules["transformers.tokenization_utils"] = tub
+    runner.shim_tokenization_utils()
     for mod, name in [("transformers", "AutoModelForCausalLM"), ("transformers.generation.logits_process", "LogitsProcessor"),
                       ("transformers.generation.logits_process", "PrefixConstrainedLogitsProcessor"),
                       ("transformers.tokenization_utils", "PreTrainedTokenizerBase"), ("lmformatenforcer", "JsonSchemaParser"),
