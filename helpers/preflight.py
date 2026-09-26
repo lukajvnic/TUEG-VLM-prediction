@@ -160,12 +160,18 @@ def llamafactory_venv():
 def unsloth_venv():
     imports(["torch", "torchvision", "transformers", "peft", "trl", "accelerate", "bitsandbytes", "triton", "PIL", "yaml",
              "pydantic", "matplotlib", "einops", "addict", "easydict", "tqdm"])
-    check("import unsloth (slow, compiles nothing)", lambda: version_of("unsloth") or import_module("unsloth").__version__)
     cfg = config()
     for key, base in cfg["bases"].items():
         if base.get("family") == "deepseek-ocr":
             custom_base(key, base)
     check("datasets/pooled/sft_train.jsonl", lambda: (ROOT / "datasets/pooled/sft_train.jsonl").stat().st_size)
+    # last: unsloth probes for an accelerator at import and, on a GPU-less login node, dies with SIGILL inside
+    # torch.accelerator (2026-09-26); its own switch skips the probe. Compute nodes import it normally
+    import os
+    if not import_module("torch").cuda.is_available():
+        os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
+        print("      (no GPU here: UNSLOTH_ZOO_DISABLE_GPU_INIT=1 for the import check)")
+    check("import unsloth", lambda: version_of("unsloth") or import_module("unsloth").__version__)
 
 
 def main():
