@@ -41,10 +41,12 @@ def read_jsonl(path):
 
 
 def conversations(dataset, rows):
-    # the notebook's format: `<image>` in the user text, PIL images alongside; roles are the model's own tags
+    # the notebook's format: `<image>` in the user text, images alongside; roles are the model's own tags. Images
+    # are kept as paths and opened by the collator per batch: decoding all ~6,900 at once is ~48 GB of RAM and
+    # killed the first run (2026-09-27)
     folder = ROOT / "datasets" if dataset == "pooled" else ROOT / "datasets" / dataset
     return [{"messages": [{"role": "<|User|>", "content": "<image>\n" + row["instruction"],
-                           "images": [Image.open(folder / row["images"][0]).convert("RGB")]},
+                           "images": [str(folder / row["images"][0])]},
                           {"role": "<|Assistant|>", "content": row["output"]}]} for row in rows]
 
 
@@ -108,7 +110,8 @@ class DeepSeekOCRDataCollator:
         return images_list, images_crop_list, images_spatial_crop, tokenized_image, crop_ratio
 
     def process_single_sample(self, messages: List[Dict]) -> Dict[str, Any]:
-        images = [img.convert("RGB") for m in messages for img in m.get("images") or [] if img is not None]
+        images = [Image.open(img).convert("RGB") if isinstance(img, str) else img.convert("RGB")
+                  for m in messages for img in m.get("images") or [] if img is not None]
         if not images:
             raise ValueError("No images found in sample.")
         tokenized_str, images_seq_mask = [self.bos_id], [False]

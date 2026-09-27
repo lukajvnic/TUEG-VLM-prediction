@@ -254,6 +254,10 @@ def main():
     out = eval_file(folder, name, spec)  # datasets/<DS>/eval-<model>.csv for hf models
     header = ["path", "model", *labels(dataset), "rationale"]
     todo = pending(dataset, name, out)
+    shard, shards = task().get("shard", 0), task().get("shards", 1)
+    if shards > 1:  # run.py split this pair over `shards` array tasks; take every shards-th pending window
+        todo = sorted(todo)[shard::shards]
+        print(f"{name} {dataset}: shard {shard + 1}/{shards}, {len(todo)} windows", flush=True)
     if not todo:
         print(f"{name} {dataset}: nothing pending")
         return

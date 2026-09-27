@@ -161,8 +161,10 @@ def custom_base(key, base):
 
 def llamafactory_venv():
     imports(["torch", "torchvision", "transformers", "peft", "trl", "accelerate", "datasets", "llamafactory", "PIL", "yaml", "pydantic", "pyarrow"])
-    check("transformers within LLaMA-Factory's bound", lambda: bounded("transformers", "4.55.0", "5.8.0"))
-    check("datasets within LLaMA-Factory's bound", lambda: bounded("datasets", "2.16.0", "4.0.0"))
+    # LLaMA-Factory's check_version list, src/llamafactory/extras/misc.py (read 2026-09-27); re-read it on a re-clone
+    for name, low, high in [("transformers", "4.55.0", "5.8.0"), ("datasets", "2.16.0", "4.0.0"),
+                            ("accelerate", "1.3.0", "1.15.0"), ("peft", "0.18.0", "0.20.0"), ("trl", "0.18.0", "0.24.0")]:
+        check(f"{name} within LLaMA-Factory's bound", lambda n=name, lo=low, hi=high: bounded(n, lo, hi))
     cfg = config()
     for key, base in cfg["bases"].items():
         if base.get("family") == "minicpm":

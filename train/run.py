@@ -122,6 +122,10 @@ def train(args):
 # (DeepSeek-OCR imports LlamaFlashAttention2, MiniCPM uses 4.x mask utils) and does not import under the main
 # venv's 5.8. Keys are `bases:` family names; anything else scores in .venv
 PREDICT_VENVS = {"minicpm": ".venv-llamafactory", "deepseek-ocr": ".venv-unsloth"}
+# a (model, dataset) with more pending windows than this is split over several array tasks, each taking an
+# interleaved slice (predict.py); measured 22-40 s/image on the 24B-class bases (2026-09-26), so TUSZ's 8,460
+# windows would need ~68 h in one task against a 48 h walltime. 1,500 windows is ~17 h at the slowest rate
+SHARD_WINDOWS = 1500
 PREDICT_RECORD = ROOT / "logs" / "predict-tasks.csv"  # array job, task index, model, dataset per submitted task
 
 
@@ -166,14 +170,17 @@ def predict(args):
             if (name, dataset) in active:
                 print(f"{name} {dataset}: a predict task is still queued or running, skipping")
                 continue
-            groups[(spec["time"], spec["ram"], spec["cpus"], spec["gpus"], predict_venv(base_spec(config(), spec["base"])))].append(
-                {"model": name, "dataset": dataset, "pending": count})
+            shards = -(-count // SHARD_WINDOWS)  # ceil
+            for shard in range(shards):
+                groups[(spec["time"], spec["ram"], spec["cpus"], spec["gpus"], predict_venv(base_spec(config(), spec["base"])))].append(
+                    {"model": name, "dataset": dataset, "pending": count, "shard": shard, "shards": shards})
     if not groups:
         print("nothing to predict")
         return
     for (time, ram, cpus, gpus, venv), tasks in sorted(groups.items()):
         text = script("eeg-vlm-predict", time, ram, cpus, gpus, f"python {ROOT}/train/predict.py", len(tasks) - 1, venv=venv)
-        listed = ", ".join(f"{t['model']} {t['dataset']} ({t['pending']})" for t in tasks)
+        listed = ", ".join(f"{t['model']} {t['dataset']} ({t['pending']}" + (f" {t['shard'] + 1}/{t['shards']})" if t["shards"] > 1 else ")")
+                           for t in tasks)
         if args.dry_run:
             print(text)
             print(f"# tasks: {listed}")
