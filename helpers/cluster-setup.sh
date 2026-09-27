@@ -39,8 +39,8 @@ if [ "$which" = all ] || [ "$which" = llamafactory ]; then
   # above those, so pin below. --no-deps on datasets: its pyarrow requirement would hit the wheelhouse dummy wheel
   # its check_version list (extras/misc.py): transformers <=5.8.0, datasets <=4.0.0, accelerate <=1.15.0,
   # peft <=0.20.0, trl <=0.24.0; a wheelhouse build at exactly the upper bound (x.y.z+computecanada) fails it
-  pip install "transformers==4.56.2" "trl==0.22.2" "accelerate==1.14.0" "peft==0.19.1" pydantic
-  pip install --no-deps "datasets==3.6.0"
+  pip install "transformers==4.56.2" "accelerate==1.14.0" "peft==0.19.1" pydantic
+  pip install --no-deps "trl==0.22.2" "datasets==3.6.0"   # --no-deps: their datasets/pyarrow requirements hit the wheelhouse dummy wheel
   preflight llamafactory
   deactivate
 fi
