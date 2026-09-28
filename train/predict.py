@@ -197,8 +197,21 @@ def enforcer(processor, structure):
     tokenizer = processor.tokenizer
     if id(tokenizer) not in _TOKENIZER_DATA:
         _TOKENIZER_DATA[id(tokenizer)] = build_token_enforcer_tokenizer_data(tokenizer)
-    return build_transformers_prefix_allowed_tokens_fn(_TOKENIZER_DATA[id(tokenizer)],
-                                                       JsonSchemaParser(structure.model_json_schema()))
+    return Enforcer(_TOKENIZER_DATA[id(tokenizer)], JsonSchemaParser(structure.model_json_schema()),
+                    build_transformers_prefix_allowed_tokens_fn)
+
+
+class Enforcer:
+    """One schema, fresh TokenEnforcer state per generation. The TokenEnforcer caches an allowed-token tensor for
+    every token prefix it is asked about and never evicts, so a single prefix function reused over thousands of
+    images grew until the host-RAM limit killed 52 predict tasks after 1-24 h (2026-09-28). Building the
+    prefix function is cheap once the tokenizer table is cached; the parser is immutable and shared."""
+
+    def __init__(self, tokenizer_data, parser, build):
+        self.tokenizer_data, self.parser, self.build = tokenizer_data, parser, build
+
+    def fresh(self):
+        return self.build(self.tokenizer_data, self.parser)
 
 
 def generate(model, processor, image_path, text, prefix_fn, temperature=None):
@@ -213,7 +226,8 @@ def generate(model, processor, image_path, text, prefix_fn, temperature=None):
                            **encode_kwargs(processor, chat)).to(model.device)
     sampling = dict(do_sample=True, temperature=temperature) if temperature else dict(do_sample=False)
     with torch.inference_mode():
-        out = model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS, prefix_allowed_tokens_fn=prefix_fn,
+        out = model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS,
+                             prefix_allowed_tokens_fn=prefix_fn.fresh() if prefix_fn else None,
                              use_cache=True, **sampling)
     reply = out[0, inputs["input_ids"].shape[1]:]
     return processor.batch_decode([reply], skip_special_tokens=True)[0].strip()
@@ -279,7 +293,9 @@ def main():
         append_row(out, header, [rel, name, *[str(v).lower() for v in values.values()], parsed.text_rationale])
         ok += 1
         if ok % PROGRESS_EVERY == 0:
-            print(f"{ok}/{len(todo)} ({(time.time() - started) / ok:.1f} s/image)", flush=True)
+            import resource
+            rss_gb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6  # Linux: KB
+            print(f"{ok}/{len(todo)} ({(time.time() - started) / ok:.1f} s/image, peak RSS {rss_gb:.1f} GB)", flush=True)
     print(f"{name} {dataset}: {ok} ok, {failed} failed, {len(todo)} attempted")
 
 
