@@ -222,6 +222,12 @@ def main():
         write(folder / "summary.csv", FIELDS, [{k: s[k] for k in FIELDS} for s in summaries])
         write(folder / "summary-classes.csv", CLASS_FIELDS,
               [dict(zip(CLASS_FIELDS, (s["model"], dataset, *row))) for s in summaries for row in s["_classes"]])
+        try:
+            import chart
+            path = chart.write_dataset_chart(dataset, [{k: s[k] for k in FIELDS} for s in summaries], folder)
+            print(f"  chart: {path}" if path else "  chart: no `bases:` key has a row")
+        except Exception as e:  # the table and summary.csv above are the product; the chart must not take them down
+            print(f"  chart failed: {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":
