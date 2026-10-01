@@ -103,6 +103,282 @@ evaluates the identical set and the sample is reproducible from `labels.csv`
 alone. TUAR is barely reduced on purpose: with only 94 test recordings, every one
 of its classes is under-supported and therefore protected.
 
+## Train-set sampling: cap patients, keep events, bound the majority
+The fine-tune's training set is a subset of the train windows, chosen by
+`train/scripts/sample-train-split.py` (2026-09-16) and recorded as `sampled=1` in
+`pipeline.db`, the same mechanism the test side uses. Reasons, in order:
+
+- **Patient memorisation.** Unsampled, one TUEP patient held 1,233 of 6,868
+  windows (18%) and one TUSZ patient 1,274. A model sees that person's brain
+  hundreds of times and learns them, not the class. Capping at 8 recordings
+  per patient (4 windows each) makes the worst case 32.
+- **Class prior.** TUEP train was 5,720 epilepsy vs 1,148 no_epilepsy windows
+  from 45 vs 42 patients: the skew was entirely those few heavy patients. After
+  the cap it is 878/432; the majority is then thinned to 1.5x the minority,
+  round-robin across patients so the cut is spread, giving 642/428.
+- **Background flood.** TUSZ train was 92% pure-bckg windows. Every event
+  window is kept (they are the scarce thing), pure-bckg is capped at one per
+  recording, 8 recordings per patient, and 1.5x the event count.
+
+The policy lives in `config.yml` `settings.train-sample` and mirrors the test
+policy's vocabulary. It is deterministic (even spacing and sorted round-robin,
+no RNG) so the training set is reproducible from `labels.csv` alone.
+
+Rationale generation follows the same flag: `scope='rationale'` now means
+"sampled train window with a label", so the teacher pass covers 8,559 windows
+instead of 32,410. Rationales already written for now-unsampled rows stay in
+`labels.csv` and are simply unused. Rejected: doing this inside
+`build-sft-jsonl.py` or the trainer, because then the teacher would keep
+spending GPU days on windows the fine-tune never sees, and two places would
+have to agree on what "the training set" is.
+
+What this does not fix: TUEP's label is per patient, so a sampled window from
+an epilepsy patient can still look normal. That is inherent to the corpus and
+is why TUAB (recording-level, visible in the trace) is the better first
+target; see `FINETUNE-TODO.md`.
+
+**Two more screens in the same sampler (2026-09-16).** (1) A rationale that
+is truncated, degenerate, an exact duplicate, or hedges against a positive
+label (`rationale_problems()` in `helpers/pipeline.py`) drops its window from
+scope and the budget picks another. Regenerating instead was rejected: the
+teacher decodes at temperature 0, so a blanked row comes back identical. The
+hedge patterns were written without seeing the text and must be checked on
+the cluster with `--show hedge` before trusting the counts. (2)
+`exclude-cross-dataset-test-patients`: 117 of 1,947 patients are train in one
+corpus and test in another (measured 2026-09-16), so with the flag on, no
+patient in any test split is trained on anywhere. Cost: TUSL 141 -> 49
+windows, TUEP 87 -> 76 patients, TUSZ 3,556 -> 3,058 windows. Default on;
+flipping it is a maintainer decision recorded in `FINETUNE-TODO.md` item 9.
+
+**Image-level screen (2026-09-21).** Hashing every PNG showed the corpora
+overlap at the recording level (2,352 identical-image groups) and that 85 of
+those groups span different patient tokens, so a patient-token screen alone
+still let 10 fine-tune windows into the sampled test set (151 with the
+cross-dataset flag off). The sampler now also drops any train image identical
+to a test image, merges patient tokens that share an image before applying the
+caps, and drops images that appear twice in a corpus with different labels.
+Hashes ship in git (`datasets/<DS>/hashes.csv`) because the cluster copy of the
+images is the same bytes and re-hashing 76k files there is wasted lustre time.
+Rejected: perceptual/near-duplicate detection. Exact bytes already catch the
+same-EDF case, which is the leak; near-duplicates would be a judgment call with
+no ground truth. Result: 6,904 fine-tune windows, zero identical to a sampled
+test window.
+
+## The fine-tune target is rationale first, then the label
+The SFT target JSON puts `text_rationale` before the booleans
+(`train.rationale-first: true`, 2026-09-16). With labels first the model
+commits to the answer and then writes a paragraph that cannot change it, so
+training on the paragraph teaches prose, not deciding. With the description
+first, the label is predicted with the description in context, which is the
+only way the rationale can carry the decision. It does not change the loss
+share (the booleans are still a few tokens). Label-token upweighting was the
+planned fallback and is rejected (see "No token weighting" below). Zero-shot
+models keep the original order so their results stand; the fine-tune's
+order is recorded in `checkpoints/<key>/<DS>/manifest.json` and `train/scripts/eval.py`
+enforces and parses whatever the checkpoint was trained on. Same rationale
+text; nothing regenerated.
+
+## The checkpoint is picked by teacher-forced label accuracy, not by eval loss
+Eval loss on this target is dominated by rationale tokens, so it tracks how
+gemma-like the prose is; the first batch (2026-09-29) showed it falling from
+2.0 to 0.25 while classification stayed at chance. From 2026-09-21 to 09-29
+the trainer instead *generated* answers on a val slice and scored them like
+the scoreboard; at `generate: 64` windows over six corpora that gave
+per-corpus balanced accuracies of exactly 0, 0.5 or 1, so the selection was
+noise, and making the slice meaningful would have cost a fifth of each run.
+
+Replaced (2026-09-29) by a metric that costs nothing: at every `true` /
+`false` token position of the target, does the model's top predicted token
+match? Computed from the same forward pass as val loss, over the whole val
+set, balanced over true and false positions (`eval_label_balanced_accuracy`,
+`compute_metrics` in `train/train.py`; the boolean token ids
+are found by decoding the vocabulary once). It is teacher-forced, so
+optimistic (the model sees gemma's rationale before the label, not its own),
+and `load_best_model_at_end` selects on it. **It may barely discriminate
+(measured 2026-09-30):** the teacher was given the label ("This recording is
+labeled {labels}", "State every label explicitly"), and of the 2,800 TUAB
+train rationales on the cluster 1,951 name only the true class and 849 name
+both. So the label is mostly readable from the gold rationale in context,
+whatever the checkpoint learned about the image. Unverified until a run
+logs it: expect values near 1 from early steps. A
+tokenizer that splits `true`/`false` into pieces yields no positions and the
+metric logs 0; none of the 31 bases does, to be checked in the first run. Val
+is patient-level and class-stratified (each class with >= 2 patients gets a
+val patient before hash order fills the rest), at least 10 patients
+(`train.val.min-patients`), capped at half the patients, carved per corpus.
+
+Val is held to the same standard as test (project lead, 2026-09-30). No
+merged patient, raw token, recording or image hash is shared between train
+and val. No train or val patient is a test patient of any corpus, and no
+train or val image is byte-identical to a test image.
+`helpers/check-splits.py` checks this and `build-sft-jsonl.py` refuses to write
+on any hit. The one gap is TUEV's numeric excerpt ids, which are not subjects
+(known-issues).
+
+## Vision tower adapted on purpose, in bf16
+LoRA targets are a regex over the language layers and, by default
+(`train.lora.vision: true`), the vision tower's attention (`qkv`, `proj`),
+MLP and patch merger, at half the language learning rate via optimizer
+param groups. Before this the bare names `gate_proj/up_proj/down_proj`
+matched the vision MLP by accident and nothing else in the tower. The image
+type is far outside the encoder's training distribution, so leaving it
+frozen throws away the part of the model that has to change most; the
+off setting exists for the ablation. There is no 4-bit path any more (removed
+2026-09-29; it only existed for llama4, which it could not fit): NF4 would
+have quantised the vision tower too and blurred
+the fine trace detail the task depends on, and a 7B bf16 LoRA at batch 1
+with gradient checkpointing fits the A100-40GB.
+
+## Fine-tuned models are scored HF-side, never through Ollama
+`train/scripts/eval.py` runs a checkpoint with transformers + peft on the test
+windows and writes the same `eval-baseline.csv` rows the Ollama runner writes
+(2026-09-16). Converting to GGUF and serving through Ollama was considered
+because it would reuse `eval.py` untouched, and rejected: it quantises the
+weights that were just trained, Ollama's own image resize for qwen2.5vl may
+not match the resolution the model trained at (unverified; HF keeps 1536×1536
+native, ~3025 image tokens), it is the same Ollama qwen2.5vl runner that loops
+on these plots, and the conversion would be redone for every DPO checkpoint.
+The HF runner reuses the prompt, schema, label parsing and CSV writer, and
+`lm-format-enforcer` gives the same schema-constrained decoding Ollama's json
+mode gave the zero-shot models, so the comparison stays like-for-like apart
+from the serving stack. Cost: a second inference path to keep in step with
+`eval.py` (prompt, header, retry policy).
+
+**The "before" is the HF base model, not the Ollama row (2026-09-21).** The
+zero-shot `qwen2.5vl:7b` result came through Ollama: GGUF quantisation and
+Ollama's own image resize (still unverified). The fine-tune is scored in bf16
+at native 1536x1536. A gap between those two would mix serving stack and
+training, so `config.yml` registers `qwen2.5vl:7b-hf` (base weights, no
+adapter) and `train/scripts/eval.py` runs it through the identical path; that is
+the number a fine-tune has to beat. The Ollama row stays in the benchmark as
+what it is: the zero-shot entry for that model.
+
+## The fine-tune is SFT then expert DPO; the teacher does not need to be better
+Plan as of 2026-09-16: LoRA SFT on gemma3:12b's label-conditioned rationales,
+benchmark it on the sampled test split, then DPO on expert-analyzed
+preferences over the SFT model's own rationales, and benchmark again with the
+same scoreboard.
+So SFT's job is a well-formed, specific starting policy that experts can rank,
+and DPO is where correctness comes from. Two consequences: the teacher's
+ceiling (known-issues.md) stops being the binding limit, and mode collapse
+becomes the thing to avoid. Templated, near-identical rationales give DPO
+nothing to prefer between, so dedup/boilerplate filtering (FINETUNE-TODO.md
+item 7), fewer epochs, and temperature > 0 when sampling DPO candidates all
+matter more than they would for SFT alone.
+
+**Rejected: a frontier-model teacher (gpt-5.6-luna) for the train rationales.**
+Considered because the sampled train scope (8,559 windows) made it cheap.
+Rejected by the maintainer: the previous paper found GPT-class models at about
+chance on these labels, so their rationales are confabulated to the label as
+well, just more fluently; DPO is the planned correction instead. It would also
+have needed the test references regenerated and the 34-model judge pass
+re-run, and raised a data-use question about sending TUEG images to an outside
+API (so far only rationale text has left the cluster).
+
+**Rejected: a label-only SFT control run.** Rationale vs no rationale was
+settled in the previous paper; the rationale stays in every training target.
+
+## TUSZ bckg co-labels stay; bckg leaves the recording-level mean (2026-09-21)
+372 sampled TUSZ train windows carry `bckg` together with a seizure class.
+Measured against the annotation csvs they are onset/offset windows and
+channel-wise partial seizures with a median 92% seizure coverage (45 under
+25%), so both labels are true of the picture under the prompt's "select every
+one present" semantics, and the target keeps them. Rejected: flipping bckg to
+false when a seizure is present, which would contradict the background
+stretch the teacher rationale describes and change the semantics of one class
+only. At recording level bckg is true in 2,418 of 2,443 sampled test
+recordings, so its balanced accuracy is ~0.5 for every model; `eval/score.py`
+`RECORDING_EXCLUDE` drops it from the TUSZ recording-level mean (macro-F1,
+balanced accuracy, CI, floor) while the per-class table and the window-level
+metrics keep it. Every model's TUSZ headline moves up by the same mechanism;
+the trainer's val metric applies the same exclusion so checkpoint selection
+and the scoreboard agree.
+
+## Every benchmark model is fine-tuned; one generic trainer (2026-09-21)
+Maintainer decision: every model in the roster gets the SFT track, not only
+Qwen2.5-VL-7B. The trainer therefore loads any base through
+`AutoModelForImageTextToText` + `AutoProcessor`, measures the answer span by
+running the prompt-only chat template through the processor (image-token
+expansion included; no per-model marker string), and adapts every `Linear`
+except head and embeddings, split language/vision by module path so the
+vision learning-rate scale work for any tower.
+`config.yml` `bases:` is the Ollama-tag -> HF-repo map with gpus/ram for the
+bases over 40 GB in bf16 (2 GPUs via `device_map="auto"`, naive model
+parallel). Seven bases carry a `status` (custom-code families, no chat
+template, or Llama 4's 218 GB) and are skipped by `train/train.py` until decided.
+Rejected: one script per family. 29 of 33 go through the same path and the
+per-family differences are all in the processor and chat template, which
+transformers already abstracts. The four with their own model code
+(MiniCPM-V 2.6 / 4.5, moondream2, DeepSeek-OCR) train through the stacks
+that already support them (OpenBMB's finetune, LLaMA-Factory, Unsloth) on a
+re-export of the same JSONL, and are scored by `train/scripts/eval.py` through their own
+APIs; writing a fourth training loop per family blind was rejected as the
+least likely thing to work. moondream2 has no published local LoRA path.
+
+**One run per (base, dataset); pooling is dropped (project lead,
+2026-09-30).** Each base is fine-tuned separately on each corpus, so every
+fine-tune is compared against the same base's zero-shot result on the same
+dataset and its checkpoint is selected on that dataset's val set alone. The
+lead's reasoning: more specialised results per dataset. It replaces pooled
+training (2026-09-21 to 09-30: one run per base over all six corpora, 33
+runs instead of 198, chosen because TUAR/TUEV/TUSL only have enough windows
+that way). That cost is now accepted. Per-corpus train/val windows from the
+current sample, simulated with `build-sft-jsonl.py`'s split, not measured on
+the cluster: TUAB 2,284/140, TUSZ 2,604/117, TUEP 838/84, TUAR 372/31, TUEV
+368/17, TUSL 26/23. TUSL is about 3 optimizer steps per epoch at an
+effective batch of 8. The first-round pooled runs (`checkpoints/<key>/pooled/`,
+`eval-<key>-sft-pooled.csv`) stay on disk as history; no code derives them.
+Rollout is one pair first (qwen2.5vl:7b on TUAB), end to end through scoring,
+before any batch.
+
+## The first fine-tune answers labels only (maintainer, 2026-09-30)
+`config.yml` `train.target: labels`: the target is the booleans-only JSON
+(`{"is_abnormal": false}`), the prompt drops the evidence sentence and the
+no-meta line, and the rationale comes back (`train.target: rationale`) only
+if this learns. Reasoning:
+- **Loss share.** The rationale is most of the target. Median answer length
+  over the six train sets is 772 characters with it and 112 without
+  (measured on the cluster's rationales, 2026-09-30), so the loss was mostly
+  prose. With labels only, every gradient step is about the label, and the
+  loss can only drop below the class prior by reading the plot.
+- **An honest checkpoint metric.** Teacher-forced label accuracy no longer
+  sees a gold rationale that names the answer, so it is the model's actual
+  window-level accuracy (for multi-label, each boolean after the gold earlier
+  ones).
+
+This does not reopen the settled question of whether rationales help (a
+previous paper answered it). It is a staged test of whether any label signal
+can be learned from these plots at all before rationales are layered on.
+`build-sft-jsonl.py` writes both targets from the same windows and the same
+split (`sft_labels_{train,val}.jsonl` beside `sft_{train,val}.jsonl`; checked
+in a mirror of the cluster data: same images, same order, same booleans, and
+the rationale files byte-identical to before). Runs go to
+`checkpoints/<key>/<DS>-labels` and score as `<key>-sft-<DS>-labels`, so the
+two targets never collide. The zero-shot prompt is unchanged byte for byte.
+
+## No token weighting (project lead, 2026-09-30)
+The loss is the model's default mean cross-entropy over the whole target,
+rationale and booleans alike. The plan after the first round collapsed
+(plan.md change 1: mark the `true`/`false` positions in the collator and
+multiply their loss by `train.training.label-weight`, start at 10) was never
+implemented and is rejected as overengineering the problem. The failure it
+targeted (loss ~95% rationale prose, answers collapse to the class prior)
+is re-tested under per-dataset training first. Don't reintroduce it without
+the lead.
+
+## Training logs to wandb, offline (2026-09-30)
+The lead wants runs trackable without pulling files. Before this, training
+ran with `report_to="none"` and the only record was `log_history` in
+`trainer_state.json` plus the job log, which meant an rsync and a plot per
+look. Now `train/train.py` logs to entity `l3jovano-krembil-research-institute`,
+project `eeg-vlm-finetune` (`config.yml` `train.wandb`), one run per
+(base, dataset) named `<key>-<DS>`, grouped by dataset. Narval compute
+nodes have no internet, so runs are written offline and uploaded with
+`wandb sync` from a login node. A requeued job resumes the same run id.
+`trainer_state.json` stays the source of truth on disk. Only the generic
+trainer logs; the custom stacks (`train/run-custom.py`) still run with
+`report_to="none"`.
+
 ## Rare classes: handle by support, not engineering
 Classes like `mysz`(2), `spsz`(4), `elpp`(4), `tnsz`(10) have too few source
 recordings to measure. No sampling/splitting trick fixes that. So: keep them in
@@ -272,8 +548,8 @@ path still exists as `judge.py --limit`, and it spreads rather than head-slices.
    (ollama/ollama#10767) — the same defect that disqualified it as teacher.
 3. **Not a `-thinking` model.** Token cost per pair must be predictable across
    ~520k pairs; a reasoning model makes walltime a function of how much it
-   decides to think, which is exactly what makes `qwen3-vl:8b-thinking` the eval
-   sweep's long pole.
+   decides to think, which is exactly what made `qwen3-vl:8b-thinking` the eval
+   sweep's long pole before it was dropped (2026-09-17, see known-issues.md).
 4. **Big enough to follow the schema.** The verdict is two booleans plus a
    15-word reason; 8B-class models emit that unreliably, 24B does not.
 5. **Smallest capable family**, to minimise how many rows share the judge's
@@ -281,10 +557,10 @@ path still exists as `judge.py --limit`, and it spreads rather than head-slices.
 
 **Why from the roster at all:** the judge must already be in `$OLLAMA_MODELS`,
 because compute nodes have no route to the Ollama registry. The eval sweep ran
-against all 35 models in `config.yml`, so all 35 are known-staged — that list is
+against all 34 models in `config.yml`, so all 34 are known-staged — that list is
 the available pool, and it is large enough that constraints 1–5 still bite.
 
-**The cost, stated plainly:** every model in that pool is one of the 35 being
+**The cost, stated plainly:** every model in that pool is one of the 34 being
 graded, so the judge grades its own prose on its own row. That is a real hole and
 it is recorded in [known-issues.md](known-issues.md) — treat the
 `mistral-small3.2:24b` row as non-comparable. An outside judge such as
@@ -317,29 +593,14 @@ rationales carry no window-specific information, whatever the headline says.
 (The judge prompt also states outright that a confident tone is not correctness
 and that a description fitting any EEG is not matching evidence.)
 
-## One config file, and `create-retry-config.py` must render every key
-The judge stage used to be configured in a separate `eval/judge.yml`, because
-`create-retry-config.py` rebuilds `config.yml` from `config-base.yml` and
-rendered only `settings`, `datasets` and `models` — any other top-level key was
-**silently dropped on the first retry**.
-
-Folded into `config.yml` under a `judge:` key (2026-08-16), with
-`render_config` extended to emit it. The real invariant is not "keep judge in its
-own file" but **every key `load_retry_config` loads, `render_config` must
-render** — the separate file was a workaround for a renderer that silently lost
-data, and the workaround left two config files to keep in sync instead of fixing
-the loss. Verified by round-tripping a synthetic run: `judge` comes back
-byte-identical under `yaml.safe_load`, `resume-from` is set, and the succeeded
-pair is commented out.
-
-Two consequences to keep in mind:
-- **Comments do not survive the retry rewrite.** `render_config` goes through
-  `yaml.safe_dump`, so the rationale comments in `judge`/`settings`/`datasets`
-  are stripped the first time a retry config is generated. This was already true
-  of the other two keys; `knowledge/` is the durable copy.
-- **`config-base.yml` deliberately has no `judge` key.** It supplies only
-  `models`; a second copy of the judge settings there would be a silent
-  drift hazard, and `config.yml` is the single source of truth.
+## One config file
+The judge stage used to be configured in a separate `eval/judge.yml` — a
+workaround for a config-rewriting retry step (since retired) that silently
+dropped any top-level key it did not render on the first retry. Folded into
+`config.yml` under a `judge:` key (2026-08-16). The decision that stands:
+**`config.yml` is the single source of truth** — no second config file, no
+per-stage copies to drift. `prompts` and `train` were folded in on 2026-09-13
+on the same principle (see tooling.md).
 
 The judge config is still read **live** from `eval/config.yml` by `run-judge.py`,
 `scripts/judge.py` and `judge_array.sbatch` — never from a run's frozen copy,

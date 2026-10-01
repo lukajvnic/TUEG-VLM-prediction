@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 for folder in ("", "train", "eval", "eval/models"):
     sys.path.insert(0, str(ROOT / folder))
-from helpers.pipeline import base_spec, config  # noqa: E402
+from helpers.pipeline import DATASETS, base_spec, config, script_module, sft_file  # noqa: E402
 
 failures = []
 
@@ -34,6 +34,17 @@ def check(label, fn):
         if "-v" in sys.argv:
             traceback.print_exc()
         return None
+
+
+def per_dataset(relative, build):
+    # training runs per dataset, so a dataset without its file is one not being trained yet: a warning. None at all
+    # is a failure, there would be nothing to train
+    have = [ds for ds in DATASETS if (ROOT / "datasets" / ds / relative).exists()]
+    missing = [ds for ds in DATASETS if ds not in have]
+    check(f"datasets/<DS>/{relative}",
+          lambda: ", ".join(have) or (_ for _ in ()).throw(FileNotFoundError(f"no dataset has it: {build} <DS>")))
+    if have and missing:
+        print(f"warn  datasets/<DS>/{relative} missing for {', '.join(missing)}: {build} <DS> before training those")
 
 
 def version(name):
@@ -69,10 +80,10 @@ def version_of(module):
 
 
 def snapshot(base):
-    snapshot_dir = import_module("hf-install").snapshot_dir
+    snapshot_dir = script_module("hf-install").snapshot_dir
     local = snapshot_dir(base["repo"])
     if not (local / "config.json").exists():
-        raise FileNotFoundError(f"{local} not staged: python train/hf-install.py <key>")
+        raise FileNotFoundError(f"{local} not staged: python train/scripts/hf-install.py <key>")
     return local
 
 
@@ -113,10 +124,9 @@ def generic_base(key, base, runner):
 
 def main_venv():
     imports(["torch", "torchvision", "transformers", "peft", "accelerate", "PIL", "yaml", "pydantic",
-             "sentencepiece", "google.protobuf", "tiktoken", "lmformatenforcer"])
+             "sentencepiece", "google.protobuf", "tiktoken", "lmformatenforcer", "wandb"])
     check("torch.cuda (False on a login node: partial preflight, see cluster-setup.sh PREFLIGHT_GPU)", has_gpu)
-    check("bitsandbytes installed (only 4-bit bases need it)", lambda: version_of("bitsandbytes"))
-    runner = import_module("predict")
+    runner = script_module("eval")
     from structure import get_structure
     cfg = config()
     first = None
@@ -127,8 +137,8 @@ def main_venv():
         first = first or processor
     # the enforcer's transformers integration reports any failed import as "transformers is not installed";
     # import each name it needs separately so the real one shows, after the shim predict.enforcer() installs
-    check("predict.py carries the tokenization_utils shim",
-          lambda: "tokenization_utils_base" in (ROOT / "train/predict.py").read_text() or (_ for _ in ()).throw(RuntimeError("not pulled")))
+    check("train/scripts/eval.py carries the tokenization_utils shim",
+          lambda: "tokenization_utils_base" in (ROOT / "train/scripts/eval.py").read_text() or (_ for _ in ()).throw(RuntimeError("not pulled")))
     runner.shim_tokenization_utils()
     for mod, name in [("transformers", "AutoModelForCausalLM"), ("transformers.generation.logits_process", "LogitsProcessor"),
                       ("transformers.generation.logits_process", "PrefixConstrainedLogitsProcessor"),
@@ -137,7 +147,7 @@ def main_venv():
         check(f"enforcer import {mod}.{name}", lambda m=mod, n=name: getattr(import_module(m), n) and "")
     if first is not None:
         check("lm-format-enforcer under this transformers", lambda: runner.enforcer(first, get_structure("TUAB", True)) and "built")
-    check("datasets/pooled/sft_train.jsonl", lambda: (ROOT / "datasets/pooled/sft_train.jsonl").stat().st_size)
+    per_dataset(sft_file("TUAB", "train", config()["train"]["target"]).name, "python helpers/build-sft-jsonl.py")  # train.target's file
 
 
 def bounded(name, low, high):
@@ -169,18 +179,17 @@ def llamafactory_venv():
     for key, base in cfg["bases"].items():
         if base.get("family") == "minicpm":
             custom_base(key, base)
-    check("datasets/pooled/export-llamafactory/dataset_info.json",
-          lambda: (ROOT / "datasets/pooled/export-llamafactory/dataset_info.json").stat().st_size)
+    per_dataset("export-llamafactory/dataset_info.json", "python helpers/export-sft.py --format llamafactory")
 
 
 def unsloth_venv():
-    imports(["torch", "torchvision", "transformers", "peft", "trl", "accelerate", "bitsandbytes", "triton", "PIL", "yaml",
+    imports(["torch", "torchvision", "transformers", "peft", "trl", "accelerate", "triton", "PIL", "yaml",
              "pydantic", "matplotlib", "einops", "addict", "easydict", "tqdm"])
     cfg = config()
     for key, base in cfg["bases"].items():
         if base.get("family") == "deepseek-ocr":
             custom_base(key, base)
-    check("datasets/pooled/sft_train.jsonl", lambda: (ROOT / "datasets/pooled/sft_train.jsonl").stat().st_size)
+    per_dataset("sft_train.jsonl", "python helpers/build-sft-jsonl.py")
     imports(["unsloth"])  # last: slowest; skipped without a GPU (it imports bitsandbytes)
 
 

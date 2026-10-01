@@ -1,0 +1,7 @@
+{% for m in messages %}{% if m['role'] == 'user' %}<|user|>
+{% for c in m['content'] %}{% if c['type'] == 'image' %}<image>
+{% elif c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %}<|end|>
+{% elif m['role'] == 'assistant' %}<|assistant|>
+{% for c in m['content'] %}{{ c['text'] }}{% endfor %}<|end|>
+{% endif %}{% endfor %}{% if add_generation_prompt %}<|assistant|>
+{% endif %}

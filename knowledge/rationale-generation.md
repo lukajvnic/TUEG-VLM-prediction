@@ -21,7 +21,7 @@ would blank one split's work each time the other ran.
 - `eval/scripts/generate-rationales.py` — the generator (both splits).
 - `eval/scripts/generate-rationales.sbatch` — the Slurm job; `SPLIT` selects which.
 - `train/config.yml` — fine-tune hyperparameters.
-- `train/scripts/finetune_sample.py` — the fine-tune script.
+- `train/train.py` — the fine-tune entry point (submits, and with `--here` trains).
 
 The generator lives under **`eval/`**, not `train/`, even though `--split train`
 feeds the fine-tune: it is the teacher pass the agreement stage depends on, and
@@ -155,19 +155,24 @@ If you ever do suspect stale garbage in a rationales file, the check is
 before submitting:
 1. `labels.csv` present **and matching the images** (comes via git; the images via
    the transferred zips). A stale `labels.csv` breaks path resolution — verify with
-   `python qc.py` or a labels↔images set comparison.
+   a labels↔images set comparison.
 2. `train/*.png` extracted into `datasets/<DS>/train/`.
 3. `.venv` present; `$SCRATCH/ollama/ollama.sif` and `$SCRATCH/ollama/models`
    in place (Apptainer image, not a PATH `ollama`).
 
-## Fine-tuning (`train/config.yml`)
+## Fine-tuning (`config.yml` `train:` + `bases:`)
 
-- Base model: `Qwen/Qwen2.5-VL-7B-Instruct`; `dataset: TUEP`,
-  `output-dir: checkpoints/TUEP`.
-- LoRA: rank 16, alpha 32, dropout 0.05.
-- Training: 3 epochs, batch 1, grad-accum 8, lr 2e-4, eval/save every 100 steps,
-  `save-total-limit: 2`.
+- Run: `python train/train.py <key>|all <DS>|all`, one job per (base,
+  dataset), output `checkpoints/<key>/<DS>` (per dataset since 2026-09-30;
+  pooled is gone). It skips what is finished, queued, or trained on a leaky
+  jsonl. Logs to wandb project `eeg-vlm-finetune`.
+- LoRA: rank 16, alpha 32, dropout 0.05, vision tower on at half LR.
+- Training: 2 epochs, batch 1, grad-accum 8, lr 2e-4, warmup 3%, cosine,
+  eval/save every 100 steps, `save-total-limit: 2`, best checkpoint by
+  teacher-forced label balanced accuracy on val (`eval_label_balanced_accuracy`,
+  since 2026-09-29). Plain loss, no token weighting (project lead, 2026-09-30).
 - The fine-tune's quality is capped by the rationale generator (`gemma3:12b`) —
   see [known-issues.md](known-issues.md).
-- **`train/run.py` is currently an empty file**; `train/scripts/finetune_sample.py`
-  is the fine-tune entry point. There is no Slurm wrapper for the fine-tune yet.
+- `train/train.py` submits the fine-tune as a Slurm job and the job runs
+  `train/train.py <key> <DS> --here` (2026-09-30). Setup and commands are in
+  operations.md 4c/4d; the open quality issues are in `FINETUNE-TODO.md`.

@@ -50,7 +50,8 @@ def main():
     from openai import OpenAI
     client = OpenAI(api_key=load_key())
     max_chars = config()["judge"]["max-rationale-chars"]
-    models = sorted({r["model"] for ds in DATASETS for r in eval_rows(ROOT / "datasets" / ds)})
+    labels_only = {m for m, spec in config()["models"].items() if spec.get("target") == "labels"}  # no rationale
+    models = sorted({r["model"] for ds in DATASETS for r in eval_rows(ROOT / "datasets" / ds)} - labels_only)
     for dataset in DATASETS:
         out = ROOT / "datasets" / dataset / OUT_NAME
         todo = [(e, t) for model in models for e, t in pairs(dataset, model, OUT_NAME)]

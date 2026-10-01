@@ -21,7 +21,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from helpers.pipeline import ROOT, base_spec, checkpoint_dir, config  # noqa: E402
+from helpers.pipeline import ROOT, base_spec, checkpoint_dir, config, script_module  # noqa: E402
 from custom.finish import write_manifest  # noqa: E402
 
 os.environ.setdefault("UNSLOTH_WARN_UNINITIALIZED", "0")
@@ -30,8 +30,8 @@ os.environ.setdefault("UNSLOTH_WARN_UNINITIALIZED", "0")
 def load_settings():
     cfg = config()
     train = cfg["train"]
-    model = os.environ.get("TRAIN_MODEL") or "deepseek-ocr:3b"
-    dataset = os.environ.get("TRAIN_DATASET") or train["dataset"]
+    model = os.environ["TRAIN_MODEL"]  # set by train/run-custom.py
+    dataset = os.environ["TRAIN_DATASET"]
     return cfg, train, model, dataset, base_spec(cfg, model), checkpoint_dir(model, dataset)
 
 
@@ -173,9 +173,7 @@ class DeepSeekOCRDataCollator:
 def main():
     from unsloth import FastVisionModel
     from transformers import AutoModel, Trainer, TrainingArguments
-    sys.path.insert(0, str(ROOT / "train"))
-    import importlib
-    snapshot_dir = importlib.import_module("hf-install").snapshot_dir
+    snapshot_dir = script_module("hf-install").snapshot_dir
 
     cfg, train, model_key, dataset, base, out = load_settings()
     lora, tr = train["lora"], train["training"]
@@ -187,7 +185,7 @@ def main():
         sys.exit(f"{folder}/sft_*.jsonl empty - run helpers/build-sft-jsonl.py {dataset} first")
 
     model, tokenizer = FastVisionModel.from_pretrained(
-        source, load_in_4bit=bool(base.get("quantize-4bit", train["quantize-4bit"])), auto_model=AutoModel,
+        source, load_in_4bit=False, auto_model=AutoModel,
         trust_remote_code=True, unsloth_force_compile=True, use_gradient_checkpointing="unsloth")
     module = sys.modules[type(model).__module__]  # the remote-code module: format_messages, text_encode, ...
     # leaf names, matched across all experts (model.layers.N.mlp.experts.M.*, shared_experts) and, when the

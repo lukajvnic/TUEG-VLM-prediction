@@ -1,6 +1,6 @@
-"""Re-export datasets/<DS or pooled>/sft_*.jsonl for the fine-tuning stacks the custom-code bases need.
+"""Re-export datasets/<DS>/sft_*.jsonl for the fine-tuning stacks the custom-code bases need.
 
-The generic trainer (train/scripts/finetune_sample.py) covers every base transformers can load with a chat
+The generic trainer (train/train.py) covers every base transformers can load with a chat
 template. Four cannot: MiniCPM-V 2.6 and 4.5, moondream2 and DeepSeek-OCR ship their own model code. Their
 official or best-supported LoRA paths take a sharegpt-style JSON, which this writes from the same lines the
 generic trainer trains on, so the data (windows, val split, rationale-first targets) is identical.
@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from helpers.pipeline import ROOT
+from helpers.pipeline import DATASETS, ROOT
 
 FORMATS = ("llamafactory", "minicpm", "unsloth")
 
@@ -33,8 +33,7 @@ def read_jsonl(path):
 
 
 def image_path(dataset, line):
-    folder = ROOT / "datasets" if dataset == "pooled" else ROOT / "datasets" / dataset
-    return str(folder / line["images"][0])
+    return str(ROOT / "datasets" / dataset / line["images"][0])
 
 
 def llamafactory(dataset, lines):
@@ -60,7 +59,7 @@ def unsloth(dataset, lines):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("dataset", help="a corpus name or `pooled`")
+    parser.add_argument("dataset", choices=DATASETS)
     parser.add_argument("--format", choices=FORMATS, required=True)
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="default datasets/<dataset>/export-<format>/")

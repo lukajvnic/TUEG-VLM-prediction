@@ -14,6 +14,7 @@ while True:
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASETS = ["TUAB", "TUAR", "TUEP", "TUEV", "TUSL", "TUSZ"]
+TARGETS = ["labels", "rationale"]  # the fine-tune's answer: booleans only, or rationale then booleans (train.target)
 RATIONALE = "ground_truth_rationale"
 HASHES = "hashes.csv"  # path,md5 per rendered PNG, written by helpers/hash-images.py
 
@@ -79,7 +80,32 @@ FROM pipeline GROUP BY dataset ORDER BY dataset
 
 def config():
     import yaml
-    return yaml.safe_load((ROOT / "config.yml").read_text())
+    cfg = yaml.safe_load((ROOT / "config.yml").read_text())
+    cfg["models"] = {**finetune_models(cfg), **cfg["models"]}
+    return cfg
+
+
+def finetune_models(cfg):
+    # one `models:` entry per trainable base, dataset and target it was trained on, <key>-sft-<DS>[-labels], scored
+    # on that dataset only from checkpoints/<key>/<DS>[-labels] with the train.eval resources (`large` for bases that train on more than one
+    # GPU). A pair without a checkpoint dir gets no entry; an explicit entry in config.yml still overrides the
+    # derived one. The old checkpoints/<key>/pooled runs are no longer derived (2026-09-30)
+    train = cfg["train"]
+    entries = {}
+    for key, base in cfg.get("bases", {}).items():
+        if base.get("status"):
+            continue
+        resources = {k: v for k, v in train["eval"].items() if k != "large"}
+        if base.get("gpus", train["gpus"]) > 1:
+            resources.update(train["eval"]["large"])
+        for dataset in DATASETS:
+            for target in TARGETS:
+                folder = checkpoint_dir(key, run_name(dataset, target))
+                if folder.is_dir():
+                    entries[f"{key}-sft-{run_name(dataset, target)}"] = {
+                        "backend": "hf", "base": key, "datasets": [dataset], "target": target,
+                        "checkpoint": str(folder.relative_to(ROOT)), **resources}
+    return entries
 
 
 def db():
@@ -185,6 +211,19 @@ def duplicate_images():
     return hashes, groups, canon
 
 
+def script_module(name):
+    """Import train/scripts/<name>.py by file path. Names carry hyphens (hf-install) or collide with modules the
+    trainer also has on sys.path (train/scripts/eval.py vs eval/models/eval.py), so no plain `import`."""
+    import importlib.util
+    key = f"train_scripts_{name.replace('-', '_')}"
+    if key not in sys.modules:
+        spec = importlib.util.spec_from_file_location(key, ROOT / "train" / "scripts" / f"{name}.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[key] = module
+        spec.loader.exec_module(module)
+    return sys.modules[key]
+
+
 def pairs_in(path):
     return {(r["path"], r["model"]) for r in read_csv(path)}
 
@@ -214,6 +253,18 @@ def base_spec(cfg, key):
 
 def checkpoint_dir(model_key, dataset):
     return ROOT / "checkpoints" / model_key.replace(":", "-") / dataset
+
+
+def run_name(dataset, target):
+    # names a fine-tune's checkpoint dir, job, wandb run and model entry: <DS> for the rationale target, <DS>-labels
+    # for labels only, so the two can sit side by side
+    return dataset if target == "rationale" else f"{dataset}-{target}"
+
+
+def sft_file(dataset, split, target):
+    # the fine-tune's data: sft_<split>.jsonl with the rationale, sft_labels_<split>.jsonl without; same windows
+    prefix = "sft_" if target == "rationale" else f"sft_{target}_"
+    return ROOT / "datasets" / dataset / f"{prefix}{split}.jsonl"
 
 
 def model_datasets(spec):

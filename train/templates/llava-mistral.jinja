@@ -1,0 +1,2 @@
+{% for message in messages %}{% if message['role'] == 'user' %}[INST] {% for c in message['content'] %}{% if c['type'] == 'image' %}<image>
+{% elif c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %} [/INST]{% elif message['role'] == 'assistant' %} {% for c in message['content'] %}{{ c['text'] }}{% endfor %}</s>{% endif %}{% endfor %}

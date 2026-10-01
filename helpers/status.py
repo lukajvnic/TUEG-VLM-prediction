@@ -7,10 +7,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from helpers.pipeline import ROOT, SUMMARY, config, sync
 
 TOP_ERRORS = 3
-JOB_NAMES = {"eval": "eeg-vlm-eval", "predict": "eeg-vlm-predict", "judge": "eeg-vlm-judge",
+JOB_NAMES = {"eval": "eeg-vlm-eval", "predict": "eeg-vlm-eval-sft", "judge": "eeg-vlm-judge",
              "rationale": "eeg-vlm-rationales"}
 
-# eval = Ollama models (eval/models/run.py); predict = backend: hf models (train/run.py predict)
+# eval = Ollama models (eval/models/run.py); predict = backend: hf models (train/run-eval.py; the stage keeps its
+# name in logs/failures.csv and pipeline.db, the job is eeg-vlm-eval-sft since 2026-09-29)
 PENDING = {
     "rationale": "SELECT DISTINCT dataset, path FROM pipeline "
                  "WHERE scope IN ('full', 'rationale') AND rationale = 0",

@@ -55,6 +55,7 @@ checkpoints/
 hf-checkpoints/
 datasets/*/sft_*.jsonl
 logs/
+wandb/
 preprocessing/logs/
 datasets/*/eval-*.csv
 datasets/*/judge-baseline.csv

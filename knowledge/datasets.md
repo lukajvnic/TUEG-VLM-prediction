@@ -21,6 +21,10 @@ cluster / locally.
   `eval/` files are named `pled_024_a_.edf` etc. — the *label* is in the filename
   and the patient is the numeric parent dir (`024`). This is why patient
   extraction falls back to the parent directory when no `aaaaXXXX` token exists.
+  **The numeric dir is an excerpt id, not a subject** (measured 2026-09-21: dirs
+  `001`, `004`, `015`, `091` contain byte-identical windows), so the patient
+  split over TUEV's 80 numeric "patients" is not a patient split. See
+  known-issues.md "duplicate images".
 
 ## Labels
 
@@ -105,11 +109,15 @@ large, and it is why the test set is sampled (see
 |---|---|---|---|---|---|
 | TUSZ | 25,189 | 25,189 | 8,460 | 2,443 | 200 |
 | TUEP | 8,610 | 8,610 | 1,084 | 285 | **113** |
-| TUAR | 3,915 | 3,664 | 3,655 | **94** | 67 |
+| TUAR | 3,915 | 3,664 | 3,540 | **94** | 67 |
 | TUAB | 3,000 | 3,000 | 1,200 | 300 | 222 |
 | TUEV | 1,729 | **354** | 354 | 151 | 115 |
 | TUSL | 400 | **99** | 97 | 34 | **8** |
-| total | 42,843 | 41,316 | **14,850** | | |
+| total | 42,843 | 41,316 | **14,735** | | |
+
+Sampled counts re-measured 2026-09-16 by running `eval/sample-test-split.py` on
+the current `labels.csv`: TUAR gives 3,540, total 14,735. Older docs and the
+report say 3,655 / 14,850; that figure predates the current manifest.
 
 TUSL has 8 independent patients and one class above `MIN_SUPPORT`; `summarize.py`
 flags any dataset under 20 patients as descriptive-only rather than inferential.

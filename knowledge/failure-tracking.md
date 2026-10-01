@@ -15,7 +15,10 @@ Why something failed is recorded in two append-only files under logs/:
   killed hard (walltime/OOM, check sacct); end with nonzero code = crashed.
 
 `python helpers/status.py` joins these with pipeline.db and prints: stage
-progress per dataset; pending counts split into failed vs never-attempted;
+progress per dataset; pending counts split into failed vs never-attempted
+(`eval` = Ollama models, `predict` = `backend: hf` models scored by
+`train/run-eval.py`, split 2026-09-21 because the HF entries otherwise
+inflate the eval line by their whole test scope);
 open failures grouped by (stage, model, dataset) with the top error strings
 and an example log path; dead and nonzero-exit tasks.
 

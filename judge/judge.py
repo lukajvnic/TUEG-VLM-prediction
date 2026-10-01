@@ -122,9 +122,10 @@ def main():
         judge_model(models[int(os.environ["SLURM_ARRAY_TASK_ID"])])
         return
     conn = sync()
+    labels_only = {m for m, spec in config()["models"].items() if spec.get("target") == "labels"}  # nothing to judge
     models = [m for (m,) in conn.execute(
         "SELECT DISTINCT model FROM pipeline WHERE scope = 'full' AND evaled = 1 AND rationale = 1 AND judged = 0 "
-        "ORDER BY model")]
+        "ORDER BY model") if m not in labels_only]
     if not models:
         print("nothing to judge")
         return

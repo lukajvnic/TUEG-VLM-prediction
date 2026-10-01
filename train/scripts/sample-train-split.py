@@ -3,7 +3,7 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from helpers.pipeline import (DATASETS, DONE_UPDATE, RATIONALE, ROOT, SCOPE_UPDATE, config, db, duplicate_images,
                               parse_name, positives, rationale_problems, read_csv, spread)
 

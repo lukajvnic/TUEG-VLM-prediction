@@ -1,6 +1,6 @@
 """Write checkpoints/<key>/<dataset>/manifest.json after a custom-stack run (LLaMA-Factory, Unsloth).
 
-train/predict.py refuses a checkpoint without a manifest; the generic trainer writes its own. The custom
+train/scripts/eval.py refuses a checkpoint without a manifest; the generic trainer writes its own. The custom
 stacks know nothing about it, so the sbatch calls this after the trainer exits 0. Refuses if no adapter
 weights are in the directory, so a crashed run cannot be scored.
 """

@@ -1,4 +1,4 @@
-"""Per-dataset bar chart: every base model as a pair of bars, zero-shot (Ollama row) next to its fine-tune.
+"""Per-dataset bar chart: every base as a pair of bars, zero-shot (Ollama row) next to its fine-tune on that dataset.
 
   python eval/chart.py                      # every dataset with a summary.csv, recording balanced accuracy
   python eval/chart.py TUAB --metric recording_macro_f1
@@ -22,7 +22,7 @@ from matplotlib.patches import Patch, PathPatch  # noqa: E402
 from matplotlib.path import Path as DrawPath  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from helpers.pipeline import DATASETS, ROOT, config  # noqa: E402
+from helpers.pipeline import DATASETS, ROOT, config, run_name  # noqa: E402
 
 DPI = 150
 SLOT_PX = 64            # horizontal budget per model (two bars, air included)
@@ -39,7 +39,6 @@ SURFACE, INK, INK_SECONDARY, INK_MUTED, GRIDLINE, BASELINE = "#fcfcfb", "#0b0b0b
 TICKS = (0, 0.25, 0.5, 0.75, 1.0)
 HEADROOM = 1.08
 
-SUFFIX = "-sft-pooled"
 FULL_COVERAGE = 0.99    # below this the row is a partial predict run: drawn hatched and lighter, not comparable yet
 
 
@@ -166,12 +165,14 @@ def write_pair_chart(path, labels, series, partial, title, y_label, subtitle, re
     plt.close(figure)
 
 
-def pair_rows(rows, cfg):
-    # one entry per `bases:` key that has a zero-shot row (its Ollama name) or a fine-tuned row (<key>-sft-pooled)
+def pair_rows(rows, cfg, dataset):
+    # one entry per `bases:` key that has a zero-shot row (its Ollama name) or a fine-tuned row (<key>-sft-<DS>, or
+    # <key>-sft-<DS>-labels for the label-only target: the fine-tune on this dataset alone, of train.target)
     by_model = {r["model"]: r for r in rows}
+    tuned_name = run_name(dataset, cfg["train"]["target"])
     pairs = []
     for key in cfg["bases"]:
-        zero, tuned = by_model.get(key), by_model.get(key + SUFFIX)
+        zero, tuned = by_model.get(key), by_model.get(f"{key}-sft-{tuned_name}")
         if zero or tuned:
             pairs.append((key, zero, tuned))
     return pairs
@@ -196,7 +197,7 @@ def order(pairs, metric):
 
 
 def write_dataset_chart(dataset, rows, folder, metric="recording_balanced_accuracy", cfg=None):
-    pairs = order(pair_rows(rows, cfg or config()), metric)
+    pairs = order(pair_rows(rows, cfg or config(), dataset), metric)
     series = {"zero-shot": [number(z, metric) for _, z, _ in pairs],
               "fine-tuned": [number(t, metric) for _, _, t in pairs]}
     if not any(v is not None for values in series.values() for v in values):
@@ -207,7 +208,7 @@ def write_dataset_chart(dataset, rows, folder, metric="recording_balanced_accura
     complete = [r for r in present if not is_partial(r)] or present
     n_tuned, n_partial = sum(1 for _, _, t in pairs if t), sum(partial["fine-tuned"]) + sum(partial["zero-shot"])
     subtitle = (f"{complete[0].get('recordings', '?')} test recordings, {complete[0].get('patients', '?')} patients; "
-                f"{n_tuned} of {len(pairs)} bases fine-tuned (LoRA on the pooled train split)"
+                f"{n_tuned} of {len(pairs)} bases fine-tuned (LoRA on the {dataset} train split)"
                 + (f", {n_partial} bars partial" if n_partial else "") + "; \u2020 = one answer for \u2265 95% of windows")
     y_label, reference_label, reference = METRICS[metric]
     path = folder / f"chart-{metric}.png"

@@ -18,7 +18,7 @@ specialized 1D signal models. Keep that framing precise (see
 
 ## Two goals, one dataset
 
-- **(A) Zero-shot benchmark** — evaluate 36 off-the-shelf VLMs on a stratified
+- **(A) Zero-shot benchmark** — evaluate 34 off-the-shelf VLMs on a stratified
   sample of the **test** split (14,850 of 42,843 windows; scoring-unit class
   support unchanged — see [methodology-decisions.md](methodology-decisions.md)).
 - **(B) Fine-tune** — generate ground-truth rationales on the **train** split, then
@@ -50,7 +50,7 @@ EDF recordings  ──generate.py──▶  windowed waveform PNGs + labels.csv
              train split                                    test split
                     │                                            │
   eval/scripts/generate-rationales.py                    eval/run-eval.py
-      --split train                                 (35 VLMs classify, array job)
+      --split train                                 (34 VLMs classify, array job)
                     │                                            │
               LoRA fine-tune                            eval/summarize.py
                                                      (per-class + recording metrics)

@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import sys
@@ -8,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval" / "models"))
-from helpers.pipeline import DATASETS, RATIONALE, ROOT, config, db, duplicate_images, parse_name, positives, read_csv
+from helpers.pipeline import DATASETS, RATIONALE, ROOT, TARGETS, config, db, positives, read_csv, sft_file
 from structure import BINARY, classes, get_structure, prompt
 
 
@@ -38,89 +39,111 @@ def output_json(dataset, row, structure):
         payload = {field: row[pos].strip().lower() == "true"}
     else:
         payload = {f"has_{c}": row[c].strip().lower() == "true" for c in classes(dataset)}
-    payload["text_rationale"] = row[RATIONALE].strip()
+    if "text_rationale" in structure.model_fields:
+        payload["text_rationale"] = row[RATIONALE].strip()
     return json.dumps(structure(**payload).model_dump())  # key order follows the schema (train.rationale-first)
 
 
-POOLED = "pooled"  # datasets/pooled/sft_*.jsonl: all six corpora in one file, image paths prefixed with the corpus
+def check_splits():
+    # helpers/check-splits.py, loaded by file path for its hyphen
+    spec = importlib.util.spec_from_file_location("check_splits", Path(__file__).with_name("check-splits.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def train_scope(dataset):
-    # which train windows the fine-tune sees is decided by train/sample-train-split.py, not here
+    # which train windows the fine-tune sees is decided by train/scripts/sample-train-split.py, not here
     rows = db().execute("SELECT DISTINCT path FROM pipeline WHERE dataset = ? AND scope = 'rationale'", (dataset,))
     return {p.split("/", 1)[1] for (p,) in rows}
 
 
-def entries_for(dataset, cfg, canon, pooled):
-    # (jsonl line, canonical patient, labels) per eligible window; pooled lines carry the corpus in the image
-    # path (relative to datasets/) and in a `dataset` field, and their labels are corpus-prefixed for the val split
+def entries_for(dataset, cfg, leakage):
+    # ({target: jsonl line}, merged patient, labels) per eligible window. Both targets get the same windows, so the
+    # label-only and rationale runs share one split and differ only in the answer
     folder = ROOT / "datasets" / dataset
     rows = read_csv(folder / "labels.csv")
     scope = train_scope(dataset)
     if not scope:
-        sys.exit(f"{dataset}: no train windows in scope - run train/sample-train-split.py first")
+        sys.exit(f"{dataset}: no train windows in scope - run train/scripts/sample-train-split.py first")
     assert all(p.startswith("train/") for p in scope), "test-split window in fine-tune scope"
+
     eligible = [r for r in rows if r["path"] in scope and r[RATIONALE].strip()]
-    instruction = prompt(dataset)
-    structure = get_structure(dataset, cfg["rationale-first"])
+    rationale = {target: target == "rationale" for target in TARGETS}
+    instructions = {target: prompt(dataset, rationale[target]) for target in TARGETS}
+    structures = {target: get_structure(dataset, cfg["rationale-first"], rationale[target]) for target in TARGETS}
     entries, missing = [], 0
     for row in eligible:
         if not (folder / row["path"]).exists():
             missing += 1
             continue
-        line = {"dataset": dataset, "instruction": instruction, "input": "",
-                "output": output_json(dataset, row, structure),
-                "images": [f"{dataset}/{row['path']}" if pooled else row["path"]]}
-        patient = parse_name(row["path"])[0]
-        labels = {f"{dataset}:{c}" for c in positives(row)} if pooled else positives(row)
-        entries.append((line, canon.get(patient, patient), labels))
+        lines = {target: {"dataset": dataset, "instruction": instructions[target], "input": "",
+                          "output": output_json(dataset, row, structures[target]), "images": [row["path"]]}
+                 for target in TARGETS}
+        entries.append((lines, leakage.patient(row["path"]), positives(row)))
     print(f"{dataset}: {len(entries)} eligible, {missing} missing images skipped, "
           f"{len(scope)} in scope, {len(scope) - len(eligible)} of those still without a rationale")
     return entries
 
 
-def split_and_write(name, entries, folder, cfg, dry_run):
+def split(dataset, entries, cfg):
     held_out = val_patients([(patient, labels) for _, patient, labels in entries],
                             cfg["val"]["fraction"], cfg["val"]["min-patients"])
-    train = [line for line, patient, _ in entries if patient not in held_out]
-    val = [line for line, patient, _ in entries if patient in held_out]
+    train = [lines for lines, patient, _ in entries if patient not in held_out]
+    val = [lines for lines, patient, _ in entries if patient in held_out]
+
     train_patients = {patient for _, patient, _ in entries if patient not in held_out}
-    assert not train_patients & held_out, "patient overlap between train and val"
     val_classes = Counter(c for _, patient, labels in entries if patient in held_out for c in labels)
-    print(f"{name}: {len(train)} train ({len(train_patients)} patients), "
+    print(f"{dataset}: {len(train)} train ({len(train_patients)} patients), "
           f"{len(val)} val ({len(held_out)} patients; {', '.join(f'{c} {n}' for c, n in sorted(val_classes.items()))})")
-    if dry_run:
-        return
-    folder.mkdir(exist_ok=True)
-    for file, lines in (("sft_train.jsonl", train), ("sft_val.jsonl", val)):
-        with (folder / file).open("w") as f:
-            for line in lines:
-                f.write(json.dumps(line) + "\n")
+    return train, val
 
 
-def build(dataset, dry_run):
-    cfg = config()["train"]
-    _, _, canon = duplicate_images()  # patient tokens sharing an image are one patient for the val split too
-    if dataset == POOLED:
-        # one patient-level split over all six corpora: a patient is train or val everywhere, never both
-        entries = [e for ds in DATASETS for e in entries_for(ds, cfg, canon, pooled=True)]
-        split_and_write(POOLED, entries, ROOT / "datasets" / POOLED, cfg, dry_run)
-        return
-    split_and_write(dataset, entries_for(dataset, cfg, canon, pooled=False), ROOT / "datasets" / dataset, cfg, dry_run)
+def write(dataset, train, val):
+    for target in TARGETS:
+        for split_name, entries in (("train", train), ("val", val)):
+            with sft_file(dataset, split_name, target).open("w") as f:
+                for lines in entries:
+                    f.write(json.dumps(lines[target]) + "\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("datasets", nargs="*", default=["all"],
-                        help=f"datasets to build (default: all six, one file pair each); `{POOLED}` = one combined pair "
-                             f"under datasets/{POOLED}/ for the pooled run")
-    parser.add_argument("--dry-run", action="store_true", help="print counts, write nothing")
+    parser = argparse.ArgumentParser(description="build datasets/<DS>/sft_[labels_]{train,val}.jsonl, same split for both targets")
+    parser.add_argument("datasets", nargs="*", default=DATASETS)
+    parser.add_argument("--dry-run", action="store_true", help="print counts and the leakage check, write nothing")
     args = parser.parse_args()
-    targets = DATASETS if args.datasets == ["all"] else args.datasets
-    for dataset in targets:
-        if dataset not in DATASETS and dataset != POOLED:
-            sys.exit(f"unknown dataset {dataset!r} (choose from {', '.join(DATASETS)}, {POOLED})")
-        build(dataset, args.dry_run)
+    unknown = [ds for ds in args.datasets if ds not in DATASETS]
+    if unknown:
+        sys.exit(f"unknown dataset {', '.join(unknown)} (choose from {', '.join(DATASETS)})")
+
+    cfg = config()["train"]
+    splits = check_splits()
+    leakage = splits.Leakage()  # also merges patient tokens that share an image, for the val split
+
+    built, leaks = {}, []
+    for dataset in args.datasets:
+        train, val = split(dataset, entries_for(dataset, cfg, leakage), cfg)
+        train_images = [lines["rationale"]["images"][0] for lines in train]
+        val_images = [lines["rationale"]["images"][0] for lines in val]
+        found = leakage.overlaps(dataset, train_images, val_images)
+        for warning in splits.excerpt_warnings(dataset, train_images, val_images):
+            print(f"warning: {warning}")
+        if any(found.values()):
+            leaks.append(f"{dataset}: {splits.describe(found)}")
+        if not train or not val:
+            leaks.append(f"{dataset}: empty {'train' if not train else 'val'} split (no rationales yet?)")
+        built[dataset] = train, val
+
+    # every dataset is checked before any file is touched, so a leak anywhere leaves all the old files in place
+    if leaks:
+        sys.exit("train/val/test overlap or empty split, nothing written:\n  " + "\n  ".join(leaks))
+    if args.dry_run:
+        print("no overlap (dry run, nothing written)")
+        return
+
+    for dataset, (train, val) in built.items():
+        write(dataset, train, val)
+    print(f"no overlap; wrote sft_[labels_]train/val.jsonl for {', '.join(built)}")
 
 
 if __name__ == "__main__":

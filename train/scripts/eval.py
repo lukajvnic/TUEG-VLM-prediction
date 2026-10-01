@@ -4,16 +4,15 @@ import re
 import sys
 import time
 from base64 import b64decode
-from importlib import import_module
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval" / "models"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from helpers.pipeline import ROOT, append_row, base_spec, config, db, eval_file, is_degenerate, log_failure, read_csv
-from structure import get_structure, labels, prompt, to_labels
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "eval" / "models"))
+from helpers.pipeline import (ROOT, append_row, base_spec, config, db, eval_file, is_degenerate, log_failure,  # noqa: E402
+                              read_csv, script_module)
+from structure import get_structure, labels, prompt, to_labels  # noqa: E402
 
-snapshot_dir = import_module("hf-install").snapshot_dir
+snapshot_dir = script_module("hf-install").snapshot_dir
 
 MAX_NEW_TOKENS = 512
 RETRY_TEMPERATURE = 0.3
@@ -34,8 +33,8 @@ def load_processor(source, base, remote):
     # the trainer and by scoring
     from transformers import AutoProcessor
     processor = AutoProcessor.from_pretrained(source, trust_remote_code=remote, **base.get("processor-kwargs", {}))
-    if base.get("chat-template"):
-        processor.chat_template = base["chat-template"]  # saved with the checkpoint by processor.save_pretrained
+    if base.get("chat-template"):  # a path under train/, exact bytes: whitespace is part of what the model sees
+        processor.chat_template = (ROOT / "train" / base["chat-template"]).read_text()
     _TEMPLATE_KWARGS[id(processor)] = base.get("template-kwargs", {})
     return processor
 
@@ -71,7 +70,7 @@ def lora_targets(model):
 
 
 def task():
-    tasks = json.loads(b64decode(os.environ["PREDICT_TASKS"]))
+    tasks = json.loads(b64decode(os.environ["SFT_EVAL_TASKS"]))
     return tasks[int(os.environ["SLURM_ARRAY_TASK_ID"])]
 
 
@@ -87,7 +86,7 @@ def pending(dataset, model, out):
 class CustomFamily:
     """Bases whose model code is their own (config.yml bases: `family`): loaded and prompted through their API.
     No logits access from those APIs, so decoding is unconstrained; the JSON is parsed and retried like the rest.
-    Runs in the venv that trained the family (train/run.py PREDICT_VENVS, transformers 4.56): their remote code
+    Runs in the venv that trained the family (train/run-eval.py EVAL_VENVS, transformers 4.56): their remote code
     does not import under transformers 5. Written from the model cards (2026-09-21), unverified on a GPU."""
 
     def __init__(self, name, source, checkpoint):
@@ -189,7 +188,7 @@ def shim_tokenization_utils():
 
 def enforcer(processor, structure):
     # same schema Ollama's json mode constrains the zero-shot models to. The vocabulary table is built once per
-    # tokenizer (it decodes every token id); a pooled run builds six enforcers from it
+    # tokenizer (it decodes every token id)
     shim_tokenization_utils()
     from lmformatenforcer import JsonSchemaParser
     from lmformatenforcer.integrations.transformers import (build_token_enforcer_tokenizer_data,
@@ -253,8 +252,9 @@ def predict(model, processor, structure, image_path, text, prefix_fn):
         try:
             reply = generate(model, processor, image_path, text, prefix_fn, temperature)
             parsed = structure(**parse_json(reply))
-            if is_degenerate(parsed.text_rationale):
-                raise ValueError(f"degenerate rationale: {parsed.text_rationale[:60]!r}")
+            rationale = getattr(parsed, "text_rationale", None)  # a label-only fine-tune answers no rationale
+            if rationale is not None and is_degenerate(rationale):
+                raise ValueError(f"degenerate rationale: {rationale[:60]!r}")
             return parsed
         except Exception as e:
             error = e
@@ -269,15 +269,18 @@ def main():
     header = ["path", "model", *labels(dataset), "rationale"]
     todo = pending(dataset, name, out)
     shard, shards = task().get("shard", 0), task().get("shards", 1)
-    if shards > 1:  # run.py split this pair over `shards` array tasks; take every shards-th pending window
+    if shards > 1:  # run-eval.py split this pair over `shards` array tasks; take every shards-th pending window
         todo = sorted(todo)[shard::shards]
         print(f"{name} {dataset}: shard {shard + 1}/{shards}, {len(todo)} windows", flush=True)
     if not todo:
         print(f"{name} {dataset}: nothing pending")
         return
     model, processor, manifest = load(spec)
-    structure = get_structure(dataset, manifest.get("rationale_first", False))  # the order the checkpoint was trained on
-    text = prompt(dataset)
+    # the fields and order the checkpoint was trained on: a label-only fine-tune (target labels) gets the booleans
+    # alone and a prompt without the rationale instruction
+    rationale = manifest.get("target", "rationale") == "rationale"
+    structure = get_structure(dataset, manifest.get("rationale_first", False), rationale)
+    text = prompt(dataset, rationale)
     prefix_fn = enforcer(processor, structure) if processor is not None else None  # custom families: unconstrained
     ok = failed = 0
     started = time.time()
@@ -290,7 +293,8 @@ def main():
             log_failure("predict", dataset, rel, name, e)
             continue
         values = to_labels(parsed, dataset)
-        append_row(out, header, [rel, name, *[str(v).lower() for v in values.values()], parsed.text_rationale])
+        append_row(out, header, [rel, name, *[str(v).lower() for v in values.values()],
+                                 getattr(parsed, "text_rationale", "")])
         ok += 1
         if ok % PROGRESS_EVERY == 0:
             import resource

@@ -25,14 +25,13 @@ settings:
     background-per-recording: 1
     majority-ratio: 1.5
     reject-bad-rationales: true
-    exclude-cross-dataset-test-patients: true   # 117 patients are train in one corpus and test in another; also
-                                                # drops train windows byte-identical to a test image in any corpus
+    exclude-cross-dataset-test-patients: true
   model-kwargs:
     base_url: http://localhost:11434
     temperature: 0
   structured-output:
     method: json_schema
-    
+
 models:
   bakllava:7b:
     time: '20:00:00'
@@ -164,7 +163,6 @@ models:
     ram: 16G
     gpus: a100_3g.20gb:1
     parallel-requests: 4
-  # qwen2.5vl:3b - dropped: image-deterministic zero-token stream failures, see knowledge/known-issues.md
   qwen2.5vl:7b:
     time: '20:00:00'
     ram: 24G
@@ -190,13 +188,6 @@ models:
     ram: 24G
     gpus: a100_3g.20gb:1
     parallel-requests: 4
-  # qwen3-vl:8b-thinking - dropped 2026-09-17: thinking loops exhaust context with no Ollama budget, see knowledge/known-issues.md
-  # qwen3-vl:8b-thinking:
-  #   context: 32768
-  #   time: '36:00:00'
-  #   ram: 24G
-  #   gpus: 1
-  #   parallel-requests: 4
   qwen3-vl:30b-a3b-instruct:
     time: 08:00:00
     ram: 48G
@@ -207,11 +198,6 @@ models:
     ram: 48G
     gpus: 1
     parallel-requests: 8
-  # HF-side models: scored by train/predict.py, skipped by the Ollama dispatcher. No `checkpoint` = the
-  # base model as-is, the like-for-like "before" for the fine-tunes (the Ollama qwen2.5vl:7b row is a
-  # different quantisation and image resize). `rationale-first` there defaults to false, the zero-shot order.
-  # `base` is a `bases:` key below (or an HF repo id); `checkpoint` is where train/run.py put the adapter
-  # (checkpoints/<base key with : as ->/<DS>). Register a fine-tune here once it has a manifest.json.
   qwen2.5vl:7b-hf:
     backend: hf
     base: qwen2.5vl:7b
@@ -220,159 +206,66 @@ models:
     ram: 64G
     gpus: 1
     cpus: 8
-  qwen2.5vl:7b-sft-TUAB:
-    backend: hf
-    base: qwen2.5vl:7b
-    checkpoint: checkpoints/qwen2.5vl-7b/TUAB
-    datasets: [TUAB]
-    time: '06:00:00'
-    ram: 64G
-    gpus: 1
-    cpus: 8
-  qwen2.5vl:7b-sft-TUEP:
-    backend: hf
-    base: qwen2.5vl:7b
-    checkpoint: checkpoints/qwen2.5vl-7b/TUEP
-    datasets: [TUEP]
-    time: '06:00:00'
-    ram: 64G
-    gpus: 1
-    cpus: 8
-  qwen2.5vl:7b-sft-pooled:      # the main track: one run per base over all six corpora (train.dataset: pooled)
-    backend: hf
-    base: qwen2.5vl:7b
-    checkpoint: checkpoints/qwen2.5vl-7b/pooled
-    time: '24:00:00'            # TUSZ is 8,460 windows per task; 12 h timed out risk (2026-09-24)
-    ram: 64G
-    gpus: 1
-    cpus: 8
-  minicpm-v:8b-sft-pooled:      # custom stack (train/run-custom.py); scored via predict.py CustomFamily
-    backend: hf
-    base: minicpm-v:8b
-    checkpoint: checkpoints/minicpm-v-8b/pooled
-    time: '12:00:00'
-    ram: 64G
-    gpus: 1
-    cpus: 8
-  minicpm-v4.5:8b-sft-pooled:   # custom stack (train/run-custom.py); scored via predict.py CustomFamily
-    backend: hf
-    base: minicpm-v4.5:8b
-    checkpoint: checkpoints/minicpm-v4.5-8b/pooled
-    time: '12:00:00'
-    ram: 64G
-    gpus: 1
-    cpus: 8
-  deepseek-ocr:3b-sft-pooled:   # custom stack (train/run-custom.py); scored via predict.py CustomFamily
-    backend: hf
-    base: deepseek-ocr:3b
-    checkpoint: checkpoints/deepseek-ocr-3b/pooled
-    time: '12:00:00'
-    ram: 64G
-    gpus: 1
-    cpus: 8
-  # Every other fine-tune (2026-09-24), one array task per (model, dataset); TUSZ (8,460 windows) sets the walltime:
-  # ~5 s/image on a 7B is ~12 h, so 24 h for 1-GPU bases and 48 h on 2 GPUs for the 24-34B ones (unmeasured)
-  bakllava:7b-sft-pooled:         {backend: hf, base: bakllava:7b, checkpoint: checkpoints/bakllava-7b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  gemma3:4b-sft-pooled:           {backend: hf, base: gemma3:4b, checkpoint: checkpoints/gemma3-4b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  gemma3:12b-sft-pooled:          {backend: hf, base: gemma3:12b, checkpoint: checkpoints/gemma3-12b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  gemma3:27b-sft-pooled:          {backend: hf, base: gemma3:27b, checkpoint: checkpoints/gemma3-27b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
-  gemma4:e2b-sft-pooled:          {backend: hf, base: gemma4:e2b, checkpoint: checkpoints/gemma4-e2b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  gemma4:e4b-sft-pooled:          {backend: hf, base: gemma4:e4b, checkpoint: checkpoints/gemma4-e4b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  gemma4:26b-sft-pooled:          {backend: hf, base: gemma4:26b, checkpoint: checkpoints/gemma4-26b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
-  gemma4:31b-sft-pooled:          {backend: hf, base: gemma4:31b, checkpoint: checkpoints/gemma4-31b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
-  glm-ocr:latest-sft-pooled:      {backend: hf, base: glm-ocr:latest, checkpoint: checkpoints/glm-ocr-latest/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  granite3.2-vision:2b-sft-pooled: {backend: hf, base: granite3.2-vision:2b, checkpoint: checkpoints/granite3.2-vision-2b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  llava:7b-sft-pooled:            {backend: hf, base: llava:7b, checkpoint: checkpoints/llava-7b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  llava:13b-sft-pooled:           {backend: hf, base: llava:13b, checkpoint: checkpoints/llava-13b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  llava:34b-sft-pooled:           {backend: hf, base: llava:34b, checkpoint: checkpoints/llava-34b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
-  llava-llama3:8b-sft-pooled:     {backend: hf, base: llava-llama3:8b, checkpoint: checkpoints/llava-llama3-8b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  llava-phi3:3.8b-sft-pooled:     {backend: hf, base: llava-phi3:3.8b, checkpoint: checkpoints/llava-phi3-3.8b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  medgemma:4b-sft-pooled:         {backend: hf, base: medgemma:4b, checkpoint: checkpoints/medgemma-4b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  medgemma1.5:4b-sft-pooled:      {backend: hf, base: medgemma1.5:4b, checkpoint: checkpoints/medgemma1.5-4b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  minicpm-v4.6:1b-sft-pooled:     {backend: hf, base: minicpm-v4.6:1b, checkpoint: checkpoints/minicpm-v4.6-1b/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  mistral-small3.1:24b-sft-pooled: {backend: hf, base: mistral-small3.1:24b, checkpoint: checkpoints/mistral-small3.1-24b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
-  mistral-small3.2:24b-sft-pooled: {backend: hf, base: mistral-small3.2:24b, checkpoint: checkpoints/mistral-small3.2-24b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
-  qwen2.5vl:32b-sft-pooled:       {backend: hf, base: qwen2.5vl:32b, checkpoint: checkpoints/qwen2.5vl-32b/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
-  qwen3-vl:2b-instruct-sft-pooled: {backend: hf, base: qwen3-vl:2b-instruct, checkpoint: checkpoints/qwen3-vl-2b-instruct/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  qwen3-vl:4b-instruct-sft-pooled: {backend: hf, base: qwen3-vl:4b-instruct, checkpoint: checkpoints/qwen3-vl-4b-instruct/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  qwen3-vl:8b-instruct-sft-pooled: {backend: hf, base: qwen3-vl:8b-instruct, checkpoint: checkpoints/qwen3-vl-8b-instruct/pooled, time: '24:00:00', ram: 64G, gpus: 1, cpus: 8}
-  qwen3-vl:30b-a3b-instruct-sft-pooled: {backend: hf, base: qwen3-vl:30b-a3b-instruct, checkpoint: checkpoints/qwen3-vl-30b-a3b-instruct/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
-  qwen3-vl:32b-instruct-sft-pooled: {backend: hf, base: qwen3-vl:32b-instruct, checkpoint: checkpoints/qwen3-vl-32b-instruct/pooled, time: '48:00:00', ram: 128G, gpus: 2, cpus: 8}
 
-# HF weights behind each Ollama tag, for the fine-tune track (every model is to be fine-tuned, 2026-09-21).
-# chat-template: a Jinja template for bases whose processor ships none or a broken one. processor-kwargs: AutoProcessor
-# overrides. template-kwargs: apply_chat_template kwargs (thinking switches). answer-suffix: a stop token appended to
-# the training target when the template renders none. processor-files-from: copy another base's processor/tokenizer
-# files into this snapshot (hf-install.py). All applied identically by the trainer and predict.py.
-# gpus/ram/time override train: for bases that do not fit one A100-40GB in bf16 (Narval nodes have 4 x 40 GB).
-# 2-GPU bases are model-parallel (no speedup), so they get 48 h; llama4 in NF4 on 4 GPUs gets 72 h. All guesses until measured.
-# `status` marks a base the generic trainer cannot take yet; run.py train refuses it and hf-install --all skips it.
-# Repo ids were looked up on the Hub 2026-09-21; gated ones (google/*, meta-llama/*) need the licence accepted.
 bases:
   bakllava:7b:
     repo: llava-hf/bakLlava-v1-hf
-    # the repo template ends the assistant turn with the literal typo `<\s>` (never the real </s>), so a fine-tune
-    # would learn no stop token; same [INST] form with </s> (2026-09-23)
-    chat-template: "{% for message in messages %}{% if message['role'] == 'user' %}[INST] {% for c in message['content'] %}{% if c['type'] == 'image' %}<image>\n{% elif c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %} [/INST]{% elif message['role'] == 'assistant' %} {% for c in message['content'] %}{{ c['text'] }}{% endfor %}</s>{% endif %}{% endfor %}"
-  deepseek-ocr:3b: {repo: unsloth/DeepSeek-OCR, trust-remote-code: true, family: deepseek-ocr, status: custom code - train/run-custom.py (Unsloth), score via predict.py's custom family}  # unsloth's mirror of deepseek-ai/DeepSeek-OCR: same config + weights, modeling code patched for transformers >= 4.48 (the original imports LlamaFlashAttention2 and only loads on 4.46); train and score from the same repo so adapter keys match (2026-09-23)
+    chat-template: templates/llava-mistral.jinja
+  deepseek-ocr:3b: {repo: unsloth/DeepSeek-OCR, trust-remote-code: true, family: deepseek-ocr}
   gemma3:4b: {repo: google/gemma-3-4b-it}
   gemma3:12b: {repo: google/gemma-3-12b-it}
   gemma3:27b: {repo: google/gemma-3-27b-it, gpus: 2, ram: 128G, time: '48:00:00'}
   gemma4:e2b: {repo: google/gemma-4-E2B-it}
   gemma4:e4b: {repo: google/gemma-4-E4B-it}
-  gemma4:12b: {repo: google/gemma-4-12B-it, ram: 128G}  # 2026-09-27: host-RAM OOM-killed at 64G while loading (unified model). gemma4_unified: needs transformers >= 5.10; the cluster .venv moved to 5.14.1 on 2026-09-26, so it is back in (was `status` from 09-23)
-  gemma4:26b: {repo: google/gemma-4-26B-A4B-it, gpus: 2, ram: 128G, time: '48:00:00'}  # MoE: experts are fused parameters, LoRA reaches attention + vision only
-  gemma4:31b: {repo: google/gemma-4-31B-it, gpus: 3, ram: 192G, time: '48:00:00'}  # 63 GB bf16
-  glm-ocr:latest: {repo: zai-org/GLM-OCR, template-kwargs: {enable_thinking: false}, answer-suffix: '<|user|>'}  # enable_thinking false puts the empty <think></think> in the prompt (train and score alike) instead of the target; the template renders no stop token after the answer, <|user|> is one of its eos ids. config saved by transformers 5.17: loads on 5.8 (unknown keys kept), weight names unverified
+  gemma4:12b: {repo: google/gemma-4-12B-it, ram: 128G}
+  gemma4:26b: {repo: google/gemma-4-26B-A4B-it, gpus: 2, ram: 128G, time: '48:00:00'}
+  gemma4:31b: {repo: google/gemma-4-31B-it, gpus: 3, ram: 192G, time: '48:00:00'}
+  glm-ocr:latest: {repo: zai-org/GLM-OCR, template-kwargs: {enable_thinking: false}, answer-suffix: '<|user|>'}
   granite3.2-vision:2b: {repo: ibm-granite/granite-vision-3.2-2b}
-  llama4:16x17b: {repo: meta-llama/Llama-4-Scout-17B-16E-Instruct, gpus: 4, ram: 256G, time: '72:00:00', quantize-4bit: true,
-                 status: 'NF4 cannot shrink it: transformers 5.8 stores the 16 experts per layer as one 3-D parameter (Llama4TextExperts), bitsandbytes only converts nn.Linear, so ~96B expert params stay bf16 (~190 GB) on a 160 GB node and LoRA never touches the experts; needs an MoE-aware quantiser or a pre-quantised checkpoint (2026-09-23)'}
-  # 109B params, 218 GB bf16. The 4-bit path was the plan (maintainer 2026-09-21); the status above is why it is off
+  llama4:16x17b: {repo: meta-llama/Llama-4-Scout-17B-16E-Instruct, status: '109B params, 218 GB in bf16, a node has 160 GB; 4-bit could not shrink its fused MoE experts, and the 4-bit path was removed on 2026-09-29'}
   llava:7b:
     repo: llava-hf/llava-1.5-7b-hf
-    # the llava-1.5 template renders no stop token after the assistant turn; same USER:/ASSISTANT: form with </s>
-    chat-template: "{% for message in messages %}{% if message['role'] == 'user' %}USER: {% for c in message['content'] %}{% if c['type'] == 'image' %}<image>\n{% elif c['type'] == 'text' %}{{ c['text'] }} {% endif %}{% endfor %}{% elif message['role'] == 'assistant' %}ASSISTANT: {% for c in message['content'] %}{{ c['text'] }}{% endfor %}</s>{% endif %}{% endfor %}{% if add_generation_prompt %}ASSISTANT:{% endif %}"
+    chat-template: templates/llava-1.5.jinja
   llava:13b:
     repo: llava-hf/llava-1.5-13b-hf
-    chat-template: "{% for message in messages %}{% if message['role'] == 'user' %}USER: {% for c in message['content'] %}{% if c['type'] == 'image' %}<image>\n{% elif c['type'] == 'text' %}{{ c['text'] }} {% endif %}{% endfor %}{% elif message['role'] == 'assistant' %}ASSISTANT: {% for c in message['content'] %}{{ c['text'] }}{% endfor %}</s>{% endif %}{% endfor %}{% if add_generation_prompt %}ASSISTANT:{% endif %}"
-  llava:34b: {repo: llava-hf/llava-v1.6-34b-hf, gpus: 3, ram: 192G, time: '48:00:00'}  # 69.5 GB bf16: 2 x 40 GB leaves ~5% for activations
+    chat-template: templates/llava-1.5.jinja
+  llava:34b: {repo: llava-hf/llava-v1.6-34b-hf, gpus: 3, ram: 192G, time: '48:00:00'}
   llava-llama3:8b:
     repo: xtuner/llava-llama-3-8b-v1_1-transformers
-    processor-kwargs: {patch_size: 14, vision_feature_select_strategy: default, num_additional_image_tokens: 1}   # no processor_config.json in the repo: llava-1.5 values (576 image tokens)
-    # its processor has no chat template (failed 2026-09-23); this is the Llama 3 format from the model card,
-    # `<image>` where LlavaProcessor expands the image. Applied by the trainer and predict.py.
-    chat-template: "{% for message in messages %}<|start_header_id|>{{ message['role'] }}<|end_header_id|>\n\n{% for c in message['content'] %}{% if c['type'] == 'image' %}<image>\n{% elif c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %}<|eot_id|>{% endfor %}{% if add_generation_prompt %}<|start_header_id|>assistant<|end_header_id|>\n\n{% endif %}"
+    processor-kwargs: {patch_size: 14, vision_feature_select_strategy: default, num_additional_image_tokens: 1}
+    chat-template: templates/llama3.jinja
   llava-phi3:3.8b:
     repo: xtuner/llava-phi-3-mini-hf
-    # no processor_config.json (patch_size would be None) and no usable chat template; Phi-3 format, <image> where
-    # LlavaProcessor expands it, tokenizer adds BOS itself (2026-09-23)
     processor-kwargs: {patch_size: 14, vision_feature_select_strategy: default, num_additional_image_tokens: 1}
-    chat-template: "{% for m in messages %}{% if m['role'] == 'user' %}<|user|>\n{% for c in m['content'] %}{% if c['type'] == 'image' %}<image>\n{% elif c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %}<|end|>\n{% elif m['role'] == 'assistant' %}<|assistant|>\n{% for c in m['content'] %}{{ c['text'] }}{% endfor %}<|end|>\n{% endif %}{% endfor %}{% if add_generation_prompt %}<|assistant|>\n{% endif %}"
+    chat-template: templates/phi3.jinja
   medgemma:4b: {repo: google/medgemma-4b-it}
   medgemma1.5:4b: {repo: google/medgemma-1.5-4b-it}
-  minicpm-v:8b: {repo: openbmb/MiniCPM-V-2_6, trust-remote-code: true, family: minicpm, status: custom code - train with OpenBMB finetune_lora.sh from export-sft.py --format minicpm, score via predict.py's custom family}
-  minicpm-v4.5:8b: {repo: openbmb/MiniCPM-V-4_5, trust-remote-code: true, family: minicpm, status: custom code - train with LLaMA-Factory (template minicpm_v) from export-sft.py --format llamafactory, score via predict.py's custom family}
-  minicpm-v4.6:1b: {repo: openbmb/MiniCPM-V-4.6, template-kwargs: {enable_thinking: false}}  # native transformers per its card (AutoModelForImageTextToText); the Hub repo is the 4.6 release, the Ollama :1b tag's exact twin is unverified
+  minicpm-v:8b: {repo: openbmb/MiniCPM-V-2_6, trust-remote-code: true, family: minicpm}
+  minicpm-v4.5:8b: {repo: openbmb/MiniCPM-V-4_5, trust-remote-code: true, family: minicpm}
+  minicpm-v4.6:1b: {repo: openbmb/MiniCPM-V-4.6, template-kwargs: {enable_thinking: false}}
   mistral-small3.1:24b: {repo: mistralai/Mistral-Small-3.1-24B-Instruct-2503, gpus: 2, ram: 128G, time: '48:00:00'}
-  mistral-small3.2:24b: {repo: mistralai/Mistral-Small-3.2-24B-Instruct-2506, gpus: 2, ram: 128G, time: '48:00:00', processor-files-from: mistral-small3.1:24b}  # the 3.2 repo ships only weights + tekken.json (no processor/tokenizer configs, no template); hf-install copies 3.1's, same vocab and encoder
+  mistral-small3.2:24b: {repo: mistralai/Mistral-Small-3.2-24B-Instruct-2506, gpus: 2, ram: 128G, time: '48:00:00', processor-files-from: mistral-small3.1:24b}
   moondream:1.8b: {repo: vikhyatk/moondream2, trust-remote-code: true, family: moondream, status: fine-tune deferred (maintainer 2026-09-21) - no local LoRA path, hosted service pending the data-use check; FINETUNE-TODO item 21}
-  qwen2.5vl:7b: {repo: Qwen/Qwen2.5-VL-7B-Instruct}
-  qwen2.5vl:32b: {repo: Qwen/Qwen2.5-VL-32B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}  # 68 GB bf16
+  qwen2.5vl:7b: {repo: Qwen/Qwen2.5-VL-7B-Instruct, time: '12:00:00'}  # per-dataset run ~5.5 h (estimate); 12 h gets the b2 GPU partition
+  qwen2.5vl:32b: {repo: Qwen/Qwen2.5-VL-32B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}
   qwen3-vl:2b-instruct: {repo: Qwen/Qwen3-VL-2B-Instruct}
   qwen3-vl:4b-instruct: {repo: Qwen/Qwen3-VL-4B-Instruct}
   qwen3-vl:8b-instruct: {repo: Qwen/Qwen3-VL-8B-Instruct}
-  qwen3-vl:30b-a3b-instruct: {repo: Qwen/Qwen3-VL-30B-A3B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}  # 62 GB bf16; MoE experts are fused parameters, LoRA reaches attention + vision only
-  qwen3-vl:32b-instruct: {repo: Qwen/Qwen3-VL-32B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}  # 67 GB bf16
+  qwen3-vl:30b-a3b-instruct: {repo: Qwen/Qwen3-VL-30B-A3B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}
+  qwen3-vl:32b-instruct: {repo: Qwen/Qwen3-VL-32B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}
 
 prompts:
   intro: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. "
   no-meta: "Do not describe the image format or define terminology."
   eval:
-    binary: "Based only on these waveforms, {task}. In the text_rationale field, describe the specific evidence for your decision: which channel(s) support it, where along the time axis, and what the curve looks like there (shape, frequency, amplitude, symmetry). "
+    # a label-only fine-tune (train.target: labels) is prompted without the *-rationale sentence and the no-meta line
+    binary: "Based only on these waveforms, {task}. "
+    binary-rationale: "In the text_rationale field, describe the specific evidence for your decision: which channel(s) support it, where along the time axis, and what the curve looks like there (shape, frequency, amplitude, symmetry). "
     tasks:
       TUAB: classify the brain activity as normal or abnormal
       TUEP: classify the recording as epileptic or non-epileptic
-    multilabel: "From these {kind} - {listed} - select every one present, based only on the waveforms. In the text_rationale field, for each category you mark as present, describe the specific evidence in the waveform: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). "
+    multilabel: "From these {kind} - {listed} - select every one present, based only on the waveforms. "
+    multilabel-rationale: "In the text_rationale field, for each category you mark as present, describe the specific evidence in the waveform: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). "
     multilabel-suffix: " Set a category's boolean to true only when it is present."
     kinds:
       TUAR: artifact categories
@@ -390,25 +283,32 @@ prompts:
     grounded: "Justify this labeling using only visible EEG features. For each finding, give the specific evidence: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). State every label explicitly. Write a focused 3-5 sentence mini-report; do not describe the image format, define terminology, repeat yourself, or add unsupported findings."
 
 train:
-  model: qwen2.5vl:7b         # a `bases:` key; `train/run.py --model KEY --dataset DS` overrides both per job
-  dataset: pooled             # all six corpora in one run (helpers/build-sft-jsonl.py pooled); a corpus name = a per-corpus ablation
-  resume-from-checkpoint:     # a checkpoint-N dir (trainer state + adapter) to resume from; the output dir is always checkpoints/<model key>/<dataset>
-  rationale-first: true       # target JSON is text_rationale then the booleans; predict.py reads it back from manifest.json
-  quantize-4bit: false        # bf16 LoRA; 4-bit would also quantize the vision tower
-  time: '24:00:00'          # unmeasured (2026-09-23): ~13k passes at ~3k visual tokens plus 16 evals; a 7B is guessed at 8-11 h. `bases:` overrides per base
+  target: labels  # labels: booleans-only JSON (sft_labels_*.jsonl, checkpoints/<key>/<DS>-labels); rationale: rationale then booleans (sft_*.jsonl, checkpoints/<key>/<DS>)
+  rationale-first: true
+  wandb:
+    entity: l3jovano-krembil-research-institute
+    project: eeg-vlm-finetune
+  time: '24:00:00'
   ram: 64G
   gpus: 1
   cpus: 8
+  eval:
+    time: '24:00:00'
+    ram: 64G
+    gpus: 1
+    cpus: 8
+    large:
+      time: '48:00:00'
+      ram: 128G
+      gpus: 2
   val:
-    fraction: 0.05            # of train patients, patient-level, every class represented
-    min-patients: 10          # 3 gave TUEP a 17-window val set (4 patients); capped at half the pool
-    generate: 64              # about this many val windows, whole recordings, generated at each eval step for the
-                              # recording-level balanced accuracy that picks the checkpoint (0 = loss only)
+    fraction: 0.05
+    min-patients: 10
   lora:
     rank: 16
     alpha: 32
     dropout: 0.05
-    vision: true              # also adapt the vision tower (attention, MLP, merger); false = language layers only
+    vision: true
     vision-lr-scale: 0.5
   training:
     epochs: 2

@@ -4,7 +4,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from helpers.pipeline import ROOT, base_spec, config
 
 
@@ -41,7 +41,7 @@ def is_complete(repo_id, destination, token):
 def main():
     parser = argparse.ArgumentParser(
         description="download HF snapshots for the fine-tune (run from a login node: compute nodes have no internet)")
-    parser.add_argument("repos", nargs="*", help="HF repo ids or `bases:` keys (default: config.yml train.model)")
+    parser.add_argument("repos", nargs="*", help="HF repo ids or `bases:` keys")
     parser.add_argument("--all", action="store_true", help="every base in config.yml bases: without a `status`")
     parser.add_argument("--output-dir", type=Path, default=checkpoint_root())
     parser.add_argument("--dry-run", action="store_true", help="print destinations, download nothing")
@@ -49,7 +49,7 @@ def main():
     args = parser.parse_args()
     cfg = config()
     keys = [k for k, b in cfg.get("bases", {}).items() if not b.get("status")] if args.all else \
-        (args.repos or [cfg["train"]["model"]])
+        args.repos
     repos = [base_spec(cfg, k)["repo"] for k in keys]
 
     for repo_id in repos:

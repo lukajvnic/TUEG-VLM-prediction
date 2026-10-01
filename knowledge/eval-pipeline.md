@@ -1,6 +1,6 @@
 # Evaluation pipeline
 
-Zero-shot benchmark of 35 VLMs on a stratified sample of the **test** split, run
+Zero-shot benchmark of 34 VLMs on a stratified sample of the **test** split, run
 as Slurm array jobs on Narval with Ollama serving the models inside Apptainer.
 
 ## Files
@@ -11,7 +11,6 @@ calls lives in `eval/scripts/`.
 - `eval/config.yml` — judge, models, datasets/prompts, settings. **The one config.**
 - `eval/run-eval.py` — reads config, groups runs by resource, submits array jobs.
 - `eval/run-judge.py` — rationale-agreement driver (`check` / `submit` / `report`).
-- `eval/create-retry-config.py` — regenerate config to retry only failures.
 - `eval/status.py` — live run rollup; reconciles `status.csv` with Slurm.
 - `eval/summarize.py` — scoring and reporting: per-class + recording-level
   metrics with bootstrap CIs, written to `summary.csv`, `classes.csv`,
@@ -48,20 +47,21 @@ calls lives in `eval/scripts/`.
 - **`datasets`**: each has a `prompt`. Prompts describe a *multi-channel EEG
   waveform plot* and demand **grounded per-item evidence** ("which channel, where
   in time, what the curve looks like"), and put all reasoning in `text_rationale`.
-- **`models`**: 35 active entries (10 commented out with their reason — 3 suspected
-  Ollama tag aliases, 2 that do not fit Narval's hardware, and 5 of the 6
-  `-thinking` variants, since the reasoning ablation is run once at 8b against
-  `qwen3-vl:8b-instruct`). Each has `time`, `ram`, `gpus`, `parallel-requests`,
-  `datasets`. GPU allocation:
+- **`models`**: 34 active Ollama entries (11 commented out with their reason — 3
+  suspected Ollama tag aliases, 2 that do not fit Narval's hardware, all 6
+  `-thinking` variants, and `qwen2.5vl:3b`). `qwen3-vl:8b-thinking` was the last
+  thinking model standing, kept for a reasoning ablation against
+  `qwen3-vl:8b-instruct`; it was dropped 2026-09-17 (see known-issues.md), so the
+  benchmark has no reasoning ablation. Each entry has `time`, `ram`, `gpus`,
+  `parallel-requests`, `datasets`. GPU allocation:
   - **21 models with ≤7 GB of weights** → `gpus: "a100_3g.20gb:1"` (a **20 GB MIG
     slice**), 4 requests in flight
-  - **13 mid/large** → `gpus: 1` (full A100), 8 in flight
+  - **12 mid/large** → `gpus: 1` (full A100), 8 in flight
   - **1 MoE** (`llama4:16x17b`, 67 GB) → `gpus: 4`
-  - `qwen3-vl:8b-thinking` keeps a full A100 despite its size: it emits several
-    times the tokens of any other model and is the run's long pole. It runs at
-    `context: 32768` and 4 requests in flight (2026-09-08, was 16384/8): at 16k
-    its reasoning exhausted the window before the JSON finished on the long-schema
-    datasets — see known-issues.md.
+  - `qwen3-vl:8b-thinking` (dropped) had a full A100 despite its size: it emitted
+    several times the tokens of any other model and was the run's long pole, at
+    `context: 32768` and 4 in flight. Its commented block in `config.yml` keeps
+    those values in case it is ever reinstated.
   - The same assignments are mirrored into `config-base.yml` so retries don't
     revert them.
 
@@ -121,7 +121,7 @@ calls lives in `eval/scripts/`.
   to an uppercase label set.
 - **Retry backoff is conditional.** The 10 s sleep runs only for transport-level
   errors. A schema-validation or JSON-parse failure is deterministic, and pausing
-  before retrying it just burns walltime — at 35 models × thousands of images
+  before retrying it just burns walltime — at 34 models × thousands of images
   that was potentially hours of GPU time on weak-JSON models.
 - **wandb logs aggregates**, not one event per image (that was ~15k events per
   task and duplicated what the results CSV already holds).
@@ -134,23 +134,12 @@ calls lives in `eval/scripts/`.
   `path, prediction, actual, correct, text_rationale, api_json` (prediction/actual
   are stringified Python sets).
 
-## Retry loop: `create-retry-config.py`
+## Retry loop
 
-`python eval/create-retry-config.py <run>`:
-- reads the run's `status.csv`, finds succeeded `(model, dataset)` pairs,
-- rebuilds `config.yml` from `config-base.yml` (models) + the run's
-  `judge`/`settings`/`datasets`, commenting out the succeeded pairs,
-- **auto-sets `resume-from: <run>`** so surviving tasks skip completed images.
-Then `python eval/run-eval.py` runs only the unfinished work.
-
-**Every top-level key must be both loaded *and* rendered.** `render_config` emits
-`judge`, `settings`, `datasets`, `models`; a key that is loaded but not rendered
-is silently dropped on the first retry. This is why the judge config used to live
-in its own `judge.yml` — it is now in `config.yml` and explicitly rendered, and a
-round-trip test is `python eval/create-retry-config.py <run>` followed by checking
-`judge` is still there. Note the rewrite goes through `yaml.safe_dump`, so **the
-explanatory comments in `settings`/`datasets`/`judge` are stripped** on retry;
-that was already true for the other two and this doc is the durable copy.
+The config-rewriting retry script is retired. Retries are resubmission-driven:
+a resubmitted or requeued task skips images that already have result rows and
+re-attempts blank/failed ones, and `pipeline.db` is the authority on what is
+still pending.
 
 ### The retry lands in a new run dir — merge before scoring
 
@@ -172,6 +161,14 @@ is exactly what `resume-from` guarantees), so any duplicate it reports means an
 overlap that should not exist — it drops them and prints the count.
 
 ## Scoring and reporting: `eval/summarize.py`
+
+> **2026-09-16:** `summarize.py` no longer exists (removed in the `bb5b4be`
+> redesign). Scoring is `eval/score.py`, which ports the metric core below
+> (recording-level macro-F1 and balanced accuracy, cluster bootstrap,
+> constant-predictor floor, degeneracy, `MIN_SUPPORT`) onto the current
+> `datasets/<DS>/eval-baseline.csv` layout (plus one `eval-<model>.csv` per
+> fine-tune since 2026-09-24). Charts were not ported. See
+> tooling.md.
 
 `python eval/summarize.py <run> [--bootstrap N]`:
 - Parses each `results/*.csv`; derives recording from filename (`<pat>_<scan>`).
@@ -391,21 +388,21 @@ python eval/run-judge.py report <run>   # aggregate to CSV
 ```
 
 `check` prints, per model × dataset, how many evaluated rationales have a
-reference. It is free and local, and it is the guard against queueing 35 judge
+reference. It is free and local, and it is the guard against queueing 34 judge
 tasks against a missing or half-finished teacher pass.
 
 ### The judge
 
 Configured under the **`judge`** key of `eval/config.yml` (until 2026-08-16 a
-separate `eval/judge.yml`, because `create-retry-config.py` used to drop any
-top-level key it did not render — it now renders `judge` explicitly). Both
+separate `eval/judge.yml`, a workaround for a since-retired retry-config step
+that dropped keys it did not render). Both
 `run-judge.py` and `scripts/judge.py` read it **live** from `eval/config.yml`,
 not from the run's frozen copy, since the stage runs after and independently of
 the sweep. `judge_array.sbatch` reads `model`, `parallel-requests` and `num-ctx`
 out of the same key so server and client cannot drift apart.
 
 - **`mistral-small3.2:24b`**, used text-only (it reads two rationales, never the
-  image). Picked from the 35 already-staged models: not the `gemma3:12b` teacher,
+  image). Picked from the 34 already-staged models: not the `gemma3:12b` teacher,
   no gemma lineage, smallest capable family. It **is** one of the graded models,
   so its own row grades its own prose — see
   [known-issues.md](known-issues.md) before quoting it, and
