@@ -328,7 +328,7 @@ medgemma x2, llava 7b/13b, bakllava, granite) kept running. Causes and fixes:
   They are excerpt ids, not subjects, so train/val subject-disjointness is
   unprovable for them; only the image-hash merge links excerpts of one
   subject. `helpers/check-splits.py` prints them as a warning, not a failure.
-- 2026-09-30, label-only fine-tunes (`<key>-sft-<DS>-labels`) are never
+- 2026-09-30, label-only fine-tunes (`target: labels` in their manifest) are never
   judged, so their `pipeline.db` rows never reach `done` (which needs
   `judged` and `judged_gpt`) and `helpers/status.py` counts them as
   unfinished. Cosmetic: scoring doesn't read `done`.

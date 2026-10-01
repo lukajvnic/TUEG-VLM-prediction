@@ -82,6 +82,7 @@ batching, right-sized context/walltime) trace to that. See
 - [operations.md](operations.md) — end-to-end commands and cluster workflow
 - [tooling.md](tooling.md) — every script, what it does, and what is cruft
 - [known-issues.md](known-issues.md) — limitations and open decisions
+- [experiments.md](experiments.md) — every fine-tune round: name, setup, code, where its files are, outcome
 
 **This directory is gitignored** — it stays on the local machine and does not
 reach the cluster. Keep it current anyway; it is the project's memory. See

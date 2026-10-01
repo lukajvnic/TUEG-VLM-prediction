@@ -1,4 +1,5 @@
 import csv
+import json
 import re
 import sqlite3
 import sys
@@ -86,10 +87,10 @@ def config():
 
 
 def finetune_models(cfg):
-    # one `models:` entry per trainable base, dataset and target it was trained on, <key>-sft-<DS>[-labels], scored
-    # on that dataset only from checkpoints/<key>/<DS>[-labels] with the train.eval resources (`large` for bases that train on more than one
-    # GPU). A pair without a checkpoint dir gets no entry; an explicit entry in config.yml still overrides the
-    # derived one. The old checkpoints/<key>/pooled runs are no longer derived (2026-09-30)
+    # one `models:` entry per checkpoints/<key>/<DS>-<experiment>/ dir, <key>-sft-<DS>-<experiment>, scored on that
+    # dataset only with the train.eval resources (`large` for bases that train on more than one GPU) and tagged with
+    # the target its manifest records. An explicit entry in config.yml still overrides the derived one. Round 1
+    # (checkpoints/<key>/pooled) is archived and never derived (2026-09-30)
     train = cfg["train"]
     entries = {}
     for key, base in cfg.get("bases", {}).items():
@@ -98,13 +99,13 @@ def finetune_models(cfg):
         resources = {k: v for k, v in train["eval"].items() if k != "large"}
         if base.get("gpus", train["gpus"]) > 1:
             resources.update(train["eval"]["large"])
-        for dataset in DATASETS:
-            for target in TARGETS:
-                folder = checkpoint_dir(key, run_name(dataset, target))
-                if folder.is_dir():
-                    entries[f"{key}-sft-{run_name(dataset, target)}"] = {
-                        "backend": "hf", "base": key, "datasets": [dataset], "target": target,
-                        "checkpoint": str(folder.relative_to(ROOT)), **resources}
+        for dataset, experiment in trained_runs(key):
+            folder = checkpoint_dir(key, run_name(dataset, experiment))
+            manifest = folder / "manifest.json"
+            target = json.loads(manifest.read_text()).get("target") if manifest.exists() else None
+            entries[f"{key}-sft-{run_name(dataset, experiment)}"] = {
+                "backend": "hf", "base": key, "datasets": [dataset], "experiment": experiment, "target": target,
+                "checkpoint": str(folder.relative_to(ROOT)), **resources}
     return entries
 
 
@@ -255,10 +256,21 @@ def checkpoint_dir(model_key, dataset):
     return ROOT / "checkpoints" / model_key.replace(":", "-") / dataset
 
 
-def run_name(dataset, target):
-    # names a fine-tune's checkpoint dir, job, wandb run and model entry: <DS> for the rationale target, <DS>-labels
-    # for labels only, so the two can sit side by side
-    return dataset if target == "rationale" else f"{dataset}-{target}"
+def run_name(dataset, experiment):
+    # names a fine-tune's checkpoint dir, job, wandb run and model entry: <DS>-<experiment> (config.yml
+    # train.experiment), so every round of fine-tunes sits apart from the others
+    return f"{dataset}-{experiment}"
+
+
+def trained_runs(model_key):
+    # (dataset, experiment) for every checkpoints/<key>/<DS>-<experiment>/ dir, finished or not
+    folder = ROOT / "checkpoints" / model_key.replace(":", "-")
+    runs = []
+    for path in sorted(folder.iterdir()) if folder.is_dir() else []:
+        dataset, _, experiment = path.name.partition("-")
+        if path.is_dir() and dataset in DATASETS and experiment:
+            runs.append((dataset, experiment))
+    return runs
 
 
 def sft_file(dataset, split, target):

@@ -36,9 +36,8 @@ def parse_args(cfg):
     return args
 
 
-def skip_reason(model, base, dataset, target, pending):
+def skip_reason(model, base, dataset, run, target, pending):
     # a submission that cannot succeed costs a queue slot and, at worst, a day; say why instead
-    run = run_name(dataset, target)
     if base.get("status"):
         return f"{base['status']} (config.yml bases:)"
     if base.get("family"):
@@ -86,8 +85,8 @@ def submit_jobs(cfg, models, datasets, dry_run):
     for model in models:
         base = base_spec(cfg, model)
         for dataset in datasets:
-            run = run_name(dataset, target)
-            reason = skip_reason(model, base, dataset, target, pending)
+            run = run_name(dataset, spec["experiment"])
+            reason = skip_reason(model, base, dataset, run, target, pending)
 
             if reason:
                 print(f"{model} on {run}: {reason}, skipping")
@@ -106,7 +105,7 @@ def load_config(cfg, model, dataset):
     train["model"] = model
     train["dataset"] = dataset
     train["base"] = base_spec(cfg, model)
-    train["output-dir"] = str(checkpoint_dir(model, run_name(dataset, train["target"])))
+    train["output-dir"] = str(checkpoint_dir(model, run_name(dataset, train["experiment"])))
     return train
 
 
@@ -251,7 +250,7 @@ def argmax_only(logits, labels):
 
 
 def wandb_name(config):
-    return f"{config['model']}-{run_name(config['dataset'], config['target'])}"
+    return f"{config['model']}-{run_name(config['dataset'], config['experiment'])}"
 
 
 def resume_point(out):
@@ -272,13 +271,14 @@ def start_wandb(config, data, resume):
     out = Path(config["output-dir"])
     id_file = out / "wandb-id"
     run_id = id_file.read_text().strip() if resume and id_file.exists() else None
-    settings = {"model": config["model"], "dataset": config["dataset"], "target": config["target"],
+    settings = {"model": config["model"], "dataset": config["dataset"], "experiment": config["experiment"],
+                "target": config["target"],
                 "base": config["base"], "train_rows": len(data["train"]), "val_rows": len(data["validation"]),
                 "rationale_first": config["rationale-first"], "lora": config["lora"], "training": config["training"]}
 
     (ROOT / "logs").mkdir(exist_ok=True)
     run = wandb.init(entity=config["wandb"]["entity"], project=config["wandb"]["project"], name=wandb_name(config),
-                     group=config["dataset"], tags=[config["target"]], dir=ROOT / "logs", id=run_id,
+                     group=config["experiment"], tags=[config["dataset"], config["target"]], dir=ROOT / "logs", id=run_id,
                      resume="allow" if run_id else None, config=settings)
 
     out.mkdir(parents=True, exist_ok=True)
@@ -339,7 +339,7 @@ def write_manifest(config, data, wandb_id):
     except OSError:
         commit = ""
     manifest = {"dataset": config["dataset"], "model": config["model"], "base": config["base"],
-                "target": config["target"],
+                "experiment": config["experiment"], "target": config["target"],
                 "rationale_first": config["target"] == "rationale" and config["rationale-first"],
                 "train_rows": len(data["train"]), "val_rows": len(data["validation"]),
                 "lora": config["lora"], "training": config["training"], "val": config["val"],
@@ -352,7 +352,8 @@ def train(config):
     dataset_dir = ROOT / "datasets" / config["dataset"]
     resume = resume_point(Path(config["output-dir"]))
 
-    print(f"{config['model']} ({config['base']['repo']}) on {config['dataset']}, target {config['target']} "
+    print(f"{config['model']} ({config['base']['repo']}) on {config['dataset']}, experiment {config['experiment']} "
+          f"(target {config['target']}) "
           f"-> {config['output-dir']}", flush=True)
     if resume:
         print(f"resuming from {resume}", flush=True)

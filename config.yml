@@ -283,7 +283,11 @@ prompts:
     grounded: "Justify this labeling using only visible EEG features. For each finding, give the specific evidence: which channel(s) it appears on, where along the time axis, and what the curve looks like there (shape, frequency, amplitude). State every label explicitly. Write a focused 3-5 sentence mini-report; do not describe the image format, define terminology, repeat yourself, or add unsupported findings."
 
 train:
-  target: labels  # labels: booleans-only JSON (sft_labels_*.jsonl, checkpoints/<key>/<DS>-labels); rationale: rationale then booleans (sft_*.jsonl, checkpoints/<key>/<DS>)
+  # names this round of fine-tunes: checkpoints/<key>/<DS>-<experiment>, model <key>-sft-<DS>-<experiment>, wandb group
+  # <experiment>, results in experiments/<experiment>.csv. A new round gets a new name, never a reused one
+  # (knowledge/experiments.md). Round 1 (pooled, 2026-09-23) is archived under archive/round1-pooled/
+  experiment: labels
+  target: labels  # labels: booleans-only JSON (sft_labels_*.jsonl); rationale: rationale then booleans (sft_*.jsonl)
   rationale-first: true
   wandb:
     entity: l3jovano-krembil-research-institute

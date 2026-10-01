@@ -166,10 +166,10 @@ def write_pair_chart(path, labels, series, partial, title, y_label, subtitle, re
 
 
 def pair_rows(rows, cfg, dataset):
-    # one entry per `bases:` key that has a zero-shot row (its Ollama name) or a fine-tuned row (<key>-sft-<DS>, or
-    # <key>-sft-<DS>-labels for the label-only target: the fine-tune on this dataset alone, of train.target)
+    # one entry per `bases:` key that has a zero-shot row (its Ollama name) or a fine-tuned row of the current
+    # experiment (<key>-sft-<DS>-<train.experiment>: the fine-tune on this dataset alone)
     by_model = {r["model"]: r for r in rows}
-    tuned_name = run_name(dataset, cfg["train"]["target"])
+    tuned_name = run_name(dataset, cfg["train"]["experiment"])
     pairs = []
     for key in cfg["bases"]:
         zero, tuned = by_model.get(key), by_model.get(f"{key}-sft-{tuned_name}")

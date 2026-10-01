@@ -44,9 +44,10 @@ A full retrain of 29 bases is about a week of cluster time. The plan below fits 
   prior", with the first-round adapters and their answer distributions as the evidence. That is
   a finding for a capability probe, and it is already in hand.
 
-Retraining a pair means removing `checkpoints/<key>/<DS>/` first (the manifest is what
+Retraining a pair within a round means removing `checkpoints/<key>/<DS>-<experiment>/` first (the manifest is what
 `train/train.py` reads as "finished"; a dir with checkpoints and no manifest resumes). The
-first-round `checkpoints/<key>/pooled/` and `eval-<key>-sft-pooled.csv` files stay as history.
+first round is archived in `archive/round1-pooled/` (knowledge/experiments.md). A new round gets a
+new `train.experiment` name instead of deleting anything.
 
 ## Not doing
 

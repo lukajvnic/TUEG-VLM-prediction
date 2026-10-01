@@ -122,12 +122,14 @@ fix both places together if they differ.
 ### 4d. Run the fine-tune
 
 One fine-tune per (base, dataset) since 2026-09-30; pooling is gone
-(methodology-decisions.md). `config.yml` `train.target` picks the answer:
-`labels` (booleans only, the current first attempt: `sft_labels_*.jsonl`,
-`checkpoints/<key>/<DS>-labels`, job `eeg-vlm-train-<key>-<DS>-labels`, scored as
-`<key>-sft-<DS>-labels`) or `rationale` (rationale then booleans: `sft_*.jsonl`,
-`checkpoints/<key>/<DS>`). The builder always writes both from one split. The job
-reads `train.target` when it starts, so don't flip it while jobs are queued.
+(methodology-decisions.md). `config.yml` `train.experiment` names the round
+(currently `labels`): checkpoints `checkpoints/<key>/<DS>-<experiment>`, job
+`eeg-vlm-train-<key>-<DS>-<experiment>`, scored as `<key>-sft-<DS>-<experiment>`,
+results via `python helpers/experiment-results.py` (experiments.md).
+`train.target` picks the answer: `labels` (booleans only, `sft_labels_*.jsonl`)
+or `rationale` (rationale then booleans, `sft_*.jsonl`). The builder always
+writes both from one split. A job reads both keys when it starts, so don't change
+them while jobs are queued; start a new round under a new experiment name.
 
 ```bash
 python helpers/build-sft-jsonl.py TUAB          # both targets; needs rationales, so cluster-side (5a); no args = all six. Writes nothing on any train/val/test overlap
@@ -166,7 +168,19 @@ So 24 h covers every 1-GPU base with margin; the 24B Mistrals need the 48 h;
 the 32B Qwens are the ones to watch against 48 h.
 Resubmitting after a partial batch only queues the unfinished pairs.
 Rollout (project lead, 2026-09-30): qwen2.5vl:7b on TUAB alone, through
-scoring, before any batch. `train/train.py` has not run on a GPU yet.
+scoring, before any batch. Submitted 2026-09-30 as job 4342993
+(label-only target, 12 h walltime: `qwen2.5vl:7b` `time: '12:00:00'` in
+`bases:` puts it in the ≤12 h `gpubase_bygpu_b2` tier; ~5.5 h expected,
+estimated from the first round's s/step, not measured).
+
+Deploy of 2026-09-30 (`0796505`): commit + push locally, `git pull --ff-only`
+on Narval. The cluster had untracked copies of files the commit added
+(`datasets/*/hashes.csv`, same rows in another order; an older
+`helpers/inspect-sft.py`), which would abort the pull; they were moved to
+`$SCRATCH/deploy-backup-20260930/`. The cluster's `labels.csv` (rationales,
+not in git) are never part of a commit. Long login-node checks
+(`preflight.py`) run detached (`setsid nohup ... &`, log in `logs/`), because
+the SSH master dropped once mid-run and took the process with it.
 Custom-code bases (`family:` in `bases:`) have their own submitter,
 `train/run-custom.py`. Their venvs, and the main one, are built and checked
 by one script on a login node (internet):
@@ -219,6 +233,10 @@ from a login node (`~/.netrc` there holds the key):
 wandb sync logs/wandb/offline-run-*               # after a run; syncing a live run is untried
 wandb sync --append logs/wandb/offline-run-<...>  # a resumed job's later segment (same run id, new dir)
 ```
+**The wandb key on Narval is stale** (2026-09-30: `wandb.Api()` there says
+"relogin required"). Offline logging is unaffected, but before the first sync
+run `wandb login --relogin` on a login node (needs the API key), or copy
+`logs/wandb/offline-run-*` to a machine with a working key and sync there.
 A requeued job reuses the run id stored in `checkpoints/<key>/<DS>/wandb-id`,
 but offline wandb (0.27) writes it to a new dir, so the later segments need
 `--append`. That is from the wandb source, untried. The custom stacks still
@@ -228,7 +246,7 @@ log nothing. On disk, the history is also `log_history` in
 checkpoint marked. Pull just those files with
 `rsync -am --include='*/' --include=trainer_state.json --include=manifest.json --exclude='*' narval.alliancecan.ca:/scratch/luka/TUEG-VLM-prediction/checkpoints/ checkpoints/`.
 `report/figures/loss-curves.png` (2026-09-30) is the 28 first-round pooled
-runs plotted from those files.
+runs plotted from those files (now in `archive/round1-pooled/`).
 
 ### 4e. Score the fine-tune (and later the DPO model)
 

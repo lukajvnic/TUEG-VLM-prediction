@@ -95,10 +95,18 @@ pass the agreement stage depends on, and because it shares `sample.py` and
 `train/train.py MODEL|all DATASET|all [--here | --dry-run]` (2026-09-30;
 replaced `train/run.py` + `train/scripts/finetune_sample.py`) is the one
 fine-tune entry point, one run per (base, dataset) for `config.yml`
-`train.target` (`labels` or `rationale`). `helpers/pipeline.py` `run_name(DS,
-target)` (`TUAB` or `TUAB-labels`) names the checkpoint dir, job, wandb run and
-scored model, and `sft_file(DS, split, target)` names the jsonl, so every
-script agrees on them. The manifest records `target`. Without `--here` it
+`train.target` (`labels` or `rationale`), named by `train.experiment`.
+`helpers/pipeline.py` `run_name(DS, experiment)` (`TUAB-labels`) names the
+checkpoint dir, job, wandb run and scored model; `trained_runs(key)` lists a
+base's `<DS>-<experiment>` dirs; `sft_file(DS, split, target)` names the jsonl.
+Every script goes through these, so they all agree. The manifest records
+`experiment` and `target`.
+
+**`helpers/experiment-results.py [EXPERIMENT]` (2026-09-30).** One round's
+results: every base's zero-shot row beside its `<key>-sft-<DS>-<experiment>`
+row from each `summary.csv` (recording balanced accuracy, delta, coverage, top
+answer), printed and written to `experiments/<experiment>.csv` (tracked).
+Defaults to `train.experiment`. Run `eval/score.py` first. Without `--here` it
 submits one Slurm job per pair, skipping with a printed reason (`skip_reason()`)
 a base with a `status` or `family` (custom-code bases are `run-custom.py`'s),
 a finished pair (`manifest.json`), a queued pair (job `eeg-vlm-train-<key>-<DS>`),
@@ -193,8 +201,9 @@ second series; the two hues were checked with the data-viz palette validator.
 **Pooled run (2026-09-21 to 09-30), removed.** One run per base over all six
 corpora from `datasets/pooled/`; the builder's `pooled` mode and every pooled
 special case are gone (per-dataset training, methodology-decisions.md). The
-first-round `checkpoints/<key>/pooled/` and `eval-<key>-sft-pooled.csv` stay
-on disk; nothing derives or reads them.
+first-round files are archived on Narval in `archive/round1-pooled/` (2026-09-30;
+README, results table and manifest of moved paths tracked in git, the bulk
+ignored); nothing derives or reads them. See experiments.md.
 
 **`helpers/check-splits.py [DS ...]` (2026-09-30).** The train/val/test
 leakage gate. `Leakage()` loads every test path of all six corpora, the
@@ -246,6 +255,14 @@ not, and refuses without adapter weights. `helpers/slurm.py`'s `script()` takes 
 `venv` argument for this. Same manifest-exists skip rule as `train.py`;
 `--dataset` is required since 2026-09-30. Still `report_to="none"` (no wandb).
 Unverified on a GPU. Plan and status per base: FINETUNE-TODO item 21.
+
+**`side/rationale-w10/` (2026-10-01): a side experiment, not the pipeline.** `train.py MODEL DS
+[--here|--dry-run]` loads `train/train.py` by path and reuses its config, data, model, `init_trainer`, leak check
+and manifest unchanged. It swaps in a collator that adds `label_weights` (10 on the JSON boolean values) and a
+`Trainer.compute_loss` that weights the CE. `score.py MODEL DS` scores the adapter with `train/scripts/eval.py`'s
+`load` / `enforcer` / `predict` and `eval/score.py`'s `evaluate`. Checkpoints, Slurm logs, wandb runs and results
+all stay under `side/rationale-w10/`, so nothing in the main tree derives or reads them. See
+`side/rationale-w10/README.md` and experiments.md.
 
 **Label-only fine-tunes in scoring and judging (2026-09-30).**
 `train/scripts/eval.py` reads the manifest's `target`. For `labels` it

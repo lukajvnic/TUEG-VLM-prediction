@@ -326,8 +326,8 @@ that way). That cost is now accepted. Per-corpus train/val windows from the
 current sample, simulated with `build-sft-jsonl.py`'s split, not measured on
 the cluster: TUAB 2,284/140, TUSZ 2,604/117, TUEP 838/84, TUAR 372/31, TUEV
 368/17, TUSL 26/23. TUSL is about 3 optimizer steps per epoch at an
-effective batch of 8. The first-round pooled runs (`checkpoints/<key>/pooled/`,
-`eval-<key>-sft-pooled.csv`) stay on disk as history; no code derives them.
+effective batch of 8. The first-round pooled runs are archived on Narval under
+`archive/round1-pooled/` (experiments.md); no code derives them.
 Rollout is one pair first (qwen2.5vl:7b on TUAB), end to end through scoring,
 before any batch.
 
@@ -353,8 +353,9 @@ can be learned from these plots at all before rationales are layered on.
 split (`sft_labels_{train,val}.jsonl` beside `sft_{train,val}.jsonl`; checked
 in a mirror of the cluster data: same images, same order, same booleans, and
 the rationale files byte-identical to before). Runs go to
-`checkpoints/<key>/<DS>-labels` and score as `<key>-sft-<DS>-labels`, so the
-two targets never collide. The zero-shot prompt is unchanged byte for byte.
+`checkpoints/<key>/<DS>-<experiment>` and score as `<key>-sft-<DS>-<experiment>`
+(`train.experiment`, currently `labels`), so rounds never collide
+(experiments.md). The zero-shot prompt is unchanged byte for byte.
 
 ## No token weighting (project lead, 2026-09-30)
 The loss is the model's default mean cross-entropy over the whole target,

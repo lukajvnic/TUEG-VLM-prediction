@@ -1,15 +1,10 @@
-# per (base, dataset, target) fine-tune: the val curve from its trainer state, then zero-shot vs fine-tuned summary.csv rows
+# per (base, dataset, experiment) fine-tune: the val curve from its trainer state, then zero-shot vs fine-tuned summary.csv rows
 import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from helpers.pipeline import DATASETS, ROOT, TARGETS, checkpoint_dir, config, read_csv, run_name  # noqa: E402
-
-
-def trained_runs(key):
-    # (dataset, run name) per checkpoint dir: <DS> for the rationale target, <DS>-labels for label-only
-    return [(ds, run_name(ds, t)) for ds in DATASETS for t in TARGETS if checkpoint_dir(key, run_name(ds, t)).is_dir()]
+from helpers.pipeline import ROOT, checkpoint_dir, config, read_csv, run_name, trained_runs  # noqa: E402
 
 
 def latest_state(folder):
@@ -65,14 +60,15 @@ def main():
     cfg = config()
     keys = sys.argv[1:] or [k for k in cfg["bases"] if trained_runs(k)]
     if not keys:
-        print("no base has a checkpoints/<key>/<DS>[-labels]/ dir")
+        print("no base has a checkpoints/<key>/<DS>-<experiment>/ dir")
         return
 
     for key in keys:
         runs = trained_runs(key)
         if not runs:
-            print(f"\n=== {key}: no checkpoints/{key.replace(':', '-')}/<DS>[-labels]/ dir")
-        for dataset, run in runs:
+            print(f"\n=== {key}: no checkpoints/{key.replace(':', '-')}/<DS>-<experiment>/ dir")
+        for dataset, experiment in runs:
+            run = run_name(dataset, experiment)
             folder = checkpoint_dir(key, run)
             status = "finished" if (folder / "manifest.json").exists() else "no manifest.json: still training, or died"
             print(f"\n=== {key} on {run}  ({status})")
