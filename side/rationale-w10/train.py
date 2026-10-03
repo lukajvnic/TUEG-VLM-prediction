@@ -79,8 +79,9 @@ def submit_job(cfg, model, dataset, dry_run):
         return
 
     (SIDE / "logs").mkdir(exist_ok=True)
+    # train, then score in the same allocation (a separate scoring job would wait in the queue again)
     text = script(job_name(model, dataset), base["time"], base["ram"], cfg["train"]["cpus"], base["gpus"],
-                  f"python {SIDE}/train.py {model} {dataset} --here")
+                  f"python {SIDE}/train.py {model} {dataset} --here && python {SIDE}/score.py {model} {dataset} --here")
     text = text.replace(str(ROOT / "logs"), str(SIDE / "logs"))  # Slurm log and tasks.csv stay in the side dir
     job = "dry run" if dry_run else submit(text)
 
@@ -152,6 +153,9 @@ def build_trainer(settings, model, processor, data):
     # the main trainer's TrainingArguments, optimizer and metrics, with the weighted collator and loss
     dataset_dir = ROOT / "datasets" / settings["dataset"]
     base = main.init_trainer(settings, model, processor, data, dataset_dir)
+    # keep the final adapter: on the rationale target the teacher-forced label metric reads the label off the gold
+    # rationale, plateaus at the first eval, and a tie keeps the earliest checkpoint (step 100)
+    base.args.load_best_model_at_end = False
     booleans = main.boolean_token_ids(processor.tokenizer)
     collate = weighted_collator(base.data_collator, booleans, len(FIELDS[settings["dataset"]]))
 

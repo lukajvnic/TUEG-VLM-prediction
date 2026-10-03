@@ -144,6 +144,20 @@ selection verified exact against the corpus. The exact *bytes* of the 76,334
 images are still only reproducible on the original library versions, so treat
 the shipped PNGs as the artifact of record.
 
+### Scratch purge will delete the venv and the Qwen weights (found 2026-10-03)
+`/scratch/to_delete/luka` (root-owned, written 2026-10-02) lists 38,559 files for the next purge.
+- Included: 12,263 files of the job venv `.venv` (numpy, yaml, pydantic, wandb, jinja2, tqdm sources, among
+  others); all 34 files of `hf-checkpoints/Qwen--Qwen2.5-VL-7B-Instruct`; and 744 `.git/objects`.
+- Why reading them doesn't protect them: imports read the `__pycache__/*.pyc` files and only `stat()` the
+  `.py` files, so the `.py` atimes stay at June/July. Once a `.py` is gone, its package imports as an empty
+  namespace and every job dies at `import numpy`/`yaml`.
+- When: Alliance purges these lists mid-month, around the 15th. That is from memory, and the docs page blocked
+  automated reading, so confirm it.
+- Fix before then: rebuild the venv in `/project/def-milad777` (quota 953 GB / 500k files, ~1k used) or
+  `$HOME`, point `helpers/slurm.py` at it, copy the needed `hf-checkpoints` to `/project` and set
+  `HF_CHECKPOINTS`, and re-check `/scratch/to_delete/luka`. Touching files to dodge the purge is against the
+  rules.
+
 ## Open decisions (not yet done)
 
 ### Class-stratified splits
@@ -573,6 +587,23 @@ in FINETUNE-TODO items 14-18. Headlines:
 
 
 ## Things that ARE handled (don't re-fix)
+
+- **The repo's `datasets/` folder shadowed the Hugging Face `datasets` library**. Found 2026-10-03 and fixed
+  the same day in `3d1a441`.
+  - Jobs 4342993 and 4400514 waited ~2 days in the queue, then died 12 min in with `AttributeError: module
+    'datasets' has no attribute 'Dataset'` in `Trainer._get_dataloader`.
+  - Cause: train.py puts the repo root first on sys.path. transformers 5.14's `is_datasets_available()` is a
+    bare `find_spec`, so it saw the folder as an installed package (HF `datasets` is not installed). Round 1
+    never hit this: its trainer imported transformers before adding the root to sys.path.
+  - Fix: `sys.modules.setdefault("datasets", None)` right after the sys.path insert.
+  - Scoring (`train/scripts/eval.py`) never reaches the Trainer paths, so it needs no guard.
+  - The preflight only builds processors, so it could not catch this. That is why `rehearsal/rehearse.py`
+    exists.
+- **`bitsandbytes` is still installed in `.venv`** (left from the removed 4-bit path). PEFT imports it while
+  adding LoRA layers.
+  - On a GPU node it loads its CUDA library and works.
+  - On the login nodes (AMD EPYC 7532) its CPU library dies with SIGILL (exit 132). Only the rehearsal's cpu
+    tier runs there, so the rehearsal hides the module. Uninstalling it would also work.
 
 - **The per-corpus `sft_*.jsonl` on the cluster leaked test patients** —
   found 2026-09-30, gated the same day. The files in `datasets/<DS>/` were

@@ -1,4 +1,5 @@
 import argparse
+import base64
 import datetime
 import functools
 import importlib.util
@@ -81,6 +82,16 @@ def leaks(dataset, target):
     return ", ".join(f"{len(keys)} {check}" for check, keys in found.items() if keys)
 
 
+def job_command(model, dataset, run):
+    # train, then score the pair's test split in the same allocation: a separate scoring job waits in the queue
+    # again (~2 days at the 2026-10 fairshare). `&&`: no scoring after a failed run. The scoring step is
+    # train/scripts/eval.py as run-eval.py would run it; its pipeline.db rows come from sync() (run helpers/pipeline.py
+    # once the checkpoint dir exists) and a rerun of run-eval.py resumes whatever it leaves pending
+    task = base64.b64encode(json.dumps([{"model": f"{model}-sft-{run}", "dataset": dataset}]).encode()).decode()
+    return (f"python {ROOT}/train/train.py {model} {dataset} --here && "
+            f"SLURM_ARRAY_TASK_ID=0 SFT_EVAL_TASKS={task} python {ROOT}/train/scripts/eval.py")
+
+
 def submit_jobs(cfg, models, datasets, dry_run):
     spec = cfg["train"]
     target = spec["target"]
@@ -97,7 +108,7 @@ def submit_jobs(cfg, models, datasets, dry_run):
                 continue
 
             text = script(job_name(model, run), base["time"], base["ram"], spec["cpus"], base["gpus"],
-                          f"python {ROOT}/train/train.py {model} {dataset} --here")
+                          job_command(model, dataset, run))
             job = "dry run" if dry_run else submit(text)
 
             print(f"{job} - {model} on {run} -> {checkpoint_dir(model, run)}, "
@@ -259,11 +270,12 @@ def wandb_name(config):
 
 def resume_point(out):
     # a job that died or hit its walltime left checkpoints and no manifest: the resubmission continues from the latest
-    from transformers.trainer_utils import get_last_checkpoint
-
+    # complete one. trainer_state.json is written last, so a checkpoint dir without it was cut off mid-save and would
+    # crash the resume (transformers' get_last_checkpoint takes the highest number regardless)
     if (out / "manifest.json").exists() or not out.is_dir():
         return None
-    return get_last_checkpoint(str(out))
+    complete = [p for p in out.glob("checkpoint-*") if (p / "trainer_state.json").exists()]
+    return str(max(complete, key=lambda p: int(p.name.split("-")[1]))) if complete else None
 
 
 def start_wandb(config, data, resume):

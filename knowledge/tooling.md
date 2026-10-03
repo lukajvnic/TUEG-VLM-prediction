@@ -256,6 +256,27 @@ not, and refuses without adapter weights. `helpers/slurm.py`'s `script()` takes 
 `--dataset` is required since 2026-09-30. Still `report_to="none"` (no wandb).
 Unverified on a GPU. Plan and status per base: FINETUNE-TODO item 21.
 
+**`rehearsal/rehearse.py cpu|gpu MODEL DS [--side]` (2026-10-03): dress rehearsal before a submission.**
+- Loads `train/train.py` (and, with `--side`, `side/rationale-w10/train.py`) by path and runs their real
+  `train()` on a sample of the real jsonl and images.
+- Run 1 is crashed on purpose after the first checkpoint. Run 2 must resume from it and finish: eval with
+  `eval_label_positions` > 0, best-checkpoint reload, adapter saved, manifest complete.
+- Then it scores a few test windows through `train/scripts/eval.py`'s own `load` / `enforcer` / `predict`, and
+  `eval/score.py`'s `evaluate`.
+- Swapped, and nothing else:
+  - outputs go to `$SCRATCH/rehearsal/<stamp>-<tier>-<key>-<DS>/`: checkpoints, an offline wandb run,
+    `report.txt`;
+  - the run is shortened: 6 or 8 optimizer steps, 24 or 96 train rows;
+  - **cpu tier only**: a 2-layer random model built from the base's own config and processor
+    (`tiny_snapshot`), no bf16 autocast, and `bitsandbytes` hidden (see known-issues).
+- The **gpu tier** submits a <=1 h job that runs the real model. It reports s/step, peak GPU memory, and whether
+  the estimated full run fits the walltime with a 30% margin.
+- Exit 1 and `RESULT: FAIL` on any failed check.
+- On a login node, run it detached so an SSH drop can't kill it:
+  `setsid nohup ... > $SCRATCH/rehearsal/cpu-latest.txt 2>&1 &`.
+- Background: on 2026-10-03 it found the tiny-model build issue and the login-node SIGILL before reaching the
+  training loop.
+
 **`side/rationale-w10/` (2026-10-01): a side experiment, not the pipeline.** `train.py MODEL DS
 [--here|--dry-run]` loads `train/train.py` by path and reuses its config, data, model, `init_trainer`, leak check
 and manifest unchanged. It swaps in a collator that adds `label_weights` (10 on the JSON boolean values) and a

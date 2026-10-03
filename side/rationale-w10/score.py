@@ -13,7 +13,7 @@ from structure import get_structure, labels, prompt, to_labels  # noqa: E402
 
 EXPERIMENT = "rationale-w10"
 RESULTS = SIDE / "results"
-TIME, RAM = "12:00:00", "64G"  # ~1,200 TUAB windows at an estimated ~10 s each with a rationale; not measured
+TIME, RAM = "12:00:00", "64G"  # ~1,200 TUAB windows; round-1 qwen2.5vl:7b with a rationale measured 14.8 s/image (~4.9 h)
 
 
 def load_path(name, path):
@@ -79,6 +79,8 @@ def summarise(model, dataset, predictions):
     truth = {r["path"]: r for r in read_csv(ROOT / "datasets" / dataset / "labels.csv")}
     summary = score.evaluate(model_name(model, dataset), dataset, read_csv(predictions), truth, test_scope(dataset),
                              score.BOOTSTRAP)
+    if summary is None:
+        sys.exit(f"no scored rows in {predictions} (see {RESULTS / 'failures.csv'})")
     score.write(RESULTS / "summary.csv", score.FIELDS, [{k: summary[k] for k in score.FIELDS}])
     print(f"recording balanced accuracy {summary['recording_balanced_accuracy']:.3f}, coverage {summary['coverage']:.2f}, "
           f"top answer {summary['top_answer']} ({summary['top_answer_fraction']:.0%}) -> {RESULTS / 'summary.csv'}")

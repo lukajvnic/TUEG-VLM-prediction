@@ -139,6 +139,17 @@ python train/train.py qwen2.5vl:7b TUAB         # one sbatch job
 python train/train.py all TUAB                  # one job per base; `qwen2.5vl:7b all` = one per dataset; `all all`
 python train/train.py qwen2.5vl:7b TUAB --here  # train in this process: what the job runs; on an salloc GPU node for debugging
 ```
+**One job trains, then scores (2026-10-03).** The job's command is `train.py <key> <DS> --here &&
+train/scripts/eval.py` for that pair (`job_command()`). The test-set predictions come from the same allocation,
+so there is no second ~2-day queue wait. They land in `datasets/<DS>/eval-<key>-sft-<DS>-<experiment>.csv` as if
+`run-eval.py` had run them. The scoring step needs the model's `pipeline.db` rows: run `python helpers/pipeline.py`
+(sync) once the checkpoint dir exists, which happens on submission or on the first run. Back up `pipeline.db` first,
+since a sync killed mid-commit can corrupt it. If scoring stops early, `run-eval.py` resumes the pending windows.
+
+**Rehearse before submitting (2026-10-03).** Run `python rehearsal/rehearse.py cpu <key> <DS> [--side]` on a login
+node (~1 h; run it detached, see tooling.md). For the real model on a GPU, also run `python rehearsal/rehearse.py
+gpu <key> <DS> [--side]` (a <=1 h job). Submit the real job only when the cpu report says `RESULT: PASS`.
+
 A pair is skipped, with the reason printed, when the base has a `status` or a
 `family` (custom stack, below), `checkpoints/<key>/<DS>/manifest.json`
 exists, its job `eeg-vlm-train-<key>-<DS>` is queued or running, the snapshot

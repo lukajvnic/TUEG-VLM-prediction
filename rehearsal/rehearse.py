@@ -58,25 +58,33 @@ def spread(rows, n):
 
 def tiny_snapshot(base_repo, snapshot_dir, out):
     # random weights in the base's own architecture, shrunk to 2 layers; the real processor and chat template.
-    # Only Qwen2.5-VL / Qwen3-VL style configs (text + vision sub-configs) are shrunk here
+    # Built from the config dict so the per-layer lists shrink with the layer count. Qwen2.5-VL / Qwen3-VL style
+    # configs (a text part and a vision_config) only
     from transformers import AutoConfig, AutoModelForImageTextToText, AutoProcessor
 
     if (out / "config.json").exists():
         return out
     source = snapshot_dir(base_repo)
     cfg = AutoConfig.from_pretrained(source)
-    text = getattr(cfg, "text_config", cfg)
-    head = text.hidden_size // text.num_attention_heads
-    text.num_hidden_layers, text.num_attention_heads, text.num_key_value_heads = 2, 2, 1
-    text.hidden_size, text.intermediate_size = 2 * head, 4 * head
-    vision = cfg.vision_config
-    vhead = vision.hidden_size // vision.num_heads
-    vision.depth, vision.num_heads, vision.hidden_size, vision.intermediate_size = 2, 2, 2 * vhead, 4 * vhead
-    vision.out_hidden_size, vision.fullatt_block_indexes = text.hidden_size, [1]
-    if text is not cfg:
-        cfg.hidden_size = text.hidden_size
+    full = cfg.to_dict()
+    text = full.get("text_config") or full
+    head = text["hidden_size"] // text["num_attention_heads"]
+    text.update(num_hidden_layers=2, num_attention_heads=2, num_key_value_heads=1, hidden_size=2 * head,
+                intermediate_size=4 * head)
+    if text.get("layer_types"):
+        text["layer_types"] = text["layer_types"][:2]
+    if "max_window_layers" in text:
+        text["max_window_layers"] = min(text["max_window_layers"], 2)
+    for key in ("num_hidden_layers", "num_attention_heads", "num_key_value_heads", "hidden_size", "intermediate_size",
+                "layer_types", "max_window_layers"):
+        if text is not full and key in full:
+            full[key] = text[key]
+    vision = full["vision_config"]
+    vhead = vision["hidden_size"] // vision["num_heads"]
+    vision.update(depth=2, num_heads=2, hidden_size=2 * vhead, intermediate_size=4 * vhead,
+                  out_hidden_size=text["hidden_size"], fullatt_block_indexes=[1])
 
-    model = AutoModelForImageTextToText.from_config(cfg)
+    model = AutoModelForImageTextToText.from_config(type(cfg).from_dict(full))
     model.save_pretrained(out)
     AutoProcessor.from_pretrained(source).save_pretrained(out)
     return out
@@ -184,7 +192,8 @@ def rehearse_training(kind, t, train_fn, settings_fn, report, steps):
                  f"{state.get('best_model_checkpoint')}")
     report.check(f"{kind}: manifest complete", all(k in manifest for k in ("experiment", "target", "wandb_id", "commit")),
                  f"experiment {manifest.get('experiment')}, target {manifest.get('target')}")
-    return out, manifest, elapsed
+    evals_seconds = sum(e.get("eval_runtime", 0) for e in history if e.get("step", 0) > steps // 2)
+    return out, manifest, elapsed, evals_seconds
 
 
 def rehearse_scoring(kind, out, manifest, base_key, dataset, n, report, tiny=None):
@@ -208,7 +217,11 @@ def rehearse_scoring(kind, out, manifest, base_key, dataset, n, report, tiny=Non
         try:
             parsed = runner.predict(model, processor, structure, ROOT / "datasets" / dataset / rel,
                                     prompt(dataset, rationale), prefix_fn)
-        except Exception as e:  # the tiny model's random text may not parse; the real model's must
+        except (ValueError, json.JSONDecodeError) as e:
+            # a reply that does not parse or validate (pydantic's error is a ValueError): tolerated from the cpu
+            # tier's random model, a failure from the real one. Any other exception is a code bug and fails the run
+            if tiny is None:
+                raise
             errors.append(f"{type(e).__name__}: {str(e)[:120]}")
             continue
         values = to_labels(parsed, dataset)
@@ -249,14 +262,21 @@ def run_tier(tier, base_key, dataset, side, report, folder):
             train_fn = module.train
 
         try:
-            out, manifest, elapsed = rehearse_training(kind, t, train_fn, settings_fn, report, steps)
+            out, manifest, elapsed, eval_seconds = rehearse_training(kind, t, train_fn, settings_fn, report, steps)
             if tier == "gpu":
-                per_step = elapsed / (steps - steps // 2)
+                # run 2 trains steps/2 steps after loading the model; model load (~minutes) is in `elapsed` too,
+                # so this overestimates s/step a little, which is the safe direction for a walltime check
+                per_step = (elapsed - eval_seconds) / (steps - steps // 2)
                 total = len(t.read_jsonl(t.sft_file(dataset, "train", settings_fn()["target"]))) * \
                     cfg["train"]["training"]["epochs"] // cfg["train"]["training"]["gradient-accumulation"]
                 walltime = cfg["bases"][base_key].get("time", cfg["train"]["time"])
-                report.say(f"     {kind}: {per_step:.1f} s/step incl. one eval -> ~{per_step * total / 3600:.1f} h for "
-                           f"{total} steps (walltime {walltime}); peak GPU {torch.cuda.max_memory_allocated() / 1e9:.1f} GB")
+                evals = total // cfg["train"]["training"]["eval-steps"]
+                hours = (per_step * total + eval_seconds * evals * 140 / rows[1]) / 3600  # eval time scaled to the 140-row val set
+                report.say(f"     {kind}: {per_step:.1f} s/step, eval {eval_seconds:.0f} s on {rows[1]} rows -> ~{hours:.1f} h "
+                           f"for {total} steps + {evals} evals (walltime {walltime}); peak GPU "
+                           f"{torch.cuda.max_memory_allocated() / 1e9:.1f} GB")
+                report.check(f"{kind}: estimated run fits the walltime with 30% margin",
+                             hours * 1.3 < int(walltime.split(":")[0]), f"{hours:.1f} h x 1.3 vs {walltime}")
             rehearse_scoring(kind, out, manifest, base_key, dataset, rows[2], report, tiny)
         except Exception:
             report.check(f"{kind}: no exception", False, traceback.format_exc().strip().splitlines()[-1])
@@ -290,6 +310,11 @@ def main():
     args = parser.parse_args()
 
     os.environ.setdefault("WANDB_MODE", "offline")
+    if args.tier == "cpu":
+        # bitsandbytes is installed (left over from the old 4-bit path) and PEFT imports it while adding LoRA layers;
+        # without a GPU it loads its CPU library, which dies with SIGILL on the login nodes' EPYC 7532. On a GPU node
+        # it loads the CUDA library and works (the 2026-10-03 jobs got past get_peft_model), so only this tier hides it
+        sys.modules.setdefault("bitsandbytes", None)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     folder = Path(args.folder) if args.folder else SANDBOX / f"{stamp}-{args.tier}-{args.model.replace(':', '-')}-{args.dataset}"
     folder.mkdir(parents=True, exist_ok=True)
