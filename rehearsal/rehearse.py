@@ -7,7 +7,7 @@
 # random copy of the base's architecture) and the precision. Everything else is the code the job will run.
 #
 #   python rehearsal/rehearse.py cpu  qwen2.5vl:7b TUAB [--side]   # login node, ~10 min, no GPU
-#   python rehearsal/rehearse.py gpu  qwen2.5vl:7b TUAB [--side]   # submits a <=1 h Slurm job with the real model
+#   python rehearsal/rehearse.py gpu  qwen2.5vl:7b TUAB [--side]   # submits a <=2 h Slurm job with the real model
 import argparse
 import datetime
 import gc
@@ -292,7 +292,8 @@ def submit_gpu(base_key, dataset, side, folder):
     cfg = config()
     base = cfg["bases"][base_key]
     command = f"python {ROOT}/rehearsal/rehearse.py gpu {base_key} {dataset} --here --folder {folder}" + (" --side" if side else "")
-    text = script(f"eeg-vlm-rehearsal-{base_key.replace(':', '-')}-{dataset}", "01:00:00", base.get("ram", cfg["train"]["ram"]),
+    # 2 h: six loads of the real model (crash run, resume run and scoring, for main and side); still the <=3 h tier
+    text = script(f"eeg-vlm-rehearsal-{base_key.replace(':', '-')}-{dataset}", "02:00:00", base.get("ram", cfg["train"]["ram"]),
                   cfg["train"]["cpus"], base.get("gpus", cfg["train"]["gpus"]), command)
     text = text.replace(str(ROOT / "logs"), str(folder))
     job = submit(text)

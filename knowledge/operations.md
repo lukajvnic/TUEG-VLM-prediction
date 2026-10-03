@@ -148,7 +148,7 @@ since a sync killed mid-commit can corrupt it. If scoring stops early, `run-eval
 
 **Rehearse before submitting (2026-10-03).** Run `python rehearsal/rehearse.py cpu <key> <DS> [--side]` on a login
 node (~1 h; run it detached, see tooling.md). For the real model on a GPU, also run `python rehearsal/rehearse.py
-gpu <key> <DS> [--side]` (a <=1 h job). Submit the real job only when the cpu report says `RESULT: PASS`.
+gpu <key> <DS> [--side]` (a <=2 h job). Submit the real job only when the cpu report says `RESULT: PASS`.
 
 A pair is skipped, with the reason printed, when the base has a `status` or a
 `family` (custom stack, below), `checkpoints/<key>/<DS>/manifest.json`

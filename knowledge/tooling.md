@@ -269,7 +269,7 @@ Unverified on a GPU. Plan and status per base: FINETUNE-TODO item 21.
   - the run is shortened: 6 or 8 optimizer steps, 24 or 96 train rows;
   - **cpu tier only**: a 2-layer random model built from the base's own config and processor
     (`tiny_snapshot`), no bf16 autocast, and `bitsandbytes` hidden (see known-issues).
-- The **gpu tier** submits a <=1 h job that runs the real model. It reports s/step, peak GPU memory, and whether
+- The **gpu tier** submits a <=2 h job that runs the real model. It reports s/step, peak GPU memory, and whether
   the estimated full run fits the walltime with a 30% margin.
 - Exit 1 and `RESULT: FAIL` on any failed check.
 - On a login node, run it detached so an SSH drop can't kill it:
