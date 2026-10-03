@@ -11,6 +11,10 @@ from pathlib import Path
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# with the repo root on sys.path, transformers 5.14 imports the repo's datasets/ folder as the Hugging Face `datasets`
+# library (not installed here) and the Trainer dies on `datasets.Dataset` when it builds the first dataloader (jobs
+# 4342993 and 4400514, 2026-10-03); marking it absent makes transformers skip that path
+sys.modules.setdefault("datasets", None)
 from helpers.pipeline import (DATASETS, ROOT, base_spec, checkpoint_dir, config, run_name, script_module,  # noqa: E402
                               sft_file)
 from helpers.slurm import job_name, queued, script, submit  # noqa: E402

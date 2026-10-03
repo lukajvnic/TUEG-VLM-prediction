@@ -449,6 +449,15 @@ scontrol update JobId=<arrayjobid> MinMemoryNode=24G
 - A partially-failed eval task exits 0 and is marked `fail` in `status.csv` (not
   in Slurm's accounting) — judge success by `status.csv`, not `squeue`.
 
+## Queue waits after a big batch (measured 2026-10-02)
+Round 1 (about 30 GPU jobs of 7 to 30 h, Sep 23 to 28) left `def-milad777_gpu` at 1.6x its fair share
+(`sshare`: EffectvUsage 0.000173 vs NormShares 0.000106, FairShare 0.32). A 1-GPU 12 h job submitted on Sep 30
+was still pending on Oct 2, with Slurm estimating a start ~48 h after submission. A round-1 job submitted on
+Sep 23 had waited 1.4 h. The pending reason `ReqNodeNotAvail, UnavailableNodes:ng[...]` only lists the 5
+drained GPU nodes; the real cause is priority. Check with `sprio -j <id>` (the fairshare term dominates) and
+`scontrol show job <id>` (StartTime, SchedNodeList). Usage decays over time, so the next big batch should be
+planned around this.
+
 ## Walltime philosophy
 
 Over-requesting walltime does **not** waste allocation (Slurm bills actual

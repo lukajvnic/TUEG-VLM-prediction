@@ -42,7 +42,9 @@ experiment, target, settings and commit.
 - **Why this round:** see methodology-decisions.md: "The first fine-tune answers labels only", "One run per (base, dataset)" and "No token weighting".
 
 ## rationale-w10 (side run, outside the main pipeline)
-- **When:** queued 2026-10-01, alongside the `labels` round.
+- **When:** queued 2026-10-01 as job 4400514 (12 h), alongside the `labels` round. Pre-submit check on the
+  login node: exactly one weighted token per TUAB example (the `false`/`true` after `":`), weight-1 loss equals
+  the default CE, and transformers 5.14 skips the grad-accum divide (`model_accepts_loss_kwargs`).
 - **Why:** the maintainer's "just to see" test. With the rationale kept in the target, does weighting the loss on
   the JSON's boolean value tokens 10x stop the collapse to the class prior? The lead rejected token weighting for
   the main track (methodology-decisions.md), so this lives only in `side/rationale-w10/`.
