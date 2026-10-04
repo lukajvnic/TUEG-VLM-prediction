@@ -56,6 +56,28 @@ experiment, target, settings and commit.
     Val label BA rose at every eval: 0.701, 0.729, 0.767, 0.789, 0.832 and 0.843 (best, step 572).
   - The first evidence that a VLM fine-tuned on these plots learns the task, not the class prior. One base on one
     dataset (the easiest binary one), so it does not generalise yet.
+- **Full batch (submitted 2026-10-04).** The other 167 (base, dataset) pairs, one job each, train then score in
+  one allocation.
+  - Sized per pair by `helpers/plan-resources.py` into `train/resources.csv` (commit 50e6020): 113 jobs on 1
+    GPU, 24 on 2, 30 on 3. Nice 0 for TUAB/TUEP, 100 for TUAR/TUEV/TUSL, 200 for TUSZ, 300 for the
+    LLaVA-1.5 family.
+  - The MIG memory probe (job 4653666) found the eval cache crash before any of them started. 120 of the
+    167 would have died at their first eval. Fixed in `97d815f` and pulled on the cluster at 15:42, while all
+    167 were still pending (known-issues). Re-probe of the crashed bases with the fix: job 4654374.
+  - Probe peaks on an `a100_3g.20gb` slice (one step + one eval, one TUSZ window), with the fix: glm-ocr
+    7.3 GB, minicpm-v4.6:1b 7.5, llava-phi3:3.8b 9.7, gemma3:4b 11.6, medgemma:4b 11.6, medgemma1.5:4b 11.6,
+    qwen3-vl:2b 12.0, gemma4:e2b 12.9, granite3.2-vision:2b 15.3. qwen3-vl:4b peaked at 17.4 GB, over the 17 GB
+    cut, so it stays on a full A100.
+  - Those 9 bases' 54 jobs were cancelled while pending and resubmitted on MIG slices the same afternoon
+    (operations.md, "Moving a pending fine-tune to a MIG slice"). They started within minutes. gemma3:4b
+    trained at 8.6 s/step on the slice (the probe's single step said 10.6).
+  - First finished pairs, 2026-10-04 evening, both TUEP, both scored 1084/1084 test windows:
+    - gemma3:4b: val label BA 0.570 at step 100 (kept), then 0.507 and 0.492.
+    - gemma4:e2b: val label BA 0.500 at every eval. It answers "epilepsy" for all 1084 test windows. Its train
+      loss sat at 0.060-0.069 per answer token from step 30 on, which is ln 2 spread over the ~10 answer
+      tokens: a coin flip on the one token that matters. Its TUAB run shows the same flat 0.069. Its training
+      batch is well formed (256 image tokens, pixel values, image positions, all accepted by the forward).
+      Job 4660614 checks whether the image changes the base model's answer at all.
 - **Why this round:** see methodology-decisions.md: "The first fine-tune answers labels only", "One run per (base, dataset)" and "No token weighting".
 
 ## rationale-w10 (side run, outside the main pipeline)

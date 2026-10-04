@@ -628,6 +628,20 @@ in FINETUNE-TODO items 14-18. Headlines:
   - Scoring (`train/scripts/eval.py`) never reaches the Trainer paths, so it needs no guard.
   - The preflight only builds processors, so it could not catch this. That is why `rehearsal/rehearse.py`
     exists.
+- **The Trainer's eval kept the generation cache for most bases**. Found 2026-10-04 by the MIG memory probe
+  (job 4653666) and fixed the same day in `97d815f`, before any job of the full label-only batch started.
+  - minicpm-v4.6:1b, llava-phi3:3.8b and gemma3:4b died at their first eval with `TypeError: Unsupported types
+    (DynamicCache) passed to _pad_across_processes`.
+  - Cause: `prediction_step` drops only the outputs named in `config.keys_to_ignore_at_inference`. Only the
+    Qwen and GLM config classes list `past_key_values`. Gemma, LLaVA, LLaVA-NeXT, Mistral3 and MiniCPM-V
+    configs list nothing, and their text config still has `use_cache=True` at eval, so the cache stayed in the
+    outputs. The eval loop pads them before `preprocess_logits_for_metrics` runs. 20 of the 28 bases list
+    nothing (120 of the 167 queued jobs); granite3.2-vision:2b passed the probe anyway, the rest would crash.
+  - Fix: `init_model` sets `keys_to_ignore_at_inference = EVAL_IGNORE`, every output field except loss and
+    logits. Checked statically against every base's output class on the cluster: none keeps anything beyond
+    logits (Gemma4 also returns `shared_kv_states`, which is in the list). The side run gets it through
+    `init_model`.
+  - qwen2.5vl:7b (the first pair) was unaffected: its config already lists `past_key_values`.
 - **`bitsandbytes` is still installed in `.venv`** (left from the removed 4-bit path). PEFT imports it while
   adding LoRA layers.
   - On a GPU node it loads its CUDA library and works.

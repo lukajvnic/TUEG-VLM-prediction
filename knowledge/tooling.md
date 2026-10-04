@@ -313,6 +313,9 @@ Unverified on a GPU. Plan and status per base: FINETUNE-TODO item 21.
   one scored TUSZ window.
 - Writes the peak GPU memory and speeds to `$SCRATCH/rehearsal/<stamp>-probe-memory/results.jsonl`.
 - MIG slices had ~8 jobs pending, against ~600 for full A100s (2026-10-04).
+- It is the only check besides the gpu rehearsal that runs a real base through the Trainer's eval loop.
+  `check-pairs` stops at the batch, and the cpu tier's tiny model only builds Qwen-style configs. That is how
+  it caught the eval cache crash that 20 bases had (known-issues).
 
 **`side/rationale-w10/` (2026-10-01): a side experiment, not the pipeline.** `train.py MODEL DS
 [--here|--dry-run]` loads `train/train.py` by path and reuses its config, data, model, `init_trainer`, leak check

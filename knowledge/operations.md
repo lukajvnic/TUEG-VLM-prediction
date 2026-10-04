@@ -452,6 +452,22 @@ scontrol update JobId=<arrayjobid> Dependency=after:<other-jobid>
 scontrol update JobId=<arrayjobid> MinMemoryNode=24G
 ```
 
+**Moving a pending fine-tune to a MIG slice** (the GPU type can't be changed with `scontrol`), as done for the
+label-only batch on 2026-10-04:
+
+```bash
+python rehearsal/probe-memory.py submit KEY ...                 # <=2 h on an a100_3g.20gb slice: peak memory per base
+python helpers/plan-resources.py --probe <merged results.jsonl>  # bases under 17 GB -> a100_3g.20gb:1, 40G
+scancel <the base's PENDING eeg-vlm-train-<key>-<DS>-labels jobs>  # never a RUNNING one
+python train/train.py KEY all                                    # resubmits from train/resources.csv
+```
+
+`train.py` skips a pair whose job is still queued, so cancel first. The resubmission loses the queue age the
+cancelled job had, which costs little: MIG slices had ~8 jobs pending against ~600 for full A100s. The script
+used is `$SCRATCH/rehearsal/to-mig.sh`, with its log in `to-mig-20261004.txt`. `plan-resources.py` rewrites the
+tracked `train/resources.csv`; commit the new one, and `git checkout -- train/resources.csv` on the cluster
+before the next pull.
+
 ## Resume semantics (important)
 
 - **Rationales:** just resubmit — `init_csv` reconciles, done rows skipped.
