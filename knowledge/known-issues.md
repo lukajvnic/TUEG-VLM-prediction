@@ -365,6 +365,16 @@ medgemma x2, llava 7b/13b, bakllava, granite) kept running. Causes and fixes:
   judged, so their `pipeline.db` rows never reach `done` (which needs
   `judged` and `judged_gpt`) and `helpers/status.py` counts them as
   unfinished. Cosmetic: scoring doesn't read `done`.
+- 2026-10-04, **scoring cost of the multi-label datasets.** Label-only answers are ~10 tokens on TUAB and TUEP,
+  but ~58 to 74 on TUAR and TUSZ (8 per boolean field). Constrained decoding is sequential, so TUSZ's 8,460 test
+  windows are estimated at ~12 h for qwen2.5vl:7b and 20 to 60 h for the Gemma and 24-32B bases (estimates in
+  `helpers/plan-resources.py`, not measured).
+  - A faster scorer would teacher-force the fixed JSON keys and read only the true/false decision at each value
+    position: about K short forward passes in place of ~74 single-token decodes, an estimated 5-10x. It must
+    match constrained greedy decoding first.
+- 2026-10-04, **llava:34b's tokenizer vs lm-format-enforcer.** On TUAR, TUEV and TUSL (`rehearsal/check-pairs.py`),
+  the enforcer rejects the exact tokens llava:34b trains on. It still produces valid JSON by another tokenization,
+  so the risk is a small accuracy loss for that base on those datasets, not a failure.
 - Custom stacks: DeepSeek-OCR's modeling file imports `matplotlib`
   (`.venv-unsloth`); LLaMA-Factory rejects the wheelhouse
   `transformers==5.8.0+computecanada` against its `<=5.8.0` bound (local tags

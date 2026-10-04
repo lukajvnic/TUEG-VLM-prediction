@@ -32,7 +32,9 @@ REFERENCE = 36.8  # qwen2.5vl:7b's round-1 s/step: speeds scale against it
 TOKEN_S = {"default": 0.06, "gemma": 0.20}
 PREFILL_S = 0.5
 ANSWER_TOKENS = {"TUAB": 10, "TUEP": 10, "TUAR": 58, "TUEV": 50, "TUSL": 26, "TUSZ": 74}  # ~8 per boolean field
-STARTUP_H = 0.5  # two processes (train, then score), each ~12 min of imports and model load on Lustre
+# two processes (train, then score), each importing from Lustre and loading the weights: qwen2.5vl:7b (16.6 GB) took
+# ~12 min to its first step and ~10 min to its first scored window (2026-10-03); load time grows with the weights
+STARTUP_H, STARTUP_H_PER_GB = 0.4, 0.015
 EVAL_ROW_S = 0.03  # x s/step per val row (qwen2.5vl:7b: 114 s for 140 rows at 26.7 s/step)
 TRAIN_MARGIN, SCORE_MARGIN = 1.5, 1.25  # a cut-off in training costs a resubmission; in scoring, run-eval.py resumes
 MIG_SLICE, MIG_RAM, MIG_HEADROOM_GB = "a100_3g.20gb:1", "40G", 17.0  # 15% under the slice's 20 GB
@@ -53,7 +55,21 @@ def test_windows():
     return dict(rows)
 
 
-def hours(key, dataset, rows, val_rows, windows, cfg, probe):
+def weights_gb(base):
+    snapshot = load_snapshot_dir()(base["repo"])
+    return sum(f.stat().st_size for f in snapshot.glob("*.safetensors")) / 1e9
+
+
+def load_snapshot_dir():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("hf_install", ROOT / "train" / "scripts" / "hf-install.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.snapshot_dir
+
+
+def hours(key, dataset, rows, val_rows, windows, cfg, probe, gb):
     training = cfg["train"]["training"]
     steps = 2 * math.ceil(rows / (training["batch-size"] * training["gradient-accumulation"]))
     evals = steps // training["eval-steps"] + 1
@@ -67,13 +83,14 @@ def hours(key, dataset, rows, val_rows, windows, cfg, probe):
         s_window = (s_step / REFERENCE) * (PREFILL_S + ANSWER_TOKENS[dataset] * TOKEN_S[family])
     train_h = (steps * s_step + evals * val_rows * EVAL_ROW_S * s_step) / 3600
     score_h = windows * s_window / 3600
-    return steps, train_h, score_h, STARTUP_H + TRAIN_MARGIN * train_h + SCORE_MARGIN * score_h
+    startup = STARTUP_H + STARTUP_H_PER_GB * gb
+    return steps, train_h, score_h, startup + TRAIN_MARGIN * train_h + SCORE_MARGIN * score_h
 
 
 def walltime(h):
     # capped at Narval's longest GPU tier (3 days); a job that needs more loses only the tail of its scoring, which
     # run-eval.py resumes
-    h = min(max(1, math.ceil(h)), 71)
+    h = min(max(2, math.ceil(h)), 71)  # 2 h floor: a short job's whole cost is its startup, which varies
     return f"{h // 24}-{h % 24:02d}:00:00" if h >= 24 else f"{h:02d}:00:00"
 
 
@@ -94,12 +111,13 @@ def main():
     plan = []
     for key in keys:
         base = base_spec(cfg, key)
+        gb = weights_gb(base)
         for dataset in DATASETS:
             if (checkpoint_dir(key, run_name(dataset, experiment)) / "manifest.json").exists():
                 continue
             rows = sum(1 for _ in sft_file(dataset, "train", target).open())
             val_rows = sum(1 for _ in sft_file(dataset, "val", target).open())
-            steps, train_h, score_h, total = hours(key, dataset, rows, val_rows, windows[dataset], cfg, probe.get(key))
+            steps, train_h, score_h, total = hours(key, dataset, rows, val_rows, windows[dataset], cfg, probe.get(key), gb)
             on_mig = key in probe
             plan.append({"base": key, "dataset": dataset, "steps": steps, "train_h": round(train_h, 1),
                          "score_h": round(score_h, 1), "time": walltime(total),

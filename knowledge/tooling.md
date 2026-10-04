@@ -286,6 +286,34 @@ Unverified on a GPU. Plan and status per base: FINETUNE-TODO item 21.
 - History of 2026-10-03: the tool's own bugs (tiny-model `layer_types`, login-node SIGILL, a local class that
   wouldn't pickle, the crash hook missing the side's Trainer) were all fixed that day.
 
+**`rehearsal/check-pairs.py [MODEL ...]` (2026-10-04): no-GPU check of every (base, dataset) pair.**
+- For `train.target`, with one example per batch as the trainer sees them, it checks that the base's own
+  processor and chat template build a training batch from the real jsonl.
+- It checks that the masking leaves exactly the answer, and that every true/false field has its token.
+- It checks that the scoring enforcer accepts the exact tokens trained on. A negative test confirmed it
+  rejects malformed answers.
+- 2026-10-04: 28 bases x 6 datasets, all pass except llava:34b on TUAR, TUEV and TUSL (known-issues).
+- Run it on a login node, detached, in chunks of ~7 bases (each base decodes its whole vocabulary once).
+
+**`helpers/plan-resources.py [--probe results.jsonl]` (2026-10-04): sizes each job of a batch.**
+- Writes `train/resources.csv` with walltime, GPUs, RAM and nice per (base, dataset); `train/train.py` reads
+  it when submitting and falls back to the base's own values.
+- Walltime = startup (0.4 h + 0.015 h/GB of weights, two processes) + 1.5 x training + 1.25 x scoring, with a
+  2 h floor and a 71 h cap.
+- Training time = steps x the base's round-1 s/step (qwen2.5vl:7b: 26.7, measured on the label-only run) plus
+  evals.
+- Scoring time = test windows x (prefill + answer tokens x s/token). The s/token is 0.06 at qwen2.5vl:7b's
+  speed and 0.20 for the Gemma family, which decoded ~3x slower per token in round 1.
+- Nice tiers order our own batch: 0 for qwen2.5vl:7b and every base on TUAB/TUEP, 100 for TUAR/TUEV/TUSL, 200
+  for TUSZ, 300 for the LLaVA-1.5 family.
+- With `--probe`, bases whose probed peak is under 17 GB go on an `a100_3g.20gb` MIG slice with 40G RAM.
+
+**`rehearsal/probe-memory.py submit KEY ...` (2026-10-04): what fits on a MIG slice.**
+- One job on an `a100_3g.20gb` slice. For each base, in its own process: one real optimizer step, one eval and
+  one scored TUSZ window.
+- Writes the peak GPU memory and speeds to `$SCRATCH/rehearsal/<stamp>-probe-memory/results.jsonl`.
+- MIG slices had ~8 jobs pending, against ~600 for full A100s (2026-10-04).
+
 **`side/rationale-w10/` (2026-10-01): a side experiment, not the pipeline.** `train.py MODEL DS
 [--here|--dry-run]` loads `train/train.py` by path and reuses its config, data, model, `init_trainer`, leak check
 and manifest unchanged. It swaps in a collator that adds `label_weights` (10 on the JSON boolean values) and a
