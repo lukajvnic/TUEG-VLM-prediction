@@ -43,6 +43,19 @@ experiment, target, settings and commit.
     (known-issues).
   - Resubmitted 2026-10-03 as job 4565667, which trains, then scores the TUAB test split in one allocation.
     GPU rehearsal 4565661 (2 h) checks it first; side run 4565671.
+  - **Result (2026-10-04).** Job 4565667 took 5 h 15 m: 572 steps at 26.7 s/step, then 1,200 test windows scored at
+    1.0 s/window with 0 failures. Measured with `eval/score.py TUAB` (bootstrap CI) on the TUAB test split, 300
+    recordings and 222 patients at full coverage:
+
+    | Model | Recording balanced accuracy | Recording macro-F1 [95% CI] | Window BA | Top answer |
+    |---|---|---|---|---|
+    | label-only fine-tune | **0.786** | 0.787 [0.739, 0.832] (clears the 0.346 floor) | 0.775 | normal 55% |
+    | zero-shot qwen2.5vl:7b | 0.500 | 0.320 | | abnormal 100% (degenerate) |
+    | round 1 pooled-rationale fine-tune | 0.48 | (33% coverage) | | abnormal 97% |
+
+    Val label BA rose at every eval: 0.701, 0.729, 0.767, 0.789, 0.832 and 0.843 (best, step 572).
+  - The first evidence that a VLM fine-tuned on these plots learns the task, not the class prior. One base on one
+    dataset (the easiest binary one), so it does not generalise yet.
 - **Why this round:** see methodology-decisions.md: "The first fine-tune answers labels only", "One run per (base, dataset)" and "No token weighting".
 
 ## rationale-w10 (side run, outside the main pipeline)
@@ -61,3 +74,12 @@ experiment, target, settings and commit.
 - **Where:** `side/rationale-w10/` holds the checkpoints, logs and wandb offline runs, and `results/` (once
   `score.py` runs). wandb group `rationale-w10`. The main tree's `checkpoints/`, `logs/` and `summary.csv` never
   see it.
+- **Result (2026-10-04).** Job 4565671 took 9 h 16 m: training at ~27.4 s/step, then scoring at ~14 s/window. It
+  kept the final adapter. `results/summary.csv`, TUAB test, 300 recordings:
+  - recording balanced accuracy **0.597**, recording macro-F1 0.588 [95% CI 0.529, 0.642] (clears the 0.346
+    floor), window BA 0.589;
+  - answers are mixed (abnormal 57%), not degenerate;
+  - 1,195 of 1,200 windows scored. 5 replies hit the 512-token cap mid-rationale (`Unterminated string`).
+- Against the same base and split: label-only 0.786 [0.739, 0.832], zero-shot 0.500 (always "abnormal"), round 1
+  (rationale, no weight, pooled) 0.48 at 33% coverage and 97% "abnormal". So the 10x weight stops the collapse to
+  the prior, but keeping the rationale in the target still costs about 0.19 BA against label-only.
