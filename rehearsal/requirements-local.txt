@@ -1,0 +1,18 @@
+# the job venv on Narval (pip list, 2026-10-03), minus the +computecanada local tags; Pillow-SIMD is Linux-only, so
+# plain pillow. Rebuild this list from Narval when the cluster venv changes, or the local rehearsal tests the wrong thing
+accelerate==1.14.0
+huggingface_hub==1.31.0
+jinja2==3.1.6
+lm-format-enforcer==0.11.3
+numpy==2.4.2
+peft==0.19.1
+pillow==12.1.0
+pydantic==2.13.4
+pyyaml==6.0.3
+safetensors==0.8.0
+sentencepiece==0.2.0
+tokenizers==0.22.2
+torch==2.14.0
+torchvision==0.29.0
+transformers==5.14.1
+wandb==0.27.2

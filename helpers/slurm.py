@@ -25,6 +25,7 @@ source {root}/{venv}/bin/activate
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export HF_HOME=$SCRATCH/hf-cache
 export TOKENIZERS_PARALLELISM=false
+export PYTHONUNBUFFERED=1  # the Trainer's loss lines reach the log as they happen, not in 8 KB chunks
 cd {root}
 {command}
 """

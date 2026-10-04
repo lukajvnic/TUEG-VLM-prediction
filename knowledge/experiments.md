@@ -41,7 +41,8 @@ experiment, target, settings and commit.
 - **First run:** qwen2.5vl:7b on TUAB, job 4342993 (12 h walltime). It is the lead's gate before any batch.
   - It waited ~2 days, then failed 12 min in, on 2026-10-03: the repo's `datasets/` folder shadowed the HF library
     (known-issues).
-  - Resubmitted after the fix and a cpu rehearsal; the job now trains and scores in one allocation.
+  - Resubmitted 2026-10-03 as job 4565667, which trains, then scores the TUAB test split in one allocation.
+    GPU rehearsal 4565661 (2 h) checks it first; side run 4565671.
 - **Why this round:** see methodology-decisions.md: "The first fine-tune answers labels only", "One run per (base, dataset)" and "No token weighting".
 
 ## rationale-w10 (side run, outside the main pipeline)

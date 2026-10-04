@@ -259,23 +259,32 @@ Unverified on a GPU. Plan and status per base: FINETUNE-TODO item 21.
 **`rehearsal/rehearse.py cpu|gpu MODEL DS [--side]` (2026-10-03): dress rehearsal before a submission.**
 - Loads `train/train.py` (and, with `--side`, `side/rationale-w10/train.py`) by path and runs their real
   `train()` on a sample of the real jsonl and images.
-- Run 1 is crashed on purpose after the first checkpoint. Run 2 must resume from it and finish: eval with
-  `eval_label_positions` > 0, best-checkpoint reload, adapter saved, manifest complete.
+- Run 1 is crashed on purpose after the first checkpoint. The crash hook goes on the Trainer the script actually
+  trains with (`init_trainer`, or the side's `build_trainer`). Run 2 must resume from it and finish: eval with
+  label positions, best-checkpoint reload, adapter saved, manifest complete.
 - Then it scores a few test windows through `train/scripts/eval.py`'s own `load` / `enforcer` / `predict`, and
-  `eval/score.py`'s `evaluate`.
+  `eval/score.py`'s `evaluate`. Replies that don't parse are counted (a few-step model rambles past the cap);
+  any other exception fails.
 - Swapped, and nothing else:
-  - outputs go to `$SCRATCH/rehearsal/<stamp>-<tier>-<key>-<DS>/`: checkpoints, an offline wandb run,
-    `report.txt`;
+  - output goes to `$SCRATCH/rehearsal/<stamp>-...` (or `~/rehearsal/` on a Mac);
   - the run is shortened: 6 or 8 optimizer steps, 24 or 96 train rows;
-  - **cpu tier only**: a 2-layer random model built from the base's own config and processor
-    (`tiny_snapshot`), no bf16 autocast, and `bitsandbytes` hidden (see known-issues).
-- The **gpu tier** submits a <=2 h job that runs the real model. It reports s/step, peak GPU memory, and whether
-  the estimated full run fits the walltime with a 30% margin.
+  - **cpu tier only**: a 2-layer random model built from the base's own config and processor, no bf16
+    autocast, 448 px plots in the collator, fork workers, no MPS, and `bitsandbytes` hidden.
+- **cpu tier on your Mac (the practical way):**
+  - Once: `bash rehearsal/setup-local.sh qwen2.5vl:7b TUAB`. This builds `.venv-rehearsal` with Narval's exact
+    versions (`rehearsal/requirements-local.txt`) and copies the base's config/tokenizer/processor files (no
+    weights) into `hf-checkpoints-local/` and the sft jsonl from Narval.
+  - Then run
+    `HF_CHECKPOINTS=$PWD/hf-checkpoints-local .venv-rehearsal/bin/python rehearsal/rehearse.py cpu qwen2.5vl:7b TUAB --side`.
+  - Measured 2026-10-03: ~70 min for main + side, `RESULT: PASS`.
+  - On a login node the same tier works, but it is slow and heavy there.
+- **gpu tier:** submits a <=2 h job with the real model. It reports s/step, peak GPU memory, and whether the
+  estimated run fits the walltime.
+  - Measured 2026-10-03: 30.9 s/step, 25.5 GB peak, ~5.1 h for TUAB labels.
+  - The real job then ran at 26.7 s/step.
 - Exit 1 and `RESULT: FAIL` on any failed check.
-- On a login node, run it detached so an SSH drop can't kill it:
-  `setsid nohup ... > $SCRATCH/rehearsal/cpu-latest.txt 2>&1 &`.
-- Background: on 2026-10-03 it found the tiny-model build issue and the login-node SIGILL before reaching the
-  training loop.
+- History of 2026-10-03: the tool's own bugs (tiny-model `layer_types`, login-node SIGILL, a local class that
+  wouldn't pickle, the crash hook missing the side's Trainer) were all fixed that day.
 
 **`side/rationale-w10/` (2026-10-01): a side experiment, not the pipeline.** `train.py MODEL DS
 [--here|--dry-run]` loads `train/train.py` by path and reuses its config, data, model, `init_trainer`, leak check

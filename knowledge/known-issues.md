@@ -144,19 +144,38 @@ selection verified exact against the corpus. The exact *bytes* of the 76,334
 images are still only reproducible on the original library versions, so treat
 the shipped PNGs as the artifact of record.
 
-### Scratch purge will delete the venv and the Qwen weights (found 2026-10-03)
-`/scratch/to_delete/luka` (root-owned, written 2026-10-02) lists 38,559 files for the next purge.
-- Included: 12,263 files of the job venv `.venv` (numpy, yaml, pydantic, wandb, jinja2, tqdm sources, among
-  others); all 34 files of `hf-checkpoints/Qwen--Qwen2.5-VL-7B-Instruct`; and 744 `.git/objects`.
-- Why reading them doesn't protect them: imports read the `__pycache__/*.pyc` files and only `stat()` the
-  `.py` files, so the `.py` atimes stay at June/July. Once a `.py` is gone, its package imports as an empty
-  namespace and every job dies at `import numpy`/`yaml`.
-- When: Alliance purges these lists mid-month, around the 15th. That is from memory, and the docs page blocked
-  automated reading, so confirm it.
-- Fix before then: rebuild the venv in `/project/def-milad777` (quota 953 GB / 500k files, ~1k used) or
-  `$HOME`, point `helpers/slurm.py` at it, copy the needed `hf-checkpoints` to `/project` and set
-  `HF_CHECKPOINTS`, and re-check `/scratch/to_delete/luka`. Touching files to dodge the purge is against the
-  rules.
+### Scratch purge on 2026-10-15: moving everything we keep to /project (found 2026-10-03)
+`/scratch/to_delete/luka` (root-owned, written 2026-10-02) lists 38,559 files, 2.1 TB. The deletion date is
+2026-10-15 (Alliance email to the maintainer).
+- **Model weights.** All the `hf-checkpoints` snapshots: the 27 bases in use (822 GB) and 14 unused ones
+  (1,309 GB, mostly Llama-4 at 1,045 GB).
+- **The job venv.** 12,263 files of `.venv`. Imports read `__pycache__/*.pyc` and only `stat()` the `.py`
+  files, so their atimes stay at June/July. Once a `.py` is gone, its package imports as an empty namespace.
+- **Old files.** 744 `.git/objects`, plus the July `temp/` logs and results, old `eval/runs`, and 613 July
+  `wandb/offline-run-*` dirs.
+- **Not listed** (all accessed recently): the images, the rationale-filled `labels.csv`, results CSVs,
+  `pipeline.db`, checkpoints, `archive/`.
+
+Plan (maintainer, 2026-10-03). Nothing we created is lost; scratch only holds temporary job output.
+1. Copy to `/project/def-milad777/luka/` now. `migration-logs/migrate.sh` makes a snapshot copy and is
+   re-runnable as a final sync:
+   - the repo minus `.venv` (~130 GB, 140k files) to `TUEG-VLM-prediction/`;
+   - the weights in use, minus the LLaVA-1.5 family and llava-34b, to `hf-checkpoints/` (~830 GB);
+   - the group quota is 1,000 GB / 500k files, shared with the other group members.
+2. Quota: the maintainer is asking Alliance support for 2 TB. Once granted, copy the LLaVA-1.5 and llava-34b
+   weights too.
+3. After the queued jobs finish (they were submitted with `/scratch` paths) and before Oct 15:
+   - run a final `rsync` of the repo;
+   - rebuild the venv in the project checkout (`helpers/cluster-setup.sh`);
+   - set `HF_CHECKPOINTS=/project/def-milad777/luka/hf-checkpoints`;
+   - run `helpers/preflight.py main` and `rehearsal/rehearse.py gpu`;
+   - submit from `/project` from then on.
+4. The 14 unused snapshots go with the purge (maintainer's call). They are public and can be re-downloaded
+   with `train/scripts/hf-install.py`: Llama-4 Maverick and Scout, Qwen3-VL 2B/4B/8B/30B-A3B/32B Thinking,
+   Qwen3-VL-235B-A22B, llava-v1.6-mistral-7b, Phi-3-vision, Qwen2.5-VL-3B, DeepSeek-OCR (the deepseek-ai copy;
+   unsloth's is in use), moondream2, MiniCPM-V-4_6.
+
+Touching files to dodge the purge is against Alliance rules, so everything here is a copy to `/project`.
 
 ## Open decisions (not yet done)
 

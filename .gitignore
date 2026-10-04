@@ -82,3 +82,7 @@ things-to-review.md
 
 # archived rounds: only README.md, results.csv and MANIFEST.txt are tracked (checkpoints/ and logs/ are ignored everywhere)
 archive/*/datasets/
+
+# local rehearsal (rehearsal/setup-local.sh): exact-version venv and processor files without weights
+.venv-rehearsal/
+hf-checkpoints-local/

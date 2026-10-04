@@ -6,7 +6,7 @@
 # What is swapped, and only this: where outputs go, how long the run is, and in the cpu tier the model (a 2-layer
 # random copy of the base's architecture) and the precision. Everything else is the code the job will run.
 #
-#   python rehearsal/rehearse.py cpu  qwen2.5vl:7b TUAB [--side]   # login node, ~10 min, no GPU
+#   python rehearsal/rehearse.py cpu  qwen2.5vl:7b TUAB [--side]   # no GPU: your Mac (rehearsal/setup-local.sh) or a login node
 #   python rehearsal/rehearse.py gpu  qwen2.5vl:7b TUAB [--side]   # submits a <=2 h Slurm job with the real model
 import argparse
 import datetime
@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 sys.modules.setdefault("datasets", None)  # same guard as train/train.py: the repo's datasets/ is not the HF library
 from helpers.pipeline import DATASETS, config, read_csv  # noqa: E402
 
-SANDBOX = Path(os.environ.get("SCRATCH", "/tmp")) / "rehearsal"
+SANDBOX = Path(os.environ.get("SCRATCH", Path.home())) / "rehearsal"  # never inside the repo
 STEPS = {"cpu": 6, "gpu": 8}  # optimizer steps; eval + save every half, crash injected after the first save
 ROWS = {"cpu": (24, 6, 3), "gpu": (96, 16, 6)}  # train rows, val rows, test windows scored
 
@@ -90,6 +90,33 @@ def tiny_snapshot(base_repo, snapshot_dir, out):
     return out
 
 
+def cpu_arguments():
+    # TrainingArguments for a machine without a GPU. Built once and registered at module level under its own name:
+    # the Trainer pickles its arguments into every checkpoint, and pickle can't find a class defined in a function
+    global CPUArguments
+    if "CPUArguments" not in globals():
+        import transformers
+
+        class CPUArguments(transformers.TrainingArguments):
+            def __init__(self, *args, **kwargs):
+                kwargs.update(bf16=False, use_cpu=True, dataloader_num_workers=2)
+                super().__init__(*args, **kwargs)
+
+        CPUArguments.__qualname__ = "CPUArguments"
+        CPUArguments.__module__ = __name__
+    return CPUArguments
+
+
+class SmallImages:
+    # stands in for PIL.Image in train.py's collator on the cpu tier
+    @staticmethod
+    def open(path):
+        from PIL import Image
+
+        with Image.open(path) as image:
+            return image.convert("RGB").resize((448, 448))
+
+
 def patch_trainer_module(t, tier, folder, rows, steps, report, tiny=None):
     # outputs to the sandbox, a sample of the data, a short run; cpu tier: tiny model, no bf16 autocast
     import transformers
@@ -109,17 +136,16 @@ def patch_trainer_module(t, tier, folder, rows, steps, report, tiny=None):
 
     t.load_data, t.init_trainer = load_data, init_trainer
     if tier == "cpu":
+        import multiprocessing
+
         import torch
 
         t.resolve_model = lambda repo: str(tiny)
         torch.cuda.is_bf16_supported = lambda *a, **k: True  # init_model then loads bf16, as on the A100
-
-        class CPUArguments(transformers.TrainingArguments):
-            def __init__(self, *args, **kwargs):
-                kwargs.update(bf16=False, use_cpu=True, dataloader_num_workers=2)
-                super().__init__(*args, **kwargs)
-
-        transformers.TrainingArguments = CPUArguments
+        torch.backends.mps.is_available = lambda: False  # a Mac must not move the model to MPS: one CPU device, like one GPU
+        multiprocessing.set_start_method("fork", force=True)  # dataloader workers fork on Linux; macOS defaults to spawn
+        t.Image = SmallImages  # the collator's PIL: 448 px plots keep a CPU step to seconds; full size is the gpu tier's job
+        transformers.TrainingArguments = cpu_arguments()
 
 
 def patch_wandb(folder):
@@ -136,8 +162,10 @@ def patch_wandb(folder):
     wandb.init = init
 
 
-def crash_after_first_save(trainer_module, steps):
-    # a TrainerCallback that kills the run right after the first checkpoint, like a walltime or node failure
+def crash_after_first_save(owner, builder, steps):
+    # a TrainerCallback that kills the run right after the first checkpoint, like a walltime or node failure. It is
+    # added to the trainer the script trains with: owner.builder is train.py's init_trainer, or the side script's
+    # build_trainer, which wraps init_trainer's Trainer in its own subclass
     from transformers import TrainerCallback
 
     class Crash(TrainerCallback):
@@ -145,30 +173,32 @@ def crash_after_first_save(trainer_module, steps):
             if state.global_step == steps // 2:
                 raise RuntimeError("rehearsal: injected crash after the first checkpoint")
 
-    original = trainer_module.init_trainer
+    original = getattr(owner, builder)
 
-    def init_trainer(*args, **kwargs):
+    def build(*args, **kwargs):
         trainer = original(*args, **kwargs)
         trainer.add_callback(Crash())
         return trainer
 
-    return original, init_trainer
+    return original, build
 
 
-def rehearse_training(kind, t, train_fn, settings_fn, report, steps):
+def rehearse_training(kind, owner, builder, train_fn, settings_fn, report, steps):
     # run 1 crashes after the first save; run 2 must resume from it and finish
     out = Path(settings_fn()["output-dir"])
-    original, crashing = crash_after_first_save(t, steps)
-    t.init_trainer = crashing
+    original, crashing = crash_after_first_save(owner, builder, steps)
+    setattr(owner, builder, crashing)
     started = time.time()
     try:
         train_fn(settings_fn())
         report.check(f"{kind}: injected crash fired", False, "training finished without crashing")
+        setattr(owner, builder, original)
+        return None
     except RuntimeError as e:
         report.check(f"{kind}: run 1 trained to the first checkpoint, then crashed as injected",
                      "injected crash" in str(e) and (out / f"checkpoint-{steps // 2}").is_dir(),
                      f"{time.time() - started:.0f} s")
-    t.init_trainer = original
+    setattr(owner, builder, original)
 
     started = time.time()
     train_fn(settings_fn())
@@ -218,17 +248,17 @@ def rehearse_scoring(kind, out, manifest, base_key, dataset, n, report, tiny=Non
             parsed = runner.predict(model, processor, structure, ROOT / "datasets" / dataset / rel,
                                     prompt(dataset, rationale), prefix_fn)
         except (ValueError, json.JSONDecodeError) as e:
-            # a reply that does not parse or validate (pydantic's error is a ValueError): tolerated from the cpu
-            # tier's random model, a failure from the real one. Any other exception is a code bug and fails the run
-            if tiny is None:
-                raise
+            # a reply that does not parse or validate (pydantic's error is a ValueError). A model trained for a
+            # handful of steps rambles past the token cap, so this is counted, not failed; the real scorer logs it
+            # and moves on. Any other exception is a code bug and fails the run
             errors.append(f"{type(e).__name__}: {str(e)[:120]}")
             continue
         values = to_labels(parsed, dataset)
         rows.append({"path": rel, "model": f"rehearsal-{kind}", **{c: str(v).lower() for c, v in values.items()},
                      "rationale": getattr(parsed, "text_rationale", "")})
     elapsed = time.time() - started
-    report.check(f"{kind}: scoring loaded base + adapter and decoded with the enforcer", bool(rows) or bool(errors),
+    report.check(f"{kind}: scoring loaded base + adapter and decoded with the enforcer (parse failures from a "
+                 f"few-step model are expected)", bool(rows) or bool(errors),
                  f"{len(rows)} parsed, {len(errors)} failed, {elapsed:.0f} s" + (f"; first error {errors[0]}" if errors else ""))
     if rows:
         summary = score.evaluate(f"rehearsal-{kind}", dataset, rows, truth, set(windows), 0)
@@ -255,14 +285,17 @@ def run_tier(tier, base_key, dataset, side, report, folder):
         patch_trainer_module(t, tier, folder / kind, rows, steps, report, tiny)
         if kind == "main":
             settings_fn = lambda: t.load_config(config(), base_key, dataset)  # noqa: E731
-            train_fn = t.train
+            train_fn, owner, builder = t.train, t, "init_trainer"
         else:
             module.output_dir = lambda key, ds: folder / kind / "checkpoints" / key.replace(":", "-") / ds
             settings_fn = lambda: module.side_config(config(), base_key, dataset)  # noqa: E731
-            train_fn = module.train
+            train_fn, owner, builder = module.train, module, "build_trainer"
 
         try:
-            out, manifest, elapsed, eval_seconds = rehearse_training(kind, t, train_fn, settings_fn, report, steps)
+            result = rehearse_training(kind, owner, builder, train_fn, settings_fn, report, steps)
+            if result is None:
+                continue
+            out, manifest, elapsed, eval_seconds = result
             if tier == "gpu":
                 # run 2 trains steps/2 steps after loading the model; model load (~minutes) is in `elapsed` too,
                 # so this overestimates s/step a little, which is the safe direction for a walltime check
