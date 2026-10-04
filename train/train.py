@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # 4342993 and 4400514, 2026-10-03); marking it absent makes transformers skip that path
 sys.modules.setdefault("datasets", None)
 from helpers.pipeline import (DATASETS, ROOT, base_spec, checkpoint_dir, config, run_name, script_module,  # noqa: E402
-                              sft_file)
+                              sft_file, sync)
 from helpers.slurm import job_name, queued, script, submit  # noqa: E402
 
 snapshot_dir = script_module("hf-install").snapshot_dir
@@ -96,6 +96,7 @@ def submit_jobs(cfg, models, datasets, dry_run):
     spec = cfg["train"]
     target = spec["target"]
     pending = queued()
+    submitted = 0
 
     for model in models:
         base = base_spec(cfg, model)
@@ -110,9 +111,18 @@ def submit_jobs(cfg, models, datasets, dry_run):
             text = script(job_name(model, run), base["time"], base["ram"], spec["cpus"], base["gpus"],
                           job_command(model, dataset, run))
             job = "dry run" if dry_run else submit(text)
+            if not dry_run:
+                checkpoint_dir(model, run).mkdir(parents=True, exist_ok=True)
+                submitted += 1
 
             print(f"{job} - {model} on {run} -> {checkpoint_dir(model, run)}, "
                   f"{base['time']}/{base['ram']}/gpu:{base['gpus']}")
+
+    if submitted:
+        # the job's scoring step reads its test windows from pipeline.db, and sync() only registers a model whose
+        # checkpoint dir exists: the dirs were just made, so register them now, hours before any job scores
+        print(f"registering the test windows of {submitted} submitted pairs in pipeline.db (sync) ...", flush=True)
+        sync()
 
 
 def load_config(cfg, model, dataset):

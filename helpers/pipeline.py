@@ -110,7 +110,7 @@ def finetune_models(cfg):
 
 
 def db():
-    conn = sqlite3.connect(ROOT / "pipeline.db")
+    conn = sqlite3.connect(ROOT / "pipeline.db", timeout=600)  # wait out a sync()'s write lock, don't fail after 5 s
     conn.execute("PRAGMA journal_mode=MEMORY")  # derived db: rebuildable, skip lustre fsync cost
     conn.execute("PRAGMA synchronous=OFF")
     conn.execute(SCHEMA)
