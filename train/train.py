@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # library (not installed here) and the Trainer dies on `datasets.Dataset` when it builds the first dataloader (jobs
 # 4342993 and 4400514, 2026-10-03); marking it absent makes transformers skip that path
 sys.modules.setdefault("datasets", None)
-from helpers.pipeline import (DATASETS, ROOT, base_spec, checkpoint_dir, config, run_name, script_module,  # noqa: E402
-                              sft_file, sync)
+from helpers.pipeline import (DATASETS, ROOT, base_spec, checkpoint_dir, config, read_csv, run_name,  # noqa: E402
+                              script_module, sft_file, sync)
 from helpers.slurm import job_name, queued, script, submit  # noqa: E402
 
 snapshot_dir = script_module("hf-install").snapshot_dir
@@ -92,6 +92,16 @@ def job_command(model, dataset, run):
             f"SLURM_ARRAY_TASK_ID=0 SFT_EVAL_TASKS={task} python {ROOT}/train/scripts/eval.py")
 
 
+def pair_resources(model, dataset, base):
+    # train/resources.csv (helpers/plan-resources.py) sizes each pair's job: walltime from measured speeds, a MIG slice
+    # for the small bases that fit one, RAM, and a nice value that orders our batch. A pair it doesn't list gets the
+    # base's own time and GPUs
+    for row in read_csv(ROOT / "train" / "resources.csv"):
+        if row["base"] == model and row["dataset"] == dataset:
+            return row["time"], row["gpus"], row["ram"], int(row["nice"])
+    return base["time"], base["gpus"], base["ram"], 0
+
+
 def submit_jobs(cfg, models, datasets, dry_run):
     spec = cfg["train"]
     target = spec["target"]
@@ -108,15 +118,15 @@ def submit_jobs(cfg, models, datasets, dry_run):
                 print(f"{model} on {run}: {reason}, skipping")
                 continue
 
-            text = script(job_name(model, run), base["time"], base["ram"], spec["cpus"], base["gpus"],
-                          job_command(model, dataset, run))
+            time, gpus, ram, nice = pair_resources(model, dataset, base)
+            text = script(job_name(model, run), time, ram, spec["cpus"], gpus, job_command(model, dataset, run), nice=nice)
             job = "dry run" if dry_run else submit(text)
             if not dry_run:
                 checkpoint_dir(model, run).mkdir(parents=True, exist_ok=True)
                 submitted += 1
 
-            print(f"{job} - {model} on {run} -> {checkpoint_dir(model, run)}, "
-                  f"{base['time']}/{base['ram']}/gpu:{base['gpus']}")
+            print(f"{job} - {model} on {run} -> {checkpoint_dir(model, run)}, {time}/{ram}/gpu:{gpus}"
+                  + (f", nice {nice}" if nice else ""))
 
     if submitted:
         # the job's scoring step reads its test windows from pipeline.db, and sync() only registers a model whose

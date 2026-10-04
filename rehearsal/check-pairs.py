@@ -47,9 +47,13 @@ def check_base(t, cfg, key, target, report):
     for dataset in DATASETS:
         try:
             rows = t.read_jsonl(sft_file(dataset, "train", target))[:2]
-            batch = t.DataCollator(processor, t.ROOT / "datasets" / dataset, base)(rows)
+            collator = t.DataCollator(processor, t.ROOT / "datasets" / dataset, base)
+            structure = get_structure(dataset, cfg["train"]["rationale-first"], target == "rationale")
+            enforcer = t.runner.enforcer(processor, structure)
             problems = []
-            for row, labels in zip(rows, batch["labels"]):
+            for row in rows:
+                # one example per batch, as the trainer sees them (per_device batch size 1)
+                labels = collator([row])["labels"][0]
                 answer = labels[labels != -100]
                 decoded = tokenizer.decode(answer)
                 if not decoded.startswith(row["output"] + suffix):
@@ -57,14 +61,17 @@ def check_base(t, cfg, key, target, report):
                 positions = int(torch.isin(answer, ids).sum())
                 if positions < len(FIELDS[dataset]):
                     problems.append(f"{positions} true/false tokens for {len(FIELDS[dataset])} fields")
-            structure = get_structure(dataset, cfg["train"]["rationale-first"], target == "rationale")
-            enforcer = t.runner.enforcer(processor, structure)
-            prompt = t.runner.render(processor, t.get_messages(rows[0], False), True)
-            prompt_ids = tokenizer(prompt, **t.runner.encode_kwargs(processor, prompt))["input_ids"]
-            answer_ids = tokenizer(rows[0]["output"], add_special_tokens=False)["input_ids"]
-            if not answer_accepted(enforcer, prompt_ids, answer_ids):
-                problems.append("the scoring enforcer rejects the trained answer")
-            report(key, dataset, problems)
+                # the exact tokens it trains on, up to the end of the JSON (the end-of-turn tokens follow)
+                trained = []
+                for token in answer.tolist():
+                    trained.append(token)
+                    if len(tokenizer.decode(trained)) >= len(row["output"]):
+                        break
+                prompt = t.runner.render(processor, t.get_messages(row, False), True)
+                prompt_ids = tokenizer(prompt, **t.runner.encode_kwargs(processor, prompt))["input_ids"]
+                if not answer_accepted(enforcer, prompt_ids, trained):
+                    problems.append("the scoring enforcer rejects the trained answer tokens")
+            report(key, dataset, sorted(set(problems)))
         except Exception as e:
             report(key, dataset, [f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"])
             traceback.print_exc()

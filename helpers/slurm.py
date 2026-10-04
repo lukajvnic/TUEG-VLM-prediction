@@ -14,7 +14,7 @@ SBATCH = """#!/bin/bash
 #SBATCH --mem={ram}
 #SBATCH --cpus-per-task={cpus}
 #SBATCH --gres=gpu:{gpus}
-{array}#SBATCH --output={logs}/{job}-{jobid}.out
+{nice}{array}#SBATCH --output={logs}/{job}-{jobid}.out
 
 set -euo pipefail
 log_task() {{ ( flock -x 9; echo "$(date -Iseconds),{job_env},{task_env},{job},${{1:-}},${{2:-}}" >&9 ) 9>>{logs}/tasks.csv; }}
@@ -31,13 +31,13 @@ cd {root}
 """
 
 
-def script(job, time, ram, cpus, gpus, command, array_last=None, venv=".venv"):
+def script(job, time, ram, cpus, gpus, command, array_last=None, venv=".venv", nice=0):
     logs = ROOT / "logs"
     logs.mkdir(exist_ok=True)
     single = array_last is None
     return SBATCH.format(
         job=job, account=ACCOUNT, time=time, ram=ram, cpus=cpus, gpus=gpus, logs=logs, root=ROOT,
-        command=command, venv=venv,
+        command=command, venv=venv, nice=f"#SBATCH --nice={nice}\n" if nice else "",
         array="" if single else f"#SBATCH --array=0-{array_last}\n",
         jobid="%j" if single else "%A_%a",
         job_env="$SLURM_JOB_ID" if single else "$SLURM_ARRAY_JOB_ID",
