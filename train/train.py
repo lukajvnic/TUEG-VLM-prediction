@@ -22,6 +22,13 @@ from helpers.slurm import job_name, queued, script, submit  # noqa: E402
 
 snapshot_dir = script_module("hf-install").snapshot_dir
 runner = script_module("eval")
+# model outputs the Trainer's eval loop must drop: the label metric reads only argmax(logits), and the loop pads every
+# other output across processes before preprocess_logits_for_metrics runs. A config class that lists nothing to drop
+# (Gemma, LLaVA, Mistral3, MiniCPM-V) keeps the DynamicCache, which crashed minicpm-v4.6 and llava-phi3 at their first
+# eval (memory probe, 2026-10-04). Covers every field of every base's output class; names a model doesn't return are
+# ignored
+EVAL_IGNORE = ["past_key_values", "hidden_states", "attentions", "image_hidden_states", "vision_hidden_states",
+               "audio_hidden_states", "rope_deltas", "cache_position", "router_logits", "aux_loss", "shared_kv_states"]
 
 
 def parse_args(cfg):
@@ -223,6 +230,7 @@ def init_model(config):
     processor = runner.load_processor(source, base, loading["trust_remote_code"])
     model = AutoModelForImageTextToText.from_pretrained(source, **loading)
     model.config.use_cache = False
+    model.config.keys_to_ignore_at_inference = EVAL_IGNORE  # what the Trainer's prediction_step drops at eval
     model.enable_input_require_grads()
 
     lora = config["lora"]
