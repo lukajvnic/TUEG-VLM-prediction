@@ -317,6 +317,12 @@ Unverified on a GPU. Plan and status per base: FINETUNE-TODO item 21.
   `check-pairs` stops at the batch, and the cpu tier's tiny model only builds Qwen-style configs. That is how
   it caught the eval cache crash that 20 bases had (known-issues).
 
+**`side/multilabel-pilot/` (2026-10-05): TUSZ training-format pilot, not the pipeline.** `build.py` writes the
+per-class and joint+aux training sets from `sft_labels_*`; `train.py perclass|joint-aux` submits one MIG job that
+trains with `train/train.py`'s trainer and then runs `score.py`; `train.py smoke` runs both end to end in <=2 h.
+`score.py perclass` reads P(true) per question, teacher-forced through the training collator, with
+`logits_to_keep`. Outputs stay in that directory. See experiments.md.
+
 **`side/rationale-w10/` (2026-10-01): a side experiment, not the pipeline.** `train.py MODEL DS
 [--here|--dry-run]` loads `train/train.py` by path and reuses its config, data, model, `init_trainer`, leak check
 and manifest unchanged. It swaps in a collator that adds `label_weights` (10 on the JSON boolean values) and a

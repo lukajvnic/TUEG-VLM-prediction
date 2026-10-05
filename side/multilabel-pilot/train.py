@@ -23,8 +23,9 @@ MODEL = "qwen3-vl:2b-instruct"
 VARIANTS = ("perclass", "joint-aux")
 EVALS = 5
 GPUS, RAM = "a100_3g.20gb:1", "40G"  # the probe's 12.0 GB peak for this base fits the slice
-# measured on the smoke job (see README): training at the labels round's 17.4 s/step, scoring per README
-TIME = {"perclass": "1-12:00:00", "joint-aux": "1-00:00:00", "smoke": "01:00:00"}
+# training at the labels round's 17.4 s/step (762 / 1,031 steps); scoring measured on smoke job 4727011: perclass
+# 5.2 s/window (10 questions), joint 2.8 s/window, x 8,460 test windows: ~16 h and ~12 h before margins
+TIME = {"perclass": "1-06:00:00", "joint-aux": "1-00:00:00", "smoke": "02:00:00"}
 SMOKE_LINES = (16, 8)
 
 
