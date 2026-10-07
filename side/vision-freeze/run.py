@@ -1,0 +1,362 @@
+# side test: does training the vision side with the language model frozen (NeuroCanvas's recipe, arXiv 2602.04769)
+# make qwen3-vl:2b-instruct see TUSZ seizures? Frozen vision features already separate seizure from background at
+# AUROC ~0.70 (linear probe, 2026-10-06) while the LoRA fine-tunes reached 0.52-0.56. One balanced "any seizure"
+# yes/no question (the multilabel pilot's lines), three arms on the same data:
+#   freeze: vision tower + merger fully trained (fp32 master weights), language model frozen
+#   lora:   the labels round's LoRA recipe on the same lines, the control
+#   base:   no training, the same question asked of the untrained model
+# Every arm scores P(true) on all TUSZ test windows; results/summary-<arm>.csv has window AUROC with a patient
+# bootstrap CI, within seizure recordings, and on the probe's 1,500 test windows
+#   python side/vision-freeze/run.py freeze|lora|base [--dry-run]   # submit one arm's MIG job
+#   python side/vision-freeze/run.py smoke                          # <=2 h job: every arm, 2 steps, 24 windows
+#   python side/vision-freeze/run.py ARM --train|--score [--smoke]  # what the jobs run
+import argparse
+import csv
+import importlib.util
+import json
+import math
+import os
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+SIDE = Path(__file__).resolve().parent
+ROOT = SIDE.parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "eval" / "models"))
+sys.modules.setdefault("datasets", None)  # same guard as train/train.py: the repo's datasets/ is not the HF library
+from helpers.pipeline import append_row, base_spec, config, db, read_csv  # noqa: E402
+from helpers.slurm import queued, script, submit  # noqa: E402
+
+MODEL, DATASET, QUESTION = "qwen3-vl:2b-instruct", "TUSZ", "any_seizure"
+ARMS = ("freeze", "lora", "base")
+SOURCE = ROOT / "side" / "multilabel-pilot" / "data"  # the pilot's balanced lines; this test keeps only any_seizure
+SEIZURES = ("absz", "cpsz", "fnsz", "gnsz", "mysz", "spsz", "tcsz", "tnsz")
+ANSWER = '{"present": true}'  # the scored row's answer: only the logits before its boolean are read
+VISION_LR = 1e-5  # full fine-tune of a ViT: ViTST 2e-5, TimeMaster 2e-6; NeuroCanvas does not report one
+EPOCHS, EVALS = 2, 5
+SCORE_BATCH = 4  # test windows per forward
+GPUS, RAM = "a100_3g.20gb:1", "40G"
+TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "smoke": "02:00:00"}
+SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
+PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
+BOOTSTRAP = 1000
+
+
+def load_path(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+main = load_path("train_main", ROOT / "train" / "train.py")
+
+
+def base_dir(smoke):
+    return SIDE / "smoke" if smoke else SIDE
+
+
+def out_dir(arm, smoke=False):
+    return base_dir(smoke) / "checkpoints" / arm
+
+
+def lines(split, smoke):
+    rows = [r for r in main.read_jsonl(SOURCE / f"perclass-{split}.jsonl") if r["question"] == QUESTION]
+    return rows[:SMOKE_LINES[split]] if smoke else rows
+
+
+def prompt_text():
+    texts = {r["instruction"] for r in lines("train", False)}
+    assert len(texts) == 1, texts
+    return texts.pop()
+
+
+def arm_config(cfg, arm, smoke):
+    settings = main.load_config(cfg, MODEL, DATASET)
+    settings.update({"experiment": f"vision-freeze-{arm}", "target": "labels", "output-dir": str(out_dir(arm, smoke))})
+    return settings
+
+
+def vision_module(model):
+    names = [n for n, _ in model.named_modules() if n.split(".")[-1] == "visual"]
+    assert len(names) == 1, names
+    return names[0], model.get_submodule(names[0])
+
+
+def init_frozen_language(settings):
+    # every weight frozen, then the vision tower (patch embedding, blocks, merger, deepstack mergers) unfrozen in fp32:
+    # a 1e-5 step is below bf16's resolution for most weights, so bf16 weights would barely move
+    import torch
+    from transformers import AutoModelForImageTextToText
+
+    base = settings["base"]
+    source = main.resolve_model(base["repo"])
+    processor = main.runner.load_processor(source, base, False)
+    model = AutoModelForImageTextToText.from_pretrained(source, dtype=torch.bfloat16, device_map="auto")
+    model.config.use_cache = False
+    model.config.keys_to_ignore_at_inference = main.EVAL_IGNORE
+    model.requires_grad_(False)
+
+    name, vision = vision_module(model)
+    vision.float()
+    vision.requires_grad_(True)
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"trainable: {trainable / 1e6:.0f}M of {total / 1e6:.0f}M parameters ({name}, fp32); language model frozen",
+          flush=True)
+    return model, processor
+
+
+def start_wandb(settings, data, resume, smoke):
+    # same project as the main runs, group vision-freeze; offline under the side dir
+    os.environ.setdefault("WANDB_MODE", "offline")
+    import wandb
+
+    out = Path(settings["output-dir"])
+    id_file = out / "wandb-id"
+    run_id = id_file.read_text().strip() if resume and id_file.exists() else None
+    logged = {k: settings[k] for k in ("model", "dataset", "experiment", "target", "base", "lora", "training")}
+    logged.update({"train_rows": len(data["train"]), "val_rows": len(data["validation"]), "vision_lr": VISION_LR})
+    logs = base_dir(smoke) / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+
+    run = wandb.init(entity=settings["wandb"]["entity"], project=settings["wandb"]["project"],
+                     name=main.wandb_name(settings), group="vision-freeze", tags=[DATASET, settings["experiment"]],
+                     dir=logs, id=run_id, resume="allow" if run_id else None, config=logged)
+
+    out.mkdir(parents=True, exist_ok=True)
+    id_file.write_text(run.id + "\n")
+    return run
+
+
+def train(settings, arm, smoke):
+    import torch
+
+    out = Path(settings["output-dir"])
+    if (out / "manifest.json").exists():  # a resubmitted job whose scoring was cut off: go straight to scoring
+        print(f"{out} is already trained (manifest.json exists)", flush=True)
+        return
+    resume = main.resume_point(out)
+    data = {"train": lines("train", smoke), "validation": lines("val", smoke)}
+    training = settings["training"]
+    steps = EPOCHS * math.ceil(len(data["train"]) / (training["batch-size"] * training["gradient-accumulation"]))
+    every = 1 if smoke else math.ceil(steps / EVALS)  # save-steps must equal eval-steps for the best-checkpoint reload
+    settings["training"] = {**training, "epochs": EPOCHS, "eval-steps": every, "save-steps": every}
+
+    print(f"{MODEL} on {DATASET} '{QUESTION}', arm {arm}: {len(data['train'])} train / {len(data['validation'])} val "
+          f"lines, {steps} steps, eval every {every} -> {out}", flush=True)
+    if resume:
+        print(f"resuming from {resume}", flush=True)
+
+    model, processor = init_frozen_language(settings) if arm == "freeze" else main.init_model(settings)
+    run = start_wandb(settings, data, resume, smoke)
+    trainer = main.init_trainer(settings, model, processor, data, ROOT / "datasets" / DATASET)
+    if arm == "freeze":
+        trainer.optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=VISION_LR,
+                                              weight_decay=training["weight-decay"])
+        trainer.args.learning_rate = VISION_LR
+    if smoke:
+        trainer.args.max_steps = 2
+
+    trainer.train(resume_from_checkpoint=resume)
+    print(f"peak GPU memory {torch.cuda.max_memory_reserved() / 1e9:.1f} GB", flush=True)
+    trainer.save_model()
+    processor.save_pretrained(out)
+
+    main.write_manifest(settings, data, run.id)
+    manifest = json.loads((out / "manifest.json").read_text())
+    manifest.update({"arm": arm, "question": QUESTION, "smoke": smoke,
+                     "vision_lr": VISION_LR if arm == "freeze" else None})
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    run.finish()
+
+
+def load_for_scoring(arm, smoke):
+    import torch
+    from transformers import AutoModelForImageTextToText
+
+    base = base_spec(config(), MODEL)
+    if arm == "lora":
+        model, processor, _ = main.runner.load({"base": MODEL, "checkpoint": str(out_dir(arm, smoke).relative_to(ROOT))})
+        return model, processor, base
+
+    source = main.resolve_model(base["repo"]) if arm == "base" else str(out_dir(arm, smoke))
+    if arm == "freeze" and not (out_dir(arm, smoke) / "manifest.json").exists():
+        sys.exit(f"{out_dir(arm, smoke)} has no manifest.json: training has not finished")
+    print(f"loading {source}", flush=True)
+    model = AutoModelForImageTextToText.from_pretrained(source, dtype=torch.bfloat16, device_map="auto")
+    model.eval()
+    return model, main.runner.load_processor(source, base, False), base
+
+
+def p_true(model, collator, ids, text, paths):
+    # the collator builds exactly the training input, answer included, so the boolean token's position is known
+    # and only the logits before it are kept
+    import torch
+
+    every = torch.cat([ids["true"], ids["false"]]).cpu()
+    batch = collator([{"instruction": text, "input": "", "output": ANSWER, "images": [p]} for p in paths])
+    targets = batch.pop("labels")
+    positions = [int(torch.isin(row, every).nonzero()[0]) for row in targets]
+    keep = targets.shape[1] - min(positions) + 1
+
+    with torch.inference_mode():
+        logits = model(**batch.to(model.device), logits_to_keep=keep).logits.float()
+
+    offset = targets.shape[1] - keep
+    probabilities = []
+    for row, position in enumerate(positions):
+        logp = logits[row, position - 1 - offset].log_softmax(-1)
+        probabilities.append(float(torch.sigmoid(logp[ids["true"]].logsumexp(0) - logp[ids["false"]].logsumexp(0))))
+    return probabilities
+
+
+def test_windows():
+    rows = db().execute("SELECT DISTINCT path FROM pipeline WHERE dataset = ? AND scope = 'full'", (DATASET,))
+    return sorted(p.split("/", 1)[1] for (p,) in rows)
+
+
+def truth():
+    return {r["path"]: any(r[c] == "true" for c in SEIZURES)
+            for r in read_csv(ROOT / "datasets" / DATASET / "labels.csv")}
+
+
+def score(arm, smoke):
+    import torch
+
+    results = base_dir(smoke) / "results"
+    results.mkdir(parents=True, exist_ok=True)
+    out = results / f"scores-{arm}.csv"
+    done = {r["path"] for r in read_csv(out)}
+    todo = [p for p in test_windows() if p not in done]
+    if smoke:
+        todo = todo[::max(len(todo) // SMOKE_WINDOWS, 1)][:SMOKE_WINDOWS]
+    print(f"arm {arm}: {len(todo)} windows to score, {len(done)} already done -> {out}", flush=True)
+
+    if todo:
+        model, processor, base = load_for_scoring(arm, smoke)
+        collator = main.DataCollator(processor, ROOT / "datasets" / DATASET, base)
+        words = main.boolean_token_ids(processor.tokenizer)
+        ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
+        text, labels = prompt_text(), truth()
+        started = time.time()
+
+        for start in range(0, len(todo), SCORE_BATCH):
+            chunk = todo[start:start + SCORE_BATCH]
+            for path, p in zip(chunk, p_true(model, collator, ids, text, chunk)):
+                append_row(out, ["path", "p_true", "seizure"], [path, f"{p:.6f}", str(labels[path]).lower()])
+            n = start + len(chunk)
+            if n % 200 < SCORE_BATCH or n == len(todo) or smoke and start == 0:
+                print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
+
+    if not smoke:
+        summarise(arm, out)
+
+
+def auroc(scores, positive):
+    # Mann-Whitney, ties at their average rank
+    scores, positive = np.asarray(scores, float), np.asarray(positive, bool)
+    if positive.all() or not positive.any():
+        return float("nan")
+    order = scores.argsort()
+    _, inverse, counts = np.unique(scores[order], return_inverse=True, return_counts=True)
+    ranks = np.empty(len(scores))
+    ranks[order] = (np.bincount(inverse, np.arange(1, len(scores) + 1)) / counts)[inverse]
+    n = positive.sum()
+    return float((ranks[positive].sum() - n * (n + 1) / 2) / (n * (len(scores) - n)))
+
+
+def patient_ci(scores, positive, patients):
+    # 95% interval over 1,000 resamples of patients, windows of a patient kept together
+    rng = np.random.default_rng(0)
+    groups = {}
+    for i, patient in enumerate(patients):
+        groups.setdefault(patient, []).append(i)
+    keys = list(groups)
+    values = []
+    for _ in range(BOOTSTRAP):
+        idx = np.concatenate([groups[k] for k in rng.choice(keys, len(keys))])
+        values.append(auroc(scores[idx], positive[idx]))
+    return np.nanpercentile(values, [2.5, 97.5])
+
+
+def summarise(arm, path):
+    rows = list({r["path"]: r for r in read_csv(path)}.values())
+    p = np.array([float(r["p_true"]) for r in rows])
+    y = np.array([r["seizure"] == "true" for r in rows])
+    names = [Path(r["path"]).stem for r in rows]
+    patients = [n.split("_")[0] for n in names]
+    recordings = ["_".join(n.split("_")[:2]) for n in names]
+    with_seizure = {rec for rec, positive in zip(recordings, y) if positive}
+    within = np.array([rec in with_seizure for rec in recordings])
+    probe_paths = {r["rel"] for r in read_csv(PROBE) if r["ds"] == DATASET and r["split"] == "test"}
+    in_probe = np.array([r["path"] in probe_paths for r in rows])
+    low, high = patient_ci(p, y, patients)
+    predicted = p >= 0.5
+
+    summary = {
+        "arm": arm, "windows": len(rows), "seizure_windows": int(y.sum()), "patients": len(set(patients)),
+        "auroc": round(auroc(p, y), 4), "auroc_ci_low": round(low, 4), "auroc_ci_high": round(high, 4),
+        "auroc_within_seizure_recordings": round(auroc(p[within], y[within]), 4),
+        "auroc_probe_windows": round(auroc(p[in_probe], y[in_probe]), 4) if in_probe.any() else "",
+        "probe_windows": int(in_probe.sum()),
+        "balanced_accuracy_at_0.5": round(float((predicted[y].mean() + (~predicted[~y]).mean()) / 2), 4),
+        "predicted_seizure_fraction": round(float(predicted.mean()), 4),
+    }
+    with (path.parent / f"summary-{arm}.csv").open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(summary))
+        writer.writeheader()
+        writer.writerow(summary)
+    print(json.dumps(summary), flush=True)
+
+
+def submit_job(cfg, arm, dry_run):
+    name = f"eeg-vlm-vision-freeze-{arm}"
+    if name in queued():
+        sys.exit(f"{name} is already queued or running")
+    if not (SOURCE / "perclass-train.jsonl").exists():
+        sys.exit("no training lines: python side/multilabel-pilot/build.py")
+
+    me = f"python {SIDE}/run.py"
+    steps = {"freeze": [f"{me} freeze --train", f"{me} freeze --score"],
+             "lora": [f"{me} lora --train", f"{me} lora --score"],
+             "base": [f"{me} base --score"],
+             "smoke": [f"{me} {a} --{m} --smoke" for a in ARMS for m in (("score",) if a == "base" else ("train", "score"))]}
+    logs = base_dir(arm == "smoke") / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    text = script(name, TIME[arm], RAM, cfg["train"]["cpus"], GPUS, " && ".join(steps[arm]))
+    text = text.replace(str(ROOT / "logs"), str(logs))
+    print(f"{'dry run' if dry_run else submit(text)} - {name}, {TIME[arm]}/{RAM}/gpu:{GPUS}, log in {logs}")
+    if dry_run:
+        print(text)
+
+
+def main_cli():
+    cfg = config()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("arm", choices=[*ARMS, "smoke"])
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--train", action="store_true", help="train this arm in this process")
+    mode.add_argument("--score", action="store_true", help="score this arm on the TUSZ test windows")
+    mode.add_argument("--dry-run", action="store_true", help="print the job, submit nothing")
+    parser.add_argument("--smoke", action="store_true", help="with --train/--score: 2 steps, 24 windows, under smoke/")
+    args = parser.parse_args()
+
+    if args.train or args.score:
+        if args.arm == "smoke" or args.train and args.arm == "base":
+            parser.error(f"--{'train' if args.train else 'score'} does not apply to {args.arm}")
+        os.environ.setdefault("WANDB_MODE", "offline")
+        if args.train:
+            train(arm_config(cfg, args.arm, args.smoke), args.arm, args.smoke)
+        else:
+            score(args.arm, args.smoke)
+        return
+
+    submit_job(cfg, args.arm, args.dry_run)
+
+
+if __name__ == "__main__":
+    main_cli()
