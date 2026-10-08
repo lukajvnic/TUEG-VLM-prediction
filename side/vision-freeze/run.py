@@ -7,9 +7,12 @@
 #   base:   no training, the same question asked of the untrained model
 # Every arm scores P(true) on all TUSZ test windows; results/summary-<arm>.csv has window AUROC with a patient
 # bootstrap CI, within seizure recordings, and on the probe's 1,500 test windows
-#   python side/vision-freeze/run.py freeze|lora|base [--dry-run]   # submit one arm's MIG job
-#   python side/vision-freeze/run.py smoke                          # <=2 h job: every arm, 2 steps, 24 windows
-#   python side/vision-freeze/run.py ARM --train|--score [--smoke]  # what the jobs run
+# Round 2 (2026-10-07), the freeze recipe for 4 epochs: on the shipped images (freeze-4ep), on rerender.py's second
+# rendering of the same windows (freeze-4ep-render: bipolar montage, one gain per recording, soft compression), and on
+# that rendering with every seizure window of the training recordings (freeze-4ep-render-more, 4,664 / 4,664 lines)
+#   python side/vision-freeze/run.py ARM [--dry-run]                 # submit one arm's MIG job
+#   python side/vision-freeze/run.py smoke                           # <=2 h job: SMOKE_ARMS, 2 steps, 24 windows
+#   python side/vision-freeze/run.py ARM --train|--score [--smoke]   # what the jobs run
 import argparse
 import csv
 import importlib.util
@@ -31,15 +34,30 @@ from helpers.pipeline import append_row, base_spec, config, db, read_csv  # noqa
 from helpers.slurm import queued, script, submit  # noqa: E402
 
 MODEL, DATASET, QUESTION = "qwen3-vl:2b-instruct", "TUSZ", "any_seizure"
-ARMS = ("freeze", "lora", "base")
+# recipe: what trains (None: nothing); images: which PNGs; lines: the pilot's balanced any_seizure lines, or
+# rerender.py's "more" set (train only; val is always the pilot's)
+ARMS = {
+    "freeze": {"recipe": "freeze", "epochs": 2, "images": "shipped", "lines": "pilot"},
+    "lora": {"recipe": "lora", "epochs": 2, "images": "shipped", "lines": "pilot"},
+    "base": {"recipe": None, "epochs": 0, "images": "shipped", "lines": "pilot"},
+    "freeze-4ep": {"recipe": "freeze", "epochs": 4, "images": "shipped", "lines": "pilot"},
+    "freeze-4ep-render": {"recipe": "freeze", "epochs": 4, "images": "render", "lines": "pilot"},
+    "freeze-4ep-render-more": {"recipe": "freeze", "epochs": 4, "images": "render", "lines": "more"},
+}
+SMOKE_ARMS = ("freeze-4ep-render-more",)  # round 1's smoke (4833152) covered freeze, lora and base
+IMAGE_ROOTS = {"shipped": ROOT / "datasets" / "TUSZ", "render": SIDE / "images"}
 SOURCE = ROOT / "side" / "multilabel-pilot" / "data"  # the pilot's balanced lines; this test keeps only any_seizure
+MORE = SIDE / "data" / "more-train.jsonl"  # rerender.py lists
 SEIZURES = ("absz", "cpsz", "fnsz", "gnsz", "mysz", "spsz", "tcsz", "tnsz")
 ANSWER = '{"present": true}'  # the scored row's answer: only the logits before its boolean are read
 VISION_LR = 1e-5  # full fine-tune of a ViT: ViTST 2e-5, TimeMaster 2e-6; NeuroCanvas does not report one
-EPOCHS, EVALS = 2, 5
+EVALS = 5
 SCORE_BATCH = 4  # test windows per forward
 GPUS, RAM = "a100_3g.20gb:1", "40G"
-TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "smoke": "02:00:00"}
+# measured in round 1: freeze 13.1 s/step, scoring 0.60 s/window (~1.4 h for 8,460); 4 epochs of the pilot lines =
+# 1,080 steps (~4 h), of the "more" lines = 4,664 steps (~17 h); 5 checkpoint saves of ~8 GB on top
+TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4ep": "10:00:00",
+        "freeze-4ep-render": "10:00:00", "freeze-4ep-render-more": "1-06:00:00", "smoke": "02:00:00"}
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -63,9 +81,22 @@ def out_dir(arm, smoke=False):
     return base_dir(smoke) / "checkpoints" / arm
 
 
-def lines(split, smoke):
-    rows = [r for r in main.read_jsonl(SOURCE / f"perclass-{split}.jsonl") if r["question"] == QUESTION]
+def lines(split, smoke, arm="freeze"):
+    if ARMS[arm]["lines"] == "more" and split == "train":
+        rows = main.read_jsonl(MORE)
+    else:
+        rows = [r for r in main.read_jsonl(SOURCE / f"perclass-{split}.jsonl") if r["question"] == QUESTION]
     return rows[:SMOKE_LINES[split]] if smoke else rows
+
+
+def image_root(arm):
+    return IMAGE_ROOTS[ARMS[arm]["images"]]
+
+
+def missing_images(arm):
+    # every training, val and test image this arm reads, checked before the job is submitted
+    paths = {r["images"][0] for split in ("train", "val") for r in lines(split, False, arm)} | set(test_windows())
+    return sorted(p for p in paths if not (image_root(arm) / p).exists())
 
 
 def prompt_text():
@@ -140,21 +171,23 @@ def train(settings, arm, smoke):
         print(f"{out} is already trained (manifest.json exists)", flush=True)
         return
     resume = main.resume_point(out)
-    data = {"train": lines("train", smoke), "validation": lines("val", smoke)}
-    training = settings["training"]
-    steps = EPOCHS * math.ceil(len(data["train"]) / (training["batch-size"] * training["gradient-accumulation"]))
+    data = {"train": lines("train", smoke, arm), "validation": lines("val", smoke, arm)}
+    training, epochs = settings["training"], ARMS[arm]["epochs"]
+    steps = epochs * math.ceil(len(data["train"]) / (training["batch-size"] * training["gradient-accumulation"]))
     every = 1 if smoke else math.ceil(steps / EVALS)  # save-steps must equal eval-steps for the best-checkpoint reload
-    settings["training"] = {**training, "epochs": EPOCHS, "eval-steps": every, "save-steps": every}
+    settings["training"] = {**training, "epochs": epochs, "eval-steps": every, "save-steps": every}
 
-    print(f"{MODEL} on {DATASET} '{QUESTION}', arm {arm}: {len(data['train'])} train / {len(data['validation'])} val "
-          f"lines, {steps} steps, eval every {every} -> {out}", flush=True)
+    print(f"{MODEL} on {DATASET} '{QUESTION}', arm {arm} {ARMS[arm]}: {len(data['train'])} train / "
+          f"{len(data['validation'])} val lines, {steps} steps, eval every {every}, images {image_root(arm)} -> {out}",
+          flush=True)
     if resume:
         print(f"resuming from {resume}", flush=True)
 
-    model, processor = init_frozen_language(settings) if arm == "freeze" else main.init_model(settings)
+    freeze = ARMS[arm]["recipe"] == "freeze"
+    model, processor = init_frozen_language(settings) if freeze else main.init_model(settings)
     run = start_wandb(settings, data, resume, smoke)
-    trainer = main.init_trainer(settings, model, processor, data, ROOT / "datasets" / DATASET)
-    if arm == "freeze":
+    trainer = main.init_trainer(settings, model, processor, data, image_root(arm))
+    if freeze:
         trainer.optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=VISION_LR,
                                               weight_decay=training["weight-decay"])
         trainer.args.learning_rate = VISION_LR
@@ -168,8 +201,8 @@ def train(settings, arm, smoke):
 
     main.write_manifest(settings, data, run.id)
     manifest = json.loads((out / "manifest.json").read_text())
-    manifest.update({"arm": arm, "question": QUESTION, "smoke": smoke,
-                     "vision_lr": VISION_LR if arm == "freeze" else None})
+    manifest.update({"arm": arm, **ARMS[arm], "image_root": str(image_root(arm).relative_to(ROOT)),
+                     "question": QUESTION, "smoke": smoke, "vision_lr": VISION_LR if freeze else None})
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     run.finish()
 
@@ -179,12 +212,12 @@ def load_for_scoring(arm, smoke):
     from transformers import AutoModelForImageTextToText
 
     base = base_spec(config(), MODEL)
-    if arm == "lora":
+    if ARMS[arm]["recipe"] == "lora":
         model, processor, _ = main.runner.load({"base": MODEL, "checkpoint": str(out_dir(arm, smoke).relative_to(ROOT))})
         return model, processor, base
 
-    source = main.resolve_model(base["repo"]) if arm == "base" else str(out_dir(arm, smoke))
-    if arm == "freeze" and not (out_dir(arm, smoke) / "manifest.json").exists():
+    source = main.resolve_model(base["repo"]) if ARMS[arm]["recipe"] is None else str(out_dir(arm, smoke))
+    if ARMS[arm]["recipe"] and not (out_dir(arm, smoke) / "manifest.json").exists():
         sys.exit(f"{out_dir(arm, smoke)} has no manifest.json: training has not finished")
     print(f"loading {source}", flush=True)
     model = AutoModelForImageTextToText.from_pretrained(source, dtype=torch.bfloat16, device_map="auto")
@@ -238,7 +271,7 @@ def score(arm, smoke):
 
     if todo:
         model, processor, base = load_for_scoring(arm, smoke)
-        collator = main.DataCollator(processor, ROOT / "datasets" / DATASET, base)
+        collator = main.DataCollator(processor, image_root(arm), base)
         words = main.boolean_token_ids(processor.tokenizer)
         ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
         text, labels = prompt_text(), truth()
@@ -319,12 +352,15 @@ def submit_job(cfg, arm, dry_run):
         sys.exit(f"{name} is already queued or running")
     if not (SOURCE / "perclass-train.jsonl").exists():
         sys.exit("no training lines: python side/multilabel-pilot/build.py")
+    for a in SMOKE_ARMS if arm == "smoke" else (arm,):
+        missing = missing_images(a)
+        if missing:
+            sys.exit(f"{a}: {len(missing)} images missing under {image_root(a)}, e.g. {missing[:3]}")
 
     me = f"python {SIDE}/run.py"
-    steps = {"freeze": [f"{me} freeze --train", f"{me} freeze --score"],
-             "lora": [f"{me} lora --train", f"{me} lora --score"],
-             "base": [f"{me} base --score"],
-             "smoke": [f"{me} {a} --{m} --smoke" for a in ARMS for m in (("score",) if a == "base" else ("train", "score"))]}
+    modes = lambda a: ("score",) if ARMS[a]["recipe"] is None else ("train", "score")
+    steps = {a: [f"{me} {a} --{m}" for m in modes(a)] for a in ARMS}
+    steps["smoke"] = [f"{me} {a} --{m} --smoke" for a in SMOKE_ARMS for m in modes(a)]
     logs = base_dir(arm == "smoke") / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     text = script(name, TIME[arm], RAM, cfg["train"]["cpus"], GPUS, " && ".join(steps[arm]))
@@ -346,7 +382,7 @@ def main_cli():
     args = parser.parse_args()
 
     if args.train or args.score:
-        if args.arm == "smoke" or args.train and args.arm == "base":
+        if args.arm == "smoke" or args.train and ARMS[args.arm]["recipe"] is None:
             parser.error(f"--{'train' if args.train else 'score'} does not apply to {args.arm}")
         os.environ.setdefault("WANDB_MODE", "offline")
         if args.train:

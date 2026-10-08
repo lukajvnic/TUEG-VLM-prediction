@@ -28,3 +28,28 @@ python side/vision-freeze/run.py base
 ```
 
 A resubmitted job skips training once `checkpoints/<arm>/manifest.json` exists and resumes scoring.
+
+## Round 2 (2026-10-07): longer training and a second rendering
+
+Round 1's `freeze` reached window AUROC 0.690 (0.712 on the probe's windows, the frozen-feature probe's level), with
+val accuracy still rising at the last eval. Round 2, all with the `freeze` recipe and 4 epochs:
+
+| arm | images | training lines |
+|---|---|---|
+| `freeze-4ep` | shipped PNGs | the pilot's 1,078 / 1,078 |
+| `freeze-4ep-render` | `rerender.py`'s images of the same windows | the pilot's 1,078 / 1,078 |
+| `freeze-4ep-render-more` | `rerender.py`'s images | every seizure window of the training recordings, 4,664 / 4,664 |
+
+`rerender.py` draws the same windows again, into `images/` (gitignored, ~3.9 GB, never mixed with the shipped
+PNGs): the 18-row bipolar longitudinal montage (EEG electrodes only), one gain per recording shared by every row,
+and soft compression (H*tanh(x/H)) instead of clipping. `rerender.py lists` writes `data/windows.csv` and
+`data/more-train.jsonl`, and stops unless every shipped train label reproduces from the annotations (0 mismatches,
+2026-10-07). Extra windows come only from recordings already in the fine-tune's train split. The images are
+rendered locally (the EDFs are not on the cluster) and copied with rsync; `run.py` refuses to submit an arm if any
+image it reads is missing.
+
+```bash
+python side/vision-freeze/rerender.py lists && python side/vision-freeze/rerender.py render 14   # local
+rsync -a side/vision-freeze/images/ narval:/scratch/luka/TUEG-VLM-prediction/side/vision-freeze/images/
+python side/vision-freeze/run.py freeze-4ep          # likewise freeze-4ep-render, freeze-4ep-render-more
+```
