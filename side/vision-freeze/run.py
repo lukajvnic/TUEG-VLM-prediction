@@ -59,6 +59,7 @@ SMOKE_ARMS = ("freeze-4ep-render-rationale-w10",)
 RATIONALES = ROOT / "datasets" / "TUSZ"  # sft_{train,val}.jsonl: gemma3:12b's label-conditioned rationales, same windows
 # the rationales name the shipped images' referential channels ("EEG F8-REF", "Fp1-LE"); the rerender shows bipolar
 # pairs ("F8-T4"), so channel names are cut to the electrode, which the bipolar row labels contain
+RATIONALE_CHARS = 1200
 CHANNEL = re.compile(r"\b(?:EEG\s+)?([A-Za-z0-9]+)-(?:REF|LE)\b")
 IMAGE_ROOTS = {"shipped": ROOT / "datasets" / "TUSZ", "render": SIDE / "images"}
 SOURCE = ROOT / "side" / "multilabel-pilot" / "data"  # the pilot's balanced lines; this test keeps only any_seizure
@@ -334,9 +335,13 @@ def p_true(model, collator, ids, text, paths):
 
 
 def rationale_structure():
+    # maxLength makes the enforcer close the rationale and reach the boolean: the round-3 smoke model (2 steps)
+    # rambled to the 512-token cap at 24 s/window, which would not fit 1,500 windows in the walltime. The teacher's
+    # rationales are at most 1,112 characters (median 628)
     from pydantic import Field, create_model
 
-    return create_model("SeizureRationale", text_rationale=(str, Field(description="Text rationale for the prediction.")),
+    return create_model("SeizureRationale",
+                        text_rationale=(str, Field(max_length=RATIONALE_CHARS, description="Text rationale for the prediction.")),
                         present=(bool, Field(description="Whether a seizure of any type is present.")))
 
 
