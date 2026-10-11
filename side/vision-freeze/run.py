@@ -15,6 +15,12 @@
 # Only the pilot's windows have rationales, so these compare with freeze-4ep-render. They keep the final checkpoint
 # (the val metric would read the label off the teacher's label-stating rationale) and are scored by generating the
 # rationale, then reading P(true) at the boolean, on the probe's 1,500 test windows (generation is ~10x slower)
+# Round 4 (2026-10-11), a sweep over how the rationale enters the target, all freeze-4ep-render otherwise:
+#   order: answer-first ({"present", "text_rationale"}), rationale-first, or multitask (the plain answer question plus
+#   a separate "explain" question per window); rationale: as written, or with the label-naming sentences and label
+#   codes stripped (strip_label); boolean weight 1 or 10; and two arms on the "more" windows (rationale where the
+#   teacher wrote one, the answer alone elsewhere). Answer-first and multitask score teacher-forced on all 8,460
+#   windows like the label-only arms and keep the best checkpoint; rationale-first generates (probe windows)
 #   python side/vision-freeze/run.py ARM [--dry-run]                 # submit one arm's MIG job
 #   python side/vision-freeze/run.py smoke                           # <=2 h job: SMOKE_ARMS, 2 steps, 24 windows
 #   python side/vision-freeze/run.py ARM --train|--score [--smoke]   # what the jobs run
@@ -54,8 +60,20 @@ ARMS = {
     "freeze-4ep-render-rationale-w10": {"recipe": "freeze", "epochs": 4, "images": "render", "lines": "pilot",
                                         "target": "rationale", "weight": 10},
 }
-# round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines
-SMOKE_ARMS = ("freeze-4ep-render-rationale-w10",)
+R4 = {"recipe": "freeze", "epochs": 4, "images": "render", "target": "rationale"}
+for _name, _lines, _order, _strip, _weight in (
+        ("r4-af-orig", "pilot", "answer-first", False, 1), ("r4-af-orig-w10", "pilot", "answer-first", False, 10),
+        ("r4-af-strip", "pilot", "answer-first", True, 1), ("r4-af-strip-w10", "pilot", "answer-first", True, 10),
+        ("r4-rf-strip", "pilot", "rationale-first", True, 1), ("r4-rf-strip-w10", "pilot", "rationale-first", True, 10),
+        ("r4-mt-strip", "pilot", "multitask", True, 1), ("r4-mt-strip-w10", "pilot", "multitask", True, 10),
+        ("r4-af-strip-more", "more", "answer-first", True, 1), ("r4-mt-strip-more", "more", "multitask", True, 1)):
+    ARMS[_name] = {**R4, "lines": _lines, "order": _order, "strip": _strip, "weight": _weight}
+# round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines;
+# round 3's (5155519) rationale-first, the 10x weight and generation scoring
+SMOKE_ARMS = ("r4-af-strip-w10", "r4-mt-strip-w10")
+LABEL_CODES = r"absz|bckg|cpsz|fnsz|gnsz|mysz|spsz|tcsz|tnsz"
+SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+AF_ANSWER = '{"present": true, "text_rationale": ""}'  # answer-first scoring: the boolean comes before any text
 RATIONALES = ROOT / "datasets" / "TUSZ"  # sft_{train,val}.jsonl: gemma3:12b's label-conditioned rationales, same windows
 # the rationales name the shipped images' referential channels ("EEG F8-REF", "Fp1-LE"); the rerender shows bipolar
 # pairs ("F8-T4"), so channel names are cut to the electrode, which the bipolar row labels contain
@@ -74,7 +92,12 @@ GPUS, RAM = "a100_3g.20gb:1", "40G"
 # 1,080 steps (~4 h), of the "more" lines = 4,664 steps (~17 h); 5 checkpoint saves of ~8 GB on top
 TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4ep": "10:00:00",
         "freeze-4ep-render": "10:00:00", "freeze-4ep-render-more": "1-06:00:00",
-        "freeze-4ep-render-rationale": "14:00:00", "freeze-4ep-render-rationale-w10": "14:00:00", "smoke": "02:00:00"}
+        "freeze-4ep-render-rationale": "14:00:00", "freeze-4ep-render-rationale-w10": "14:00:00", "smoke": "02:00:00",
+        # round 4, from round 2-3's 13-14 s/step: answer-first 1,080 steps + teacher-forced scoring; rationale-first
+        # 1,080 steps + ~5 h of generation; multitask 2,156 steps (two lines per window); "more" 4,664 / 5,966 steps
+        "r4-af-orig": "10:00:00", "r4-af-orig-w10": "10:00:00", "r4-af-strip": "10:00:00", "r4-af-strip-w10": "10:00:00",
+        "r4-rf-strip": "14:00:00", "r4-rf-strip-w10": "14:00:00", "r4-mt-strip": "16:00:00", "r4-mt-strip-w10": "16:00:00",
+        "r4-af-strip-more": "1-04:00:00", "r4-mt-strip-more": "1-08:00:00"}
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -104,8 +127,30 @@ def lines(split, smoke, arm="freeze"):
     else:
         rows = [r for r in main.read_jsonl(SOURCE / f"perclass-{split}.jsonl") if r["question"] == QUESTION]
     if ARMS[arm].get("target") == "rationale":
-        rows = with_rationale(rows, split)
+        rows = with_rationale(rows, split, ARMS[arm])
     return rows[:SMOKE_LINES[split]] if smoke else rows
+
+
+def order_of(arm):
+    return ARMS[arm].get("order", "rationale-first") if ARMS[arm].get("target") == "rationale" else None
+
+
+def strip_label(text):
+    # the teacher wrote each rationale knowing the label and usually names it ('justifying the "fnsz" seizure
+    # labeling'); drop the sentences about the labeling or introducing the report, then any label code left inline
+    keep = [s for s in SENTENCE.split(text) if s.strip() and not re.search(r"label|here'?s an? |^\**report", s.strip(), re.I)]
+    out = " ".join(s.strip() for s in keep)
+    out = re.sub(rf'\s*\(\s*\\?"?({LABEL_CODES})\\?"?\s*\)', "", out, flags=re.I)
+    out = re.sub(rf'\\?"({LABEL_CODES})\\?"\s*', "", out, flags=re.I)
+    out = re.sub(rf"\b({LABEL_CODES})\b", "", out, flags=re.I)
+    return re.sub(r"\s{2,}", " ", out).strip()
+
+
+def explain_prompt():
+    p = config()["prompts"]
+    return (p["intro"] + "Based only on these waveforms, describe the specific evidence about whether this window shows "
+            "a seizure in the text_rationale field: which channel(s), where along the time axis, and what the curve "
+            "looks like there (shape, frequency, amplitude, symmetry). " + p["no-meta"])
 
 
 def rationale_prompt():
@@ -116,14 +161,33 @@ def rationale_prompt():
     return base[:-len(tail)] + " " + p["eval"]["binary-rationale"] + p["no-meta"] + tail
 
 
-def with_rationale(rows, split):
-    # the same windows and answers, with each window's teacher rationale first
+def with_rationale(rows, split, spec):
+    # the same windows and answers with each window's teacher rationale, placed by the arm's order. A window without
+    # a teacher rationale (the "more" extras) keeps the plain answer question
+    order = spec.get("order", "rationale-first")
     source = {r["images"][0]: json.loads(r["output"])["text_rationale"]
               for r in main.read_jsonl(RATIONALES / f"sft_{split}.jsonl")}
     text = rationale_prompt()
-    return [{**r, "instruction": text,
-             "output": json.dumps({"text_rationale": CHANNEL.sub(r"\1", source[r["images"][0]]),
-                                   "present": json.loads(r["output"])["present"]})} for r in rows]
+
+    def explain(path):
+        rationale = strip_label(source[path]) if spec.get("strip") else source[path]
+        return CHANNEL.sub(r"\1", rationale)
+
+    out = []
+    for r in rows:
+        path, present = r["images"][0], json.loads(r["output"])["present"]
+        if order == "multitask":
+            out.append(r)
+            if split == "train" and path in source:  # val keeps the answer question only, so its metric is clean
+                out.append({**r, "question": "explain", "instruction": explain_prompt(),
+                            "output": json.dumps({"text_rationale": explain(path)})})
+        elif path not in source:
+            out.append(r)
+        else:
+            fields = {"present": present, "text_rationale": explain(path)} if order == "answer-first" else \
+                     {"text_rationale": explain(path), "present": present}
+            out.append({**r, "instruction": text, "output": json.dumps(fields)})
+    return out
 
 
 def image_root(arm):
@@ -228,11 +292,11 @@ def train(settings, arm, smoke):
         trainer.optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=VISION_LR,
                                               weight_decay=training["weight-decay"])
         trainer.args.learning_rate = VISION_LR
-    if ARMS[arm].get("target") == "rationale":
+    if order_of(arm) == "rationale-first":
         # the teacher-forced val metric reads the boolean after the gold rationale, which names the label
         trainer.args.load_best_model_at_end = False
     if ARMS[arm].get("weight", 1) > 1:
-        trainer = weighted(trainer, processor, data, ARMS[arm]["weight"])
+        trainer = weighted(trainer, processor, data, ARMS[arm]["weight"], first=order_of(arm) != "rationale-first")
     if smoke:
         trainer.args.max_steps = 2
 
@@ -249,9 +313,10 @@ def train(settings, arm, smoke):
     run.finish()
 
 
-def weighted(base, processor, data, weight):
-    # side/rationale-w10's recipe: weight `weight` on the answer's boolean token (the last true/false target token,
-    # since the rationale comes first), 1 on every other target token, loss = sum(w * CE) / target tokens
+def weighted(base, processor, data, weight, first=False):
+    # side/rationale-w10's recipe: weight `weight` on the answer's boolean token, 1 on every other target token,
+    # loss = sum(w * CE) / target tokens. The boolean is the first true/false target token when the answer comes
+    # first, the last when the rationale does; a multitask "explain" line has none and keeps weight 1
     import torch
     import torch.nn.functional as F
     from transformers import Trainer
@@ -267,8 +332,10 @@ def weighted(base, processor, data, weight):
         for row in range(labels.shape[0]):
             positions = torch.isin(labels[row], ids).nonzero().flatten()
             if not len(positions):
-                raise ValueError("no true/false token in a target")
-            weights[row, positions[-1]] = weight
+                if not first:
+                    raise ValueError("no true/false token in a target")
+                continue
+            weights[row, positions[0] if first else positions[-1]] = weight
         batch["label_weights"] = weights
         return batch
 
@@ -312,13 +379,13 @@ def load_for_scoring(arm, smoke):
     return model, main.runner.load_processor(source, base, False), base
 
 
-def p_true(model, collator, ids, text, paths):
+def p_true(model, collator, ids, text, paths, answer=ANSWER):
     # the collator builds exactly the training input, answer included, so the boolean token's position is known
     # and only the logits before it are kept
     import torch
 
     every = torch.cat([ids["true"], ids["false"]]).cpu()
-    batch = collator([{"instruction": text, "input": "", "output": ANSWER, "images": [p]} for p in paths])
+    batch = collator([{"instruction": text, "input": "", "output": answer, "images": [p]} for p in paths])
     targets = batch.pop("labels")
     positions = [int(torch.isin(row, every).nonzero()[0]) for row in targets]
     keep = targets.shape[1] - min(positions) + 1
@@ -390,7 +457,7 @@ def score(arm, smoke):
     results.mkdir(parents=True, exist_ok=True)
     out = results / f"scores-{arm}.csv"
     done = {r["path"] for r in read_csv(out)}
-    rationale = ARMS[arm].get("target") == "rationale"
+    rationale = order_of(arm) == "rationale-first"  # generation scoring; answer-first and multitask are teacher-forced
     todo = [p for p in (probe_windows() if rationale else test_windows()) if p not in done]
     if smoke:
         todo = todo[::max(len(todo) // SMOKE_WINDOWS, 1)][:SMOKE_WINDOWS]
@@ -401,7 +468,8 @@ def score(arm, smoke):
         collator = main.DataCollator(processor, image_root(arm), base)
         words = main.boolean_token_ids(processor.tokenizer)
         ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
-        text, labels = prompt_text(), truth()
+        text, labels = (rationale_prompt() if order_of(arm) == "answer-first" else prompt_text()), truth()
+        answer = AF_ANSWER if order_of(arm) == "answer-first" else ANSWER
         started = time.time()
 
         if rationale:
@@ -417,7 +485,7 @@ def score(arm, smoke):
 
         for start in range(0, len(todo), SCORE_BATCH):
             chunk = todo[start:start + SCORE_BATCH]
-            for path, p in zip(chunk, p_true(model, collator, ids, text, chunk)):
+            for path, p in zip(chunk, p_true(model, collator, ids, text, chunk, answer)):
                 append_row(out, ["path", "p_true", "seizure"], [path, f"{p:.6f}", str(labels[path]).lower()])
             n = start + len(chunk)
             if n % 200 < SCORE_BATCH or n == len(todo) or smoke and start == 0:
