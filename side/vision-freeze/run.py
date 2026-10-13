@@ -66,7 +66,10 @@ for _name, _lines, _order, _strip, _weight in (
         ("r4-af-strip", "pilot", "answer-first", True, 1), ("r4-af-strip-w10", "pilot", "answer-first", True, 10),
         ("r4-rf-strip", "pilot", "rationale-first", True, 1), ("r4-rf-strip-w10", "pilot", "rationale-first", True, 10),
         ("r4-mt-strip", "pilot", "multitask", True, 1), ("r4-mt-strip-w10", "pilot", "multitask", True, 10),
-        ("r4-af-strip-more", "more", "answer-first", True, 1), ("r4-mt-strip-more", "more", "multitask", True, 1)):
+        ("r4-af-strip-more", "more", "answer-first", True, 1), ("r4-mt-strip-more", "more", "multitask", True, 1),
+        # added 2026-10-12 after r4-af-strip-w10 matched the answer-only arm (-0.016 [-0.043, +0.010]) and beat both
+        # r4-af-strip and r4-af-orig-w10 by ~0.10: the winning pilot recipe on the "more" windows
+        ("r4-af-strip-w10-more", "more", "answer-first", True, 10)):
     ARMS[_name] = {**R4, "lines": _lines, "order": _order, "strip": _strip, "weight": _weight}
 # round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines;
 # round 3's (5155519) rationale-first, the 10x weight and generation scoring
@@ -97,7 +100,7 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         # 1,080 steps + ~5 h of generation; multitask 2,156 steps (two lines per window); "more" 4,664 / 5,966 steps
         "r4-af-orig": "10:00:00", "r4-af-orig-w10": "10:00:00", "r4-af-strip": "10:00:00", "r4-af-strip-w10": "10:00:00",
         "r4-rf-strip": "14:00:00", "r4-rf-strip-w10": "14:00:00", "r4-mt-strip": "16:00:00", "r4-mt-strip-w10": "16:00:00",
-        "r4-af-strip-more": "1-04:00:00", "r4-mt-strip-more": "1-08:00:00"}
+        "r4-af-strip-more": "1-04:00:00", "r4-mt-strip-more": "1-08:00:00", "r4-af-strip-w10-more": "1-04:00:00"}
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
