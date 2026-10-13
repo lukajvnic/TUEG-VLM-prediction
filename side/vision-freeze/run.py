@@ -21,6 +21,12 @@
 #   codes stripped (strip_label); boolean weight 1 or 10; and two arms on the "more" windows (rationale where the
 #   teacher wrote one, the answer alone elsewhere). Answer-first and multitask score teacher-forced on all 8,460
 #   windows like the label-only arms and keep the best checkpoint; rationale-first generates (probe windows)
+# Round 5 (2026-10-13), rationale learning: the "hybrid" recipe trains the vision tower fully (fp32, lr 1e-5, saved
+# whole through PEFT's modules_to_save) and LoRA on the language model (the labels round's r16 at lr 2e-4), so the
+# text can learn the teacher's rationales while the answer stays image-driven. --rationale-eval measures rationale
+# learning on 300 test windows (150 seizure): the mean NLL of the label-stripped teacher reference rationale, and
+# the model's own generated rationale (saved, for reading and for the judge)
+#   python side/vision-freeze/run.py rationale-eval ARM [ARM ...]    # one job evaluating finished arms
 #   python side/vision-freeze/run.py ARM [--dry-run]                 # submit one arm's MIG job
 #   python side/vision-freeze/run.py smoke                           # <=2 h job: SMOKE_ARMS, 2 steps, 24 windows
 #   python side/vision-freeze/run.py ARM --train|--score [--smoke]   # what the jobs run
@@ -30,6 +36,7 @@ import importlib.util
 import json
 import math
 import os
+import random
 import re
 import sys
 import time
@@ -71,9 +78,18 @@ for _name, _lines, _order, _strip, _weight in (
         # r4-af-strip and r4-af-orig-w10 by ~0.10: the winning pilot recipe on the "more" windows
         ("r4-af-strip-w10-more", "more", "answer-first", True, 10)):
     ARMS[_name] = {**R4, "lines": _lines, "order": _order, "strip": _strip, "weight": _weight}
+# round 5: the hybrid recipe on round 4's best formats; each compares with its frozen-LM twin
+for _name, _lines, _order, _weight in (
+        ("r5-hy-af-strip-w10", "pilot", "answer-first", 10), ("r5-hy-mt-strip", "pilot", "multitask", 1),
+        ("r5-hy-af-strip-more", "more", "answer-first", 1), ("r5-hy-mt-strip-more", "more", "multitask", 1)):
+    ARMS[_name] = {**R4, "recipe": "hybrid", "lines": _lines, "order": _order, "strip": True, "weight": _weight}
+# the untrained model on the rerendered images: the rationale baseline, and a zero-shot reference on those images
+ARMS["base-render"] = {"recipe": None, "epochs": 0, "images": "render", "lines": "pilot"}
+RATIONALE_EVAL_WINDOWS = 300  # stratified 150 seizure / 150 not, from the probe's test windows, seed 0
 # round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines;
-# round 3's (5155519) rationale-first, the 10x weight and generation scoring
-SMOKE_ARMS = ("r4-af-strip-w10", "r4-mt-strip-w10")
+# round 3's (5155519) rationale-first, the 10x weight and generation scoring; round 4's (5399669) answer-first and
+# multitask
+SMOKE_ARMS = ("r5-hy-af-strip-w10", "r5-hy-mt-strip")
 LABEL_CODES = r"absz|bckg|cpsz|fnsz|gnsz|mysz|spsz|tcsz|tnsz"
 SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
 AF_ANSWER = '{"present": true, "text_rationale": ""}'  # answer-first scoring: the boolean comes before any text
@@ -100,7 +116,10 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         # 1,080 steps + ~5 h of generation; multitask 2,156 steps (two lines per window); "more" 4,664 / 5,966 steps
         "r4-af-orig": "10:00:00", "r4-af-orig-w10": "10:00:00", "r4-af-strip": "10:00:00", "r4-af-strip-w10": "10:00:00",
         "r4-rf-strip": "14:00:00", "r4-rf-strip-w10": "14:00:00", "r4-mt-strip": "16:00:00", "r4-mt-strip-w10": "16:00:00",
-        "r4-af-strip-more": "1-04:00:00", "r4-mt-strip-more": "1-08:00:00", "r4-af-strip-w10-more": "1-04:00:00"}
+        "r4-af-strip-more": "1-04:00:00", "r4-mt-strip-more": "1-08:00:00", "r4-af-strip-w10-more": "1-04:00:00",
+        # round 5: train (~14 s/step with LoRA on top), score, then the rationale evaluation (~1.2 h)
+        "r5-hy-af-strip-w10": "12:00:00", "r5-hy-mt-strip": "18:00:00", "r5-hy-af-strip-more": "1-08:00:00",
+        "r5-hy-mt-strip-more": "1-12:00:00", "rationale-eval": "10:00:00", "base-render": "03:00:00"}
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -245,6 +264,50 @@ def init_frozen_language(settings):
     return model, processor
 
 
+def hybridize(model, lora):
+    # LoRA on every language Linear (the labels round's targets minus the vision ones), and the whole vision tower
+    # as a PEFT modules_to_save copy: trained fully, saved in the adapter file, merged back at scoring. The trained
+    # copy is fp32 (1e-5 steps are below bf16 resolution); the frozen original stays bf16
+    from peft import LoraConfig, get_peft_model
+
+    language, _ = main.runner.lora_targets(model)
+    name, _ = vision_module(model)
+    model = get_peft_model(model, LoraConfig(r=lora["rank"], lora_alpha=lora["alpha"], lora_dropout=lora["dropout"],
+                                             bias="none", task_type="CAUSAL_LM", target_modules=language,
+                                             modules_to_save=[name.split(".")[-1]]))
+    copies = [m for n, m in model.named_modules() if n.endswith("modules_to_save.default")]
+    assert len(copies) == 1, len(copies)
+    copies[0].float()
+    return model
+
+
+def init_hybrid(settings):
+    import torch
+    from transformers import AutoModelForImageTextToText
+
+    base = settings["base"]
+    source = main.resolve_model(base["repo"])
+    processor = main.runner.load_processor(source, base, False)
+    model = AutoModelForImageTextToText.from_pretrained(source, dtype=torch.bfloat16, device_map="auto")
+    model.config.use_cache = False
+    model.config.keys_to_ignore_at_inference = main.EVAL_IGNORE
+    model.enable_input_require_grads()
+    model = hybridize(model, settings["lora"])
+    vision = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" in n)
+    lora = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" not in n)
+    print(f"trainable: vision tower {vision / 1e6:.0f}M (fp32, lr {VISION_LR}), language LoRA {lora / 1e6:.0f}M", flush=True)
+    return model, processor
+
+
+def hybrid_optimizer(model, training):
+    import torch
+
+    vision = [p for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" in n]
+    lora = [p for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" not in n]
+    return torch.optim.AdamW([{"params": vision, "lr": VISION_LR}, {"params": lora, "lr": training["learning-rate"]}],
+                             weight_decay=training["weight-decay"])
+
+
 def start_wandb(settings, data, resume, smoke):
     # same project as the main runs, group vision-freeze; offline under the side dir
     os.environ.setdefault("WANDB_MODE", "offline")
@@ -287,14 +350,20 @@ def train(settings, arm, smoke):
     if resume:
         print(f"resuming from {resume}", flush=True)
 
-    freeze = ARMS[arm]["recipe"] == "freeze"
-    model, processor = init_frozen_language(settings) if freeze else main.init_model(settings)
+    recipe = ARMS[arm]["recipe"]
+    freeze = recipe == "freeze"
+    if recipe == "hybrid":
+        model, processor = init_hybrid(settings)
+    else:
+        model, processor = init_frozen_language(settings) if freeze else main.init_model(settings)
     run = start_wandb(settings, data, resume, smoke)
     trainer = main.init_trainer(settings, model, processor, data, image_root(arm))
     if freeze:
         trainer.optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=VISION_LR,
                                               weight_decay=training["weight-decay"])
         trainer.args.learning_rate = VISION_LR
+    if recipe == "hybrid":
+        trainer.optimizer = hybrid_optimizer(model, training)
     if order_of(arm) == "rationale-first":
         # the teacher-forced val metric reads the boolean after the gold rationale, which names the label
         trainer.args.load_best_model_at_end = False
@@ -311,7 +380,7 @@ def train(settings, arm, smoke):
     main.write_manifest(settings, data, run.id)
     manifest = json.loads((out / "manifest.json").read_text())
     manifest.update({"arm": arm, **ARMS[arm], "image_root": str(image_root(arm).relative_to(ROOT)),
-                     "question": QUESTION, "smoke": smoke, "vision_lr": VISION_LR if freeze else None})
+                     "question": QUESTION, "smoke": smoke, "vision_lr": VISION_LR if recipe in ("freeze", "hybrid") else None})
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     run.finish()
 
@@ -369,7 +438,7 @@ def load_for_scoring(arm, smoke):
     from transformers import AutoModelForImageTextToText
 
     base = base_spec(config(), MODEL)
-    if ARMS[arm]["recipe"] == "lora":
+    if ARMS[arm]["recipe"] in ("lora", "hybrid"):
         model, processor, _ = main.runner.load({"base": MODEL, "checkpoint": str(out_dir(arm, smoke).relative_to(ROOT))})
         return model, processor, base
 
@@ -498,6 +567,131 @@ def score(arm, smoke):
         summarise(arm, out)
 
 
+def rationale_eval_windows():
+    rows = [r for r in read_csv(PROBE) if r["ds"] == DATASET and r["split"] == "test"]
+    labels, rng, half = truth(), random.Random(0), RATIONALE_EVAL_WINDOWS // 2
+    seizure = sorted(r["rel"] for r in rows if labels[r["rel"]])
+    calm = sorted(r["rel"] for r in rows if not labels[r["rel"]])
+    return rng.sample(seizure, half) + rng.sample(calm, half)
+
+
+def eval_formats(arm):
+    # an untrained arm is evaluated in both trained formats, so each trained arm has a baseline in its own format
+    if ARMS[arm]["recipe"] is None:
+        return ["answer-first", "explain"]
+    return [{"multitask": "explain", "rationale-first": "rationale-first"}.get(order_of(arm), "answer-first")]
+
+
+def eval_structure(fmt):
+    from pydantic import Field, create_model
+
+    text = (str, Field(max_length=RATIONALE_CHARS, description="Text rationale for the prediction."))
+    present = (bool, Field(description="Whether a seizure of any type is present."))
+    if fmt == "explain":
+        return create_model("Explanation", text_rationale=text)
+    if fmt == "answer-first":
+        return create_model("AnswerRationale", present=present, text_rationale=text)
+    return create_model("RationaleAnswer", text_rationale=text, present=present)
+
+
+def reference_nll(model, collator, ids, prompt, output, path):
+    # mean NLL per token of a gold answer, the boolean token left out: with the reference rationale as the
+    # output, how well the model has learned the teacher's text for this window
+    import torch
+
+    batch = collator([{"instruction": prompt, "input": "", "output": output, "images": [path]}])
+    targets = batch.pop("labels")[0]
+    positions = (targets != -100).nonzero().flatten()
+    positions = positions[~torch.isin(targets[positions], torch.cat([ids["true"], ids["false"]]).cpu())]
+    keep = len(targets) - int(positions[0]) + 1
+    with torch.inference_mode():
+        logits = model(**batch.to(model.device), logits_to_keep=keep).logits[0].float()
+    offset = len(targets) - keep
+    logp = logits[positions - 1 - offset].log_softmax(-1)
+    nll = -logp.gather(1, targets[positions].to(logp.device)[:, None]).squeeze(1)
+    return float(nll.mean()), len(positions)
+
+
+def generate_reply(model, processor, runner, prefix_fn, text, image_path):
+    import torch
+    from PIL import Image
+
+    messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": text}]}]
+    chat = runner.render(processor, messages, True)
+    with Image.open(image_path) as image:
+        inputs = processor(text=[chat], images=[image.convert("RGB")], return_tensors="pt",
+                           **runner.encode_kwargs(processor, chat)).to(model.device)
+    with torch.inference_mode():
+        out = model.generate(**inputs, max_new_tokens=runner.MAX_NEW_TOKENS, prefix_allowed_tokens_fn=prefix_fn.fresh(),
+                             use_cache=True, do_sample=False)
+    return processor.batch_decode([out[0, inputs["input_ids"].shape[1]:]], skip_special_tokens=True)[0].strip()
+
+
+def rationale_eval(arm, smoke):
+    # per window: the reference rationale's NLL under this model, and the model's own generated rationale
+    import torch
+
+    windows = rationale_eval_windows()
+    windows = windows[:3] + windows[-3:] if smoke else windows
+    wanted = set(windows)
+    references = {r["path"]: CHANNEL.sub(r"\1", strip_label(r["ground_truth_rationale"]))
+                  for r in read_csv(ROOT / "datasets" / DATASET / "labels.csv") if r["path"] in wanted}
+    labels = truth()
+    model, processor, base = load_for_scoring(arm, smoke)
+    model.eval()
+    collator = main.DataCollator(processor, image_root(arm), base)
+    words = main.boolean_token_ids(processor.tokenizer)
+    ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
+    results = base_dir(smoke) / "results"
+    results.mkdir(parents=True, exist_ok=True)
+    header = ["path", "seizure", "reference_nll", "reference_tokens", "generated_present", "rationale_chars", "reply"]
+
+    for fmt in eval_formats(arm):
+        out = results / f"rationale-{arm}-{fmt}.csv"
+        done = {r["path"] for r in read_csv(out)}
+        prompt = explain_prompt() if fmt == "explain" else rationale_prompt()
+        prefix_fn = main.runner.enforcer(processor, eval_structure(fmt))
+        started, todo = time.time(), [w for w in windows if w not in done]
+        print(f"arm {arm} ({fmt}): rationale evaluation on {len(todo)} windows -> {out}", flush=True)
+        for n, path in enumerate(todo, 1):
+            gold, reference = labels[path], references[path]
+            target = {"explain": {"text_rationale": reference},
+                      "answer-first": {"present": gold, "text_rationale": reference},
+                      "rationale-first": {"text_rationale": reference, "present": gold}}[fmt]
+            nll, tokens = reference_nll(model, collator, ids, prompt, json.dumps(target), path)
+            reply = generate_reply(model, processor, main.runner, prefix_fn, prompt, image_root(arm) / path)
+            try:
+                parsed = json.loads(reply)
+            except json.JSONDecodeError:
+                parsed = {}
+            append_row(out, header, [path, str(gold).lower(), f"{nll:.4f}", tokens,
+                                     str(parsed.get("present", "")).lower(), len(parsed.get("text_rationale", "")), reply])
+            if n % 25 == 0 or n == len(todo) or smoke and n <= 2:
+                print(f"{n}/{len(todo)} ({(time.time() - started) / n:.1f} s/window)", flush=True)
+        if not smoke:
+            summarise_rationale(arm, fmt, out)
+
+
+def summarise_rationale(arm, fmt, path):
+    rows = list({r["path"]: r for r in read_csv(path)}.values())
+    nll = np.array([float(r["reference_nll"]) for r in rows])
+    chars = np.array([int(r["rationale_chars"]) for r in rows])
+    summary = {"arm": arm, "format": fmt, "windows": len(rows), "reference_nll": round(float(nll.mean()), 4),
+               "reference_nll_seizure": round(float(nll[[r["seizure"] == "true" for r in rows]].mean()), 4),
+               "reference_nll_background": round(float(nll[[r["seizure"] != "true" for r in rows]].mean()), 4),
+               "rationale_chars_median": int(np.median(chars)), "rationale_at_cap": int((chars >= RATIONALE_CHARS).sum())}
+    answered = [r for r in rows if r["generated_present"] in ("true", "false")]
+    if answered:
+        y = np.array([r["seizure"] == "true" for r in answered])
+        g = np.array([r["generated_present"] == "true" for r in answered])
+        summary["generated_answer_ba"] = round(float((g[y].mean() + (~g[~y]).mean()) / 2), 4)
+    with (path.parent / f"summary-rationale-{arm}-{fmt}.csv").open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(summary))
+        writer.writeheader()
+        writer.writerow(summary)
+    print(json.dumps(summary), flush=True)
+
+
 def auroc(scores, positive):
     # Mann-Whitney, ties at their average rank
     scores, positive = np.asarray(scores, float), np.asarray(positive, bool)
@@ -559,21 +753,23 @@ def summarise(arm, path):
     print(json.dumps(summary), flush=True)
 
 
-def submit_job(cfg, arm, dry_run):
-    name = f"eeg-vlm-vision-freeze-{arm}"
+def submit_job(cfg, arm, dry_run, arms=()):
+    name = f"eeg-vlm-vision-freeze-{arm}" + ("-" + "-".join(arms) if arm == "rationale-eval" else "")
     if name in queued():
         sys.exit(f"{name} is already queued or running")
     if not (SOURCE / "perclass-train.jsonl").exists():
         sys.exit("no training lines: python side/multilabel-pilot/build.py")
-    for a in SMOKE_ARMS if arm == "smoke" else (arm,):
+    for a in SMOKE_ARMS if arm == "smoke" else (arms if arm == "rationale-eval" else (arm,)):
         missing = missing_images(a)
         if missing:
             sys.exit(f"{a}: {len(missing)} images missing under {image_root(a)}, e.g. {missing[:3]}")
 
     me = f"python {SIDE}/run.py"
-    modes = lambda a: ("score",) if ARMS[a]["recipe"] is None else ("train", "score")
+    modes = lambda a: ("score",) if ARMS[a]["recipe"] is None else \
+        ("train", "score", "rationale-eval") if ARMS[a]["recipe"] == "hybrid" else ("train", "score")
     steps = {a: [f"{me} {a} --{m}" for m in modes(a)] for a in ARMS}
     steps["smoke"] = [f"{me} {a} --{m} --smoke" for a in SMOKE_ARMS for m in modes(a)]
+    steps["rationale-eval"] = [f"{me} {a} --rationale-eval" for a in arms]
     logs = base_dir(arm == "smoke") / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     text = script(name, TIME[arm], RAM, cfg["train"]["cpus"], GPUS, " && ".join(steps[arm]))
@@ -586,25 +782,31 @@ def submit_job(cfg, arm, dry_run):
 def main_cli():
     cfg = config()
     parser = argparse.ArgumentParser()
-    parser.add_argument("arm", choices=[*ARMS, "smoke"])
+    parser.add_argument("arm", choices=[*ARMS, "smoke", "rationale-eval"])
+    parser.add_argument("arms", nargs="*", help="with rationale-eval: the finished arms to evaluate in one job")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--train", action="store_true", help="train this arm in this process")
     mode.add_argument("--score", action="store_true", help="score this arm on the TUSZ test windows")
+    mode.add_argument("--rationale-eval", action="store_true", help="reference NLL and generated rationales, 300 windows")
     mode.add_argument("--dry-run", action="store_true", help="print the job, submit nothing")
     parser.add_argument("--smoke", action="store_true", help="with --train/--score: 2 steps, 24 windows, under smoke/")
     args = parser.parse_args()
 
-    if args.train or args.score:
-        if args.arm == "smoke" or args.train and ARMS[args.arm]["recipe"] is None:
-            parser.error(f"--{'train' if args.train else 'score'} does not apply to {args.arm}")
+    if args.train or args.score or args.rationale_eval:
+        if args.arm in ("smoke", "rationale-eval") or args.train and ARMS[args.arm]["recipe"] is None:
+            parser.error(f"that mode does not apply to {args.arm}")
         os.environ.setdefault("WANDB_MODE", "offline")
         if args.train:
             train(arm_config(cfg, args.arm, args.smoke), args.arm, args.smoke)
-        else:
+        elif args.score:
             score(args.arm, args.smoke)
+        else:
+            rationale_eval(args.arm, args.smoke)
         return
 
-    submit_job(cfg, args.arm, args.dry_run)
+    if args.arm == "rationale-eval" and not args.arms:
+        parser.error("rationale-eval needs the arms to evaluate")
+    submit_job(cfg, args.arm, args.dry_run, tuple(args.arms))
 
 
 if __name__ == "__main__":
