@@ -13,6 +13,11 @@
 #   python side/vision-freeze/rerender.py lists          # data/windows.csv + data/more-train.jsonl (no rendering)
 #   python side/vision-freeze/rerender.py render [N]     # render data/windows.csv into images/ with N processes
 #   python side/vision-freeze/rerender.py sample         # 4 windows into images-sample/ to look at
+#   python side/vision-freeze/rerender.py background [N] # data/background.csv (see below), rendered into images/
+# background: the scored TUSZ test set's background is 97.8% first/last windows of its recording (known-issues,
+# 2026-10-14). This lists, from the same 200 test patients, shipped test windows never scored that are background
+# only and not a recording's first or last window, up to 2 per recording spread through it (seed 0), with each
+# window's distance in windows to the nearest seizure window of its recording (from the annotations)
 import csv
 import json
 import random
@@ -221,9 +226,59 @@ def render_recording(job):
         return len(items), 0, f"{edf}: {type(e).__name__}: {e}"
 
 
-def render_all(processes, out=IMAGES, only=None):
+def background(processes):
+    import mne
+    from render import WINDOW
+
+    names = scans()
+    with sqlite3.connect(f"file:{ROOT / 'pipeline.db'}?mode=ro", uri=True) as db:
+        scope = {p.split("/", 1)[1] for (p,) in db.execute(
+            "SELECT DISTINCT path FROM pipeline WHERE dataset = 'TUSZ' AND scope = 'full'")}
+    shipped = {r["path"]: {c for c in LABELS if r[c] == "true"} for r in csv.DictReader((DATASET / "labels.csv").open())
+               if r["path"].startswith("test/")}
+    by_recording = defaultdict(list)
+    for path in shipped:
+        _, scan, index = NAME.match(path).groups()
+        by_recording[scan].append((int(index), path))
+
+    rng, rows, mismatches = random.Random(SEED), [], 0
+    for scan in sorted(by_recording):
+        edf = names[scan]
+        header = mne.io.read_raw_edf(str(edf), preload=False, verbose="ERROR")
+        n = max(1, int((header.n_times / header.info["sfreq"]) // WINDOW))
+        found = window_labels(edf, n)
+        seizures = [i for i, labels in enumerate(found) if labels & SEIZURES]
+        candidates = []
+        for index, path in sorted(by_recording[scan]):
+            mismatches += shipped[path] != found[index]
+            if path not in scope and not shipped[path] & SEIZURES and 0 < index < n - 1:
+                candidates.append((index, path))
+        if len(candidates) > 2:  # two spread through the recording: one from each half of the candidates
+            half = len(candidates) // 2
+            candidates = [rng.choice(candidates[:half]), rng.choice(candidates[half:])]
+        for index, path in candidates:
+            distance = min(abs(index - s) for s in seizures) if seizures else ""
+            rows.append([path, "background", scan, index, str(edf.relative_to(ROOT)), n, bool(seizures), distance])
+    print(f"label check: {mismatches} shipped test windows whose labels differ from the annotations")
+    if mismatches:
+        sys.exit("labels do not reproduce: stop")
+
+    DATA.mkdir(parents=True, exist_ok=True)
+    table = DATA / "background.csv"
+    with table.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["path", "role", "scan", "index", "edf", "recording_windows", "seizure_recording",
+                         "windows_to_seizure"])
+        writer.writerows(rows)
+    in_seizure = sum(r[6] for r in rows)
+    print(f"{len(rows)} background windows from {len({r[2] for r in rows})} recordings ({in_seizure} in seizure "
+          f"recordings) -> {table}")
+    render_all(processes, table=table)
+
+
+def render_all(processes, out=IMAGES, only=None, table=DATA / "windows.csv"):
     by_edf = defaultdict(list)
-    for row in csv.DictReader((DATA / "windows.csv").open()):
+    for row in csv.DictReader(table.open()):
         if only is None or row["path"] in only:
             by_edf[row["edf"]].append((row["path"], row["index"]))
     jobs = [(edf, items, out) for edf, items in sorted(by_edf.items(), key=lambda kv: -len(kv[1]))]
@@ -246,6 +301,8 @@ def main():
         lists()
     elif sys.argv[1] == "render":
         render_all(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
+    elif sys.argv[1] == "background":
+        background(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "sample":
         # 2 seizure and 2 background training windows, beside their shipped PNGs, to look at
         shipped = {r["path"]: any(r[c] == "true" for c in SEIZURES) for r in csv.DictReader((DATASET / "labels.csv").open())}

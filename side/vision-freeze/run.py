@@ -27,6 +27,10 @@
 # learning on 300 test windows (150 seizure): the mean NLL of the label-stripped teacher reference rationale, and
 # the model's own generated rationale (saved, for reading and for the judge)
 #   python side/vision-freeze/run.py rationale-eval ARM [ARM ...]    # one job evaluating finished arms
+#   python side/vision-freeze/run.py background-test ARM [ARM ...]   # score finished arms on data/background.csv
+# background-test (2026-10-14): the scored test background is 97.8% first/last windows; rerender.py background lists
+# 4,471 interior background windows of the same test patients. Each arm's P(true) on them, against its existing
+# scores on the 3,754 test seizure windows, gives AUROC and specificity on background spread through the recordings
 #   python side/vision-freeze/run.py ARM [--dry-run]                 # submit one arm's MIG job
 #   python side/vision-freeze/run.py smoke                           # <=2 h job: SMOKE_ARMS, 2 steps, 24 windows
 #   python side/vision-freeze/run.py ARM --train|--score [--smoke]   # what the jobs run
@@ -101,6 +105,7 @@ CHANNEL = re.compile(r"\b(?:EEG\s+)?([A-Za-z0-9]+)-(?:REF|LE)\b")
 IMAGE_ROOTS = {"shipped": ROOT / "datasets" / "TUSZ", "render": SIDE / "images"}
 SOURCE = ROOT / "side" / "multilabel-pilot" / "data"  # the pilot's balanced lines; this test keeps only any_seizure
 MORE = SIDE / "data" / "more-train.jsonl"  # rerender.py lists
+BACKGROUND = SIDE / "data" / "background.csv"  # rerender.py background
 SEIZURES = ("absz", "cpsz", "fnsz", "gnsz", "mysz", "spsz", "tcsz", "tnsz")
 ANSWER = '{"present": true}'  # the scored row's answer: only the logits before its boolean are read
 VISION_LR = 1e-5  # full fine-tune of a ViT: ViTST 2e-5, TimeMaster 2e-6; NeuroCanvas does not report one
@@ -119,7 +124,8 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         "r4-af-strip-more": "1-04:00:00", "r4-mt-strip-more": "1-08:00:00", "r4-af-strip-w10-more": "1-04:00:00",
         # round 5: train (~14 s/step with LoRA on top), score, then the rationale evaluation (~1.2 h)
         "r5-hy-af-strip-w10": "12:00:00", "r5-hy-mt-strip": "18:00:00", "r5-hy-af-strip-more": "1-08:00:00",
-        "r5-hy-mt-strip-more": "1-12:00:00", "rationale-eval": "10:00:00", "base-render": "03:00:00"}
+        "r5-hy-mt-strip-more": "1-12:00:00", "rationale-eval": "10:00:00", "base-render": "03:00:00",
+        "background-test": "06:00:00"}
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -692,6 +698,81 @@ def summarise_rationale(arm, fmt, path):
     print(json.dumps(summary), flush=True)
 
 
+def background_test(arm, smoke):
+    # the same teacher-forced scorer as score(), on the interior background windows
+    import torch
+
+    results = base_dir(smoke) / "results"
+    results.mkdir(parents=True, exist_ok=True)
+    out = results / f"background-{arm}.csv"
+    done = {r["path"] for r in read_csv(out)}
+    todo = [r["path"] for r in read_csv(BACKGROUND) if r["path"] not in done]
+    if smoke:
+        todo = todo[:SMOKE_WINDOWS]
+    print(f"arm {arm}: {len(todo)} interior background windows to score, {len(done)} already done -> {out}", flush=True)
+
+    if todo:
+        model, processor, base = load_for_scoring(arm, smoke)
+        collator = main.DataCollator(processor, image_root(arm), base)
+        words = main.boolean_token_ids(processor.tokenizer)
+        ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
+        text = rationale_prompt() if order_of(arm) == "answer-first" else prompt_text()
+        answer = AF_ANSWER if order_of(arm) == "answer-first" else ANSWER
+        started = time.time()
+        for start in range(0, len(todo), SCORE_BATCH):
+            chunk = todo[start:start + SCORE_BATCH]
+            for path, p in zip(chunk, p_true(model, collator, ids, text, chunk, answer)):
+                append_row(out, ["path", "p_true", "seizure"], [path, f"{p:.6f}", "false"])
+            n = start + len(chunk)
+            if n % 400 < SCORE_BATCH or n == len(todo):
+                print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
+
+    if not smoke:
+        summarise_background(arm, out)
+
+
+def summarise_background(arm, path):
+    # seizure windows from the arm's full test scores; background: the old (97.8% edge) set and the new interior set
+    scored = read_csv(base_dir(False) / "results" / f"scores-{arm}.csv")
+    seizure = [r for r in scored if r["seizure"] == "true"]
+    old = [r for r in scored if r["seizure"] != "true"]
+    new = list({r["path"]: r for r in read_csv(path)}.values())
+    meta = {r["path"]: r for r in read_csv(BACKGROUND)}
+    p_seizure = np.array([float(r["p_true"]) for r in seizure])
+    p_new = np.array([float(r["p_true"]) for r in new])
+    p_old = np.array([float(r["p_true"]) for r in old])
+
+    def specificity(rows):
+        return round(float(np.mean([float(r["p_true"]) < 0.5 for r in rows])), 4) if rows else ""
+
+    combined = np.concatenate([p_seizure, p_new])
+    positive = np.concatenate([np.ones(len(p_seizure), bool), np.zeros(len(p_new), bool)])
+    patients = [Path(r["path"]).stem.split("_")[0] for r in seizure + new]
+    low, high = patient_ci(combined, positive, patients)
+    sensitivity = float((p_seizure >= 0.5).mean())
+    near = lambda r, lo, hi: meta[r["path"]]["windows_to_seizure"] != "" and lo <= int(meta[r["path"]]["windows_to_seizure"]) <= hi
+    summary = {
+        "arm": arm, "seizure_windows": len(p_seizure), "interior_background": len(p_new),
+        "auroc_interior_background": round(auroc(combined, positive), 4),
+        "auroc_ci_low": round(low, 4), "auroc_ci_high": round(high, 4),
+        "auroc_old_background": round(auroc(np.concatenate([p_seizure, p_old]),
+                                            np.concatenate([np.ones(len(p_seizure), bool), np.zeros(len(p_old), bool)])), 4),
+        "sensitivity": round(sensitivity, 4),
+        "balanced_accuracy_interior": round((sensitivity + float((p_new < 0.5).mean())) / 2, 4),
+        "specificity_old_background": specificity(old),
+        "specificity_interior": specificity(new),
+        "specificity_seizure_free_recordings": specificity([r for r in new if meta[r["path"]]["seizure_recording"] != "True"]),
+        "specificity_1_2_windows_from_seizure": specificity([r for r in new if near(r, 1, 2)]),
+        "specificity_3_10_windows_from_seizure": specificity([r for r in new if near(r, 3, 10)]),
+        "specificity_over_10_windows_from_seizure": specificity([r for r in new if near(r, 11, 10 ** 6)]),
+    }
+    with (path.parent / f"summary-background-{arm}.csv").open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(summary))
+        writer.writeheader()
+        writer.writerow(summary)
+    print(json.dumps(summary), flush=True)
+
+
 def auroc(scores, positive):
     # Mann-Whitney, ties at their average rank
     scores, positive = np.asarray(scores, float), np.asarray(positive, bool)
@@ -754,13 +835,15 @@ def summarise(arm, path):
 
 
 def submit_job(cfg, arm, dry_run, arms=()):
-    name = f"eeg-vlm-vision-freeze-{arm}" + ("-" + "-".join(arms) if arm == "rationale-eval" else "")
+    name = f"eeg-vlm-vision-freeze-{arm}" + ("-" + "-".join(arms) if arm in ("rationale-eval", "background-test") else "")
     if name in queued():
         sys.exit(f"{name} is already queued or running")
     if not (SOURCE / "perclass-train.jsonl").exists():
         sys.exit("no training lines: python side/multilabel-pilot/build.py")
-    for a in SMOKE_ARMS if arm == "smoke" else (arms if arm == "rationale-eval" else (arm,)):
+    for a in SMOKE_ARMS if arm == "smoke" else (arms if arm in ("rationale-eval", "background-test") else (arm,)):
         missing = missing_images(a)
+        if arm == "background-test":
+            missing += [r["path"] for r in read_csv(BACKGROUND) if not (image_root(a) / r["path"]).exists()]
         if missing:
             sys.exit(f"{a}: {len(missing)} images missing under {image_root(a)}, e.g. {missing[:3]}")
 
@@ -770,6 +853,7 @@ def submit_job(cfg, arm, dry_run, arms=()):
     steps = {a: [f"{me} {a} --{m}" for m in modes(a)] for a in ARMS}
     steps["smoke"] = [f"{me} {a} --{m} --smoke" for a in SMOKE_ARMS for m in modes(a)]
     steps["rationale-eval"] = [f"{me} {a} --rationale-eval" for a in arms]
+    steps["background-test"] = [f"{me} {a} --background" for a in arms]
     logs = base_dir(arm == "smoke") / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     text = script(name, TIME[arm], RAM, cfg["train"]["cpus"], GPUS, " && ".join(steps[arm]))
@@ -782,30 +866,33 @@ def submit_job(cfg, arm, dry_run, arms=()):
 def main_cli():
     cfg = config()
     parser = argparse.ArgumentParser()
-    parser.add_argument("arm", choices=[*ARMS, "smoke", "rationale-eval"])
-    parser.add_argument("arms", nargs="*", help="with rationale-eval: the finished arms to evaluate in one job")
+    parser.add_argument("arm", choices=[*ARMS, "smoke", "rationale-eval", "background-test"])
+    parser.add_argument("arms", nargs="*", help="with rationale-eval or background-test: the finished arms, one job")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--train", action="store_true", help="train this arm in this process")
     mode.add_argument("--score", action="store_true", help="score this arm on the TUSZ test windows")
     mode.add_argument("--rationale-eval", action="store_true", help="reference NLL and generated rationales, 300 windows")
+    mode.add_argument("--background", action="store_true", help="score data/background.csv's interior background windows")
     mode.add_argument("--dry-run", action="store_true", help="print the job, submit nothing")
     parser.add_argument("--smoke", action="store_true", help="with --train/--score: 2 steps, 24 windows, under smoke/")
     args = parser.parse_args()
 
-    if args.train or args.score or args.rationale_eval:
-        if args.arm in ("smoke", "rationale-eval") or args.train and ARMS[args.arm]["recipe"] is None:
+    if args.train or args.score or args.rationale_eval or args.background:
+        if args.arm in ("smoke", "rationale-eval", "background-test") or args.train and ARMS[args.arm]["recipe"] is None:
             parser.error(f"that mode does not apply to {args.arm}")
         os.environ.setdefault("WANDB_MODE", "offline")
         if args.train:
             train(arm_config(cfg, args.arm, args.smoke), args.arm, args.smoke)
         elif args.score:
             score(args.arm, args.smoke)
+        elif args.background:
+            background_test(args.arm, args.smoke)
         else:
             rationale_eval(args.arm, args.smoke)
         return
 
-    if args.arm == "rationale-eval" and not args.arms:
-        parser.error("rationale-eval needs the arms to evaluate")
+    if args.arm in ("rationale-eval", "background-test") and not args.arms:
+        parser.error(f"{args.arm} needs the arms to evaluate")
     submit_job(cfg, args.arm, args.dry_run, tuple(args.arms))
 
 
