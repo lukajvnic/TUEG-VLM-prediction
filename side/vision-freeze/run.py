@@ -99,6 +99,14 @@ for _ds, _question, _epochs in (("TUAB", "abnormal", 4), ("TUEP", "epilepsy", 10
     ARMS[f"r6-{_ds.lower()}-{_question}"] = {"recipe": "freeze", "epochs": _epochs, "images": "render",
                                              "lines": "dataset", "dataset": _ds, "question": _question}
 ARMS["r6-4b-freeze-4ep-render"] = {**ARMS["freeze-4ep-render"], "model": "qwen3-vl:4b-instruct", "gpus": "a100:1"}
+# core design (2026-10-14): round 6's arms and the TUSZ "more" and pilot sets on rerender.py core's images and lines
+# (images-core/<DS>/{train,val,test}/, data/core/); "train" names the training lines file when it is not <DS>-train
+CORE = {"recipe": "freeze", "images": "core", "lines": "core"}
+ARMS["c-tusz-more"] = {**CORE, "epochs": 4}
+ARMS["c-tusz-pilot"] = {**CORE, "epochs": 4, "train": "pilot-train"}
+for _ds, _question, _epochs in (("TUAB", "abnormal", 4), ("TUEP", "epilepsy", 10), ("TUAR", "eyem", 12),
+                                ("TUEV", "epileptiform", 12)):
+    ARMS[f"c-{_ds.lower()}-{_question}"] = {**CORE, "epochs": _epochs, "dataset": _ds, "question": _question}
 RATIONALE_EVAL_WINDOWS = 300  # stratified 150 seizure / 150 not, from the probe's test windows, seed 0
 # round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines;
 # round 3's (5155519) rationale-first, the 10x weight and generation scoring; round 4's (5399669) answer-first and
@@ -114,7 +122,8 @@ RATIONALE_CHARS = 1200
 CHANNEL = re.compile(r"\b(?:EEG\s+)?([A-Za-z0-9]+)-(?:REF|LE)\b")
 # VF_RENDER_ROOT moves the rerendered images off $SCRATCH: on 2026-10-14 scratch took ~2-3.5 s to create one small
 # file (project: ~0.01 s), so the background-test images live under /project
-IMAGE_ROOTS = {"shipped": ROOT / "datasets", "render": Path(os.environ.get("VF_RENDER_ROOT", SIDE / "images"))}
+IMAGE_ROOTS = {"shipped": ROOT / "datasets", "render": Path(os.environ.get("VF_RENDER_ROOT", SIDE / "images")),
+               "core": Path(os.environ.get("VF_CORE_ROOT", SIDE / "images-core"))}
 SOURCE = ROOT / "side" / "multilabel-pilot" / "data"  # the pilot's balanced lines; this test keeps only any_seizure
 MORE = SIDE / "data" / "more-train.jsonl"  # rerender.py lists
 BACKGROUND = SIDE / "data" / "background.csv"  # rerender.py background
@@ -141,7 +150,10 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         # round 6, at ~13 s/step on the slice: TUAB 1,142 steps, TUEP 1,045, TUAR 557 and TUEV 549, then 354-3,540
         # test windows; the 4b on a full A100 at an unmeasured speed, so the pilot's 1,080 steps get room
         "r6-tuab-abnormal": "08:00:00", "r6-tuep-epilepsy": "08:00:00", "r6-tuar-eyem": "06:00:00",
-        "r6-tuev-epileptiform": "05:00:00", "r6-4b-freeze-4ep-render": "12:00:00"}
+        "r6-tuev-epileptiform": "05:00:00", "r6-4b-freeze-4ep-render": "12:00:00",
+        # core: round 6's step counts, plus scoring; TUSZ as freeze-4ep-render(-more)
+        "c-tusz-more": "1-06:00:00", "c-tusz-pilot": "10:00:00", "c-tuab-abnormal": "08:00:00",
+        "c-tuep-epilepsy": "08:00:00", "c-tuar-eyem": "06:00:00", "c-tuev-epileptiform": "05:00:00"}
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -178,12 +190,13 @@ def question_of(arm):
 
 
 def dataset_lines(arm, split):
-    return main.read_jsonl(SIDE / "data" / f"{dataset_of(arm)}-{split}.jsonl")
+    folder = SIDE / "data" / ("core" if ARMS[arm]["lines"] == "core" else "")
+    return main.read_jsonl(folder / f"{dataset_of(arm)}-{split}.jsonl")
 
 
 def lines(split, smoke, arm="freeze"):
-    if ARMS[arm]["lines"] == "dataset":
-        rows = dataset_lines(arm, split)
+    if ARMS[arm]["lines"] in ("dataset", "core"):
+        rows = dataset_lines(arm, ARMS[arm].get("train", "train") if split == "train" else split)
     elif ARMS[arm]["lines"] == "more" and split == "train":
         rows = main.read_jsonl(MORE)
     else:
@@ -255,7 +268,7 @@ def with_rationale(rows, split, spec):
 def image_root(arm):
     # the TUSZ rerender sits at the top of images/, the other corpora in images/<DS>/ (window names repeat across them)
     images = ARMS[arm]["images"]
-    if images == "shipped" or dataset_of(arm) != "TUSZ":
+    if images in ("shipped", "core") or dataset_of(arm) != "TUSZ":
         return IMAGE_ROOTS[images] / dataset_of(arm)
     return IMAGE_ROOTS[images]
 
@@ -267,7 +280,7 @@ def missing_images(arm):
 
 
 def prompt_text(arm="freeze"):
-    if ARMS[arm]["lines"] == "dataset":
+    if ARMS[arm]["lines"] in ("dataset", "core"):
         texts = {r["instruction"] for r in dataset_lines(arm, "train")}
     else:
         texts = {r["instruction"] for r in main.read_jsonl(SOURCE / "perclass-train.jsonl") if r["question"] == QUESTION}
@@ -560,14 +573,14 @@ def probe_windows():
 
 
 def test_windows(arm="freeze"):
-    if ARMS[arm]["lines"] == "dataset":
+    if ARMS[arm]["lines"] in ("dataset", "core"):
         return sorted(r["images"][0] for r in dataset_lines(arm, "test"))
     rows = db().execute("SELECT DISTINCT path FROM pipeline WHERE dataset = ? AND scope = 'full'", (DATASET,))
     return sorted(p.split("/", 1)[1] for (p,) in rows)
 
 
 def truth(arm="freeze"):
-    if ARMS[arm]["lines"] == "dataset":
+    if ARMS[arm]["lines"] in ("dataset", "core"):
         return {r["images"][0]: json.loads(r["output"])["present"] for r in dataset_lines(arm, "test")}
     return {r["path"]: any(r[c] == "true" for c in SEIZURES)
             for r in read_csv(ROOT / "datasets" / DATASET / "labels.csv")}

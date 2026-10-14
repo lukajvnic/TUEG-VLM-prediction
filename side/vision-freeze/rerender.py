@@ -15,6 +15,7 @@
 #   python side/vision-freeze/rerender.py sample         # 4 windows into images-sample/ to look at
 #   python side/vision-freeze/rerender.py background [N] # data/background.csv (see below), rendered into images/
 #   python side/vision-freeze/rerender.py datasets [N]   # the other corpora (see below), rendered into images/<DS>/
+#   python side/vision-freeze/rerender.py core [N]       # every corpus in the core design (see below), images-core/
 # background: the scored TUSZ test set's background is 97.8% first/last windows of its recording (known-issues,
 # 2026-10-14). This lists, from the same 200 test patients, shipped test windows never scored that are background
 # only and not a recording's first or last window, up to 2 per recording spread through it (seed 0), with each
@@ -24,8 +25,18 @@
 # benchmark's scored test windows. Labels come from labels.csv and must reproduce from the source annotations.
 # Writes data/<DS>-{train,val,test}.jsonl and data/<DS>-windows.csv, renders into images/<DS>/ (window names repeat
 # across corpora)
+# core (2026-10-14, knowledge/methodology-decisions.md "Image redesign"): the same windows in the core design. TUH's
+# 22-row TCP montage plus Fz-Cz, Cz-Pz and EKG (25 rows, coloured by chain), on a 2688x896 canvas (~127 px/s; both
+# sides multiples of 224, so neither Qwen3-VL nor Qwen2.5-VL resizes it), 1 pt lines, no row frames, a 1 s grid. The
+# gain stays one per recording; a 100 uV bar, whose length follows that gain, keeps the absolute scale in the image.
+# Every corpus goes to images-core/<DS>/{train,val,test}/ with its lines in data/core/, and the build stops unless
+# patients and recordings are disjoint across the three splits. TUSZ: train = the "more" lines (the pilot's train
+# lines are a subset, data/core/TUSZ-pilot-train.jsonl), val = the pilot's, test = the scored windows, plus the
+# interior background windows (data/core/TUSZ-background.jsonl)
 import csv
+import functools
 import json
+import os
 import random
 import re
 import sqlite3
@@ -60,7 +71,47 @@ QUESTIONS = {"TUAB": ("abnormal", ("abnormal",), "abnormal EEG activity"),
              "TUEP": ("epilepsy", ("epilepsy",), "EEG from a patient with epilepsy"),
              "TUAR": ("eyem", ("eyem",), "an eye movement artifact (EYEM)"),
              "TUEV": ("epileptiform", ("spsw", "gped", "pled"),
-                      "an epileptiform discharge (a spike or sharp wave, GPED or PLED)")}
+                      "an epileptiform discharge (a spike or sharp wave, GPED or PLED)"),
+             "TUSL": ("slowing", ("slow",), "slowing (focal or generalized)")}
+CORE_IMAGES, CORE_DATA = SIDE / "images-core", DATA / "core"
+# TUEV train/val windows dropped from the core lists: a signal-fingerprint audit (2026-10-14) found 2 TUEV recordings
+# copied into test under other names (007 = 021, 008 = 022, so every 007 and 008 window goes) and 2 patients with
+# recordings on both sides once TUEV's separately anonymised names are traced through the other corpora, plus 1
+# patient shared by train and val
+EXCLUDE = {"TUEV": SIDE / "tuev-exclude.csv"}
+CORE_SIZE, CORE_DPI = (2688, 896), 100
+CORE_GUTTER, CORE_MARGIN = 110, 56  # px: row labels on the left, the calibration bar on the right
+EKG_FLOOR = 20e-6  # V: the EKG row is scaled per window to at least this, so a flat EKG stays flat
+CORE_CLIP = 0.85  # a row's trace stays within 0.85 row pitches of its centre (tanh)
+# ACNS order (left above right, chains grouped), then TUH's transverse chain, then EKG
+CORE_GROUPS = [("#1f4e9c", [("FP1", "F7"), ("F7", "T3"), ("T3", "T5"), ("T5", "O1")]),
+               ("#1b7f75", [("FP1", "F3"), ("F3", "C3"), ("C3", "P3"), ("P3", "O1")]),
+               ("#222222", [("FZ", "CZ"), ("CZ", "PZ")]),
+               ("#a8561a", [("FP2", "F4"), ("F4", "C4"), ("C4", "P4"), ("P4", "O2")]),
+               ("#b0202a", [("FP2", "F8"), ("F8", "T4"), ("T4", "T6"), ("T6", "O2")]),
+               ("#5e3a96", [("A1", "T3"), ("T3", "C3"), ("C3", "CZ"), ("CZ", "C4"), ("C4", "T4"), ("T4", "A2")])]
+EKG_COLOR, MISSING_COLOR = "#6b6b6b", "#bdbdbd"
+GRID_COLORS = ("#e2e2e2", "#c4c4c4")
+
+
+@functools.cache
+def core_palette():
+    # one palette for every image: each drawn colour blended with white in 20 steps, so antialiasing shades map to
+    # the right hue whatever else is in the image (a per-image palette turned the grey EKG label purple)
+    from PIL import Image
+
+    bases = [c for c, _ in CORE_GROUPS] + [EKG_COLOR, MISSING_COLOR, "#000000", *GRID_COLORS]
+    colors = []
+    for base in bases:
+        rgb = [int(base[i:i + 2], 16) for i in (1, 3, 5)]
+        for t in range(20):
+            color = tuple(round(c + (255 - c) * t / 20) for c in rgb)
+            if color not in colors:
+                colors.append(color)
+    colors.append((255, 255, 255))
+    palette = Image.new("P", (1, 1))
+    palette.putpalette([v for c in colors for v in c] + [255] * 3 * (256 - len(colors)))
+    return palette
 
 
 def patient_of(edf):
@@ -219,18 +270,95 @@ def draw(rows, names, level, sfreq, start, png):
     Image.open(buffer).convert("L").save(png, optimize=True)  # grayscale: the plot is black on white anyway
 
 
+def core_rows(raw):
+    # (label, colour, signal or None when the recording lacks an electrode) per row, EKG last
+    index = {electrode(n): i for i, n in enumerate(raw.ch_names) if electrode(n)}
+    data = raw.get_data()
+    rows = [(f"{a.capitalize()}-{b.capitalize()}", color, data[index[a]] - data[index[b]] if a in index and b in index else None)
+            for color, pairs in CORE_GROUPS for a, b in pairs]
+    ekg = [i for i, n in enumerate(raw.ch_names) if re.search(r"EKG|ECG", n.upper())]
+    return rows + [("EKG", EKG_COLOR, data[ekg[0]] if ekg else None)]
+
+
+def draw_core(rows, level, sfreq, start, png):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.collections import LineCollection
+    from PIL import Image
+    from render import WINDOW
+
+    width, height = CORE_SIZE
+    fig = plt.figure(figsize=(width / CORE_DPI, height / CORE_DPI), dpi=CORE_DPI)
+    ax = fig.add_axes([CORE_GUTTER / width, 6 / height, 1 - (CORE_GUTTER + CORE_MARGIN) / width, 1 - 12 / height])
+    a, b = int(round(start * sfreq)), int(round((start + WINDOW) * sfreq))
+    seconds = np.arange(b - a) / sfreq
+    gain = GAIN * level
+    n = len(rows)
+    lines, colors, missing = [], [], []
+    for k, (label, color, y) in enumerate(rows):
+        center = n - 1 - k
+        ax.text(-0.12, center, label, ha="right", va="center", fontsize=9, color=color, weight="bold")
+        if y is None:
+            missing.append([(0, center), (WINDOW, center)])
+            continue
+        segment = np.full(b - a, np.nan)  # a recording shorter than one window leaves the rest blank
+        part = y[a:b]
+        segment[:len(part)] = part
+        if label == "EKG":  # shape only: its amplitude says nothing about the EEG
+            scale = max(np.nanpercentile(np.abs(part), 99) if len(part) else 0, EKG_FLOOR)
+            trace = 0.8 * np.tanh(segment / scale)
+        else:
+            trace = CORE_CLIP * np.tanh(segment / gain)
+        lines.append(np.column_stack([seconds, center + trace]))
+        colors.append(color)
+    for s in range(1, int(WINDOW)):
+        ax.axvline(s, color="#e2e2e2" if s % 5 else "#c4c4c4", linewidth=0.6, zorder=0)
+    if missing:
+        ax.add_collection(LineCollection(missing, colors=MISSING_COLOR, linewidths=1.0, linestyles=(0, (4, 4))))
+    ax.add_collection(LineCollection(lines, colors=colors, linewidths=1.0))
+    # 100 uV at this recording's gain (the tanh's slope at zero), so the absolute scale is visible: a quiet recording
+    # draws a tall bar, a loud one a short bar
+    bar = min(CORE_CLIP * 100e-6 / gain, n - 1.0)  # capped only below ~1.8 uV of background (flat recordings)
+    x = WINDOW + 0.12
+    ax.plot([x, x], [-0.6, -0.6 + bar], color="black", linewidth=1.5, clip_on=False)
+    ax.text(x + 0.12, -0.6 + bar / 2, "100 µV", ha="left", va="center", rotation=90, fontsize=7, clip_on=False)
+    ax.set_xlim(0, WINDOW)
+    ax.set_ylim(-1.0, n - 0.2)
+    ax.axis("off")
+    buffer = BytesIO()
+    fig.savefig(buffer, dpi=CORE_DPI, format="png")
+    plt.close(fig)
+    png.parent.mkdir(parents=True, exist_ok=True)
+    # one fixed 256-colour palette (no dithering): a third of the size. Written to a
+    # temporary name first: an interrupted run must not leave a truncated PNG that a rerun would skip
+    image = Image.open(buffer).convert("RGB")
+    partial = png.with_suffix(".partial")
+    image.quantize(palette=core_palette(), dither=Image.Dither.NONE).save(partial, "PNG", optimize=True)
+    os.replace(partial, png)
+
+
 def render_recording(job):
     from render import read, window_bounds
 
-    edf, items, out = job
+    edf, items, out, style = job
     todo = [(path, int(index)) for path, index in items if not (out / path).exists()]
     if not todo:
         return len(items), 0, None
     try:
         raw = read(ROOT / edf)
         sfreq = raw.info["sfreq"]
-        rows, names = bipolar(raw)
         windows = window_bounds(raw)
+        if style == "core":
+            rows = core_rows(raw)
+            eeg = [y for label, _, y in rows if y is not None and label != "EKG"]
+            level = background_level(eeg, sfreq, windows) if eeg else 1.0
+            for path, index in todo:
+                draw_core(rows, level, sfreq, windows[index][0], out / path)
+            return len(items), len(todo), None
+        rows, names = bipolar(raw)
         level = background_level(rows, sfreq, windows)
         for path, index in todo:
             draw(rows, names, level, sfreq, windows[index][0], out / path)
@@ -354,12 +482,160 @@ def config_intro():
     return yaml.safe_load((ROOT / "config.yml").read_text())["prompts"]["intro"]
 
 
-def render_all(processes, out=IMAGES, only=None, table=DATA / "windows.csv"):
+def core_splits():
+    # every corpus's windows by split, from the lists the current render was built from: (path, present, scan,
+    # index, edf). TUSZ's val windows are named train/... like every fine-tune window, so core paths are
+    # <split>/<name>
+    tusz = {r["path"]: r for r in csv.DictReader((DATA / "windows.csv").open())}
+    tusz.update({r["path"]: r for r in csv.DictReader((DATA / "background.csv").open())})
+
+    def tusz_lines(rows):
+        return [(r["images"][0], json.loads(r["output"])["present"]) for r in rows]
+
+    pilot = ROOT / "side" / "multilabel-pilot" / "data"
+    pilot_lines = lambda split: [r for r in read_jsonl(pilot / f"perclass-{split}.jsonl") if r["question"] == "any_seizure"]
+    labels = {r["path"]: any(r[c] == "true" for c in SEIZURES) for r in csv.DictReader((DATASET / "labels.csv").open())}
+    with sqlite3.connect(f"file:{ROOT / 'pipeline.db'}?mode=ro", uri=True) as db:
+        test = sorted(p.split("/", 1)[1] for (p,) in db.execute(
+            "SELECT DISTINCT path FROM pipeline WHERE dataset = 'TUSZ' AND scope = 'full'"))
+    background = [r["path"] for r in csv.DictReader((DATA / "background.csv").open())]
+    splits = {"TUSZ": {"train": tusz_lines(read_jsonl(DATA / "more-train.jsonl")),
+                       "pilot-train": tusz_lines(pilot_lines("train")), "val": tusz_lines(pilot_lines("val")),
+                       "test": [(p, labels[p]) for p in test], "background": [(p, False) for p in background]}}
+    tables = {"TUSZ": tusz}
+    for ds in QUESTIONS:
+        tables[ds] = {r["path"]: r for r in csv.DictReader((DATA / f"{ds}-windows.csv").open())}
+        drop = {r["path"]: r["role"] for r in csv.DictReader(EXCLUDE[ds].open())} if ds in EXCLUDE else {}
+        assert all(role in ("train", "val") for role in drop.values()), f"{ds}: an excluded window is not train/val"
+        splits[ds] = {s: [(p, x) for p, x in tusz_lines(read_jsonl(DATA / f"{ds}-{s}.jsonl")) if p not in drop]
+                      for s in ("train", "val", "test")}
+        removed = sum(len(read_jsonl(DATA / f"{ds}-{s}.jsonl")) for s in ("train", "val")) - \
+            len(splits[ds]["train"]) - len(splits[ds]["val"])
+        assert removed == len(drop), f"{ds}: dropped {removed} of {len(drop)} listed windows"
+    return splits, tables
+
+
+def missing_rows(edf):
+    # the drawn electrodes (and EKG) a recording lacks: those rows are dashed in every one of its windows
+    import mne
+
+    names = mne.io.read_raw_edf(str(ROOT / edf), preload=False, verbose="ERROR").ch_names
+    have = {electrode(n) for n in names}
+    needed = sorted({e for _, pairs in CORE_GROUPS for pair in pairs for e in pair})
+    ekg = [] if any(re.search(r"EKG|ECG", n.upper()) for n in names) else ["EKG"]
+    return tuple(e for e in needed if e not in have) + tuple(ekg)
+
+
+def balance(rows, table):
+    # within each missing-row pattern, trim the over-represented class to the split's overall positive rate, so a
+    # dashed row says nothing about the label. In TUSZ's "more" lines, windows without EKG were 23% seizure against
+    # 51% (2026-10-14 audit), and without Fz/Pz 38% against 50%
+    rate = sum(x for _, x in rows) / len(rows)
+    patterns, groups = {}, defaultdict(list)
+    for path, present in rows:
+        edf = table[path]["edf"]
+        if edf not in patterns:
+            patterns[edf] = missing_rows(edf)
+        groups[patterns[edf]].append((path, present))
+    rng, keep, report = random.Random(SEED), set(), []
+    for pattern, members in sorted(groups.items()):
+        positive = sorted(p for p, x in members if x)
+        negative = sorted(p for p, x in members if not x)
+        if pattern and 0 < rate < 1:
+            if len(positive) > rate * len(members):
+                positive = rng.sample(positive, round(len(negative) * rate / (1 - rate)))
+            else:
+                negative = rng.sample(negative, min(len(negative), round(len(positive) * (1 - rate) / rate)))
+            report.append(f"{'/'.join(pattern)}: kept {len(positive) + len(negative)} of {len(members)}")
+        keep |= set(positive) | set(negative)
+    return [(p, x) for p, x in rows if p in keep], report
+
+
+def core(processes):
+    # every corpus's lists are built and gated before any rendering, so a failed gate costs seconds, not hours
+    splits, tables = core_splits()
+    CORE_DATA.mkdir(parents=True, exist_ok=True)
+    prompt = config_intro()
+    for ds, parts in splits.items():
+        # the leakage gate: no patient and no recording in more than one of train / val / test
+        role = {"train": "train", "pilot-train": "train", "val": "val", "test": "test", "background": "test"}
+        patients, recordings = defaultdict(set), defaultdict(set)
+        for split, rows in parts.items():
+            for path, _ in rows:
+                scan = ANY_NAME.match(path).group(2)
+                patients[role[split]].add(scan.rsplit("_", 1)[0])
+                recordings[role[split]].add(tables[ds][path]["edf"])
+        for one, two in (("train", "val"), ("train", "test"), ("val", "test")):
+            shared = (patients[one] & patients[two], recordings[one] & recordings[two])
+            if any(shared):
+                sys.exit(f"{ds}: {one} and {two} share {len(shared[0])} patients and {len(shared[1])} recordings, e.g. "
+                         f"{sorted(shared[0])[:3]} {sorted(shared[1])[:2]}: stop")
+
+        for split in ("train", "pilot-train"):
+            if split in parts:
+                parts[split], report = balance(parts[split], tables[ds])
+                print(f"{ds} {split}: missing-row balance, " + ("; ".join(report) or "nothing missing"), flush=True)
+
+        windows = {}
+        for split, rows in parts.items():
+            text = None
+            with (CORE_DATA / f"{ds}-{split}.jsonl").open("w") as f:
+                for path, present in rows:
+                    name = f"{role[split]}/{path.split('/', 1)[1]}"
+                    row = tables[ds][path]
+                    windows[name] = (row["scan"], row["index"], row["edf"])
+                    if text is None:
+                        text = question_text(ds, prompt)
+                    f.write(json.dumps({"dataset": ds, "question": question_of(ds), "instruction": text, "input": "",
+                                        "output": json.dumps({"present": present}), "images": [name]}) + "\n")
+        table = CORE_DATA / f"{ds}-windows.csv"
+        with table.open("w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["path", "role", "scan", "index", "edf"])
+            writer.writerows([name, name.split("/")[0], *windows[name]] for name in sorted(windows))
+        counts = ", ".join(f"{split} {len(rows)} ({sum(x for _, x in rows)} true)" for split, rows in parts.items())
+        print(f"{ds}: {counts}; patients train {len(patients['train'])} / val {len(patients['val'])} / test "
+              f"{len(patients['test'])}, no overlap -> {table}", flush=True)
+    for ds in splits:
+        render_all(processes, out=CORE_IMAGES / ds, table=CORE_DATA / f"{ds}-windows.csv", style="core")
+    check_core()
+
+
+def check_core():
+    # every listed image exists and decodes in full, before anything is packed for the cluster
+    from PIL import Image
+
+    bad, total = [], 0
+    for table in sorted(CORE_DATA.glob("*-windows.csv")):
+        ds = table.name.removesuffix("-windows.csv")
+        for row in csv.DictReader(table.open()):
+            total += 1
+            try:
+                with Image.open(CORE_IMAGES / ds / row["path"]) as image:
+                    image.load()
+                    assert image.size == CORE_SIZE, image.size
+            except Exception as e:
+                bad.append(f"{ds}/{row['path']}: {type(e).__name__}: {e}")
+    print(f"check: {total} images, {len(bad)} bad", *bad[:10], sep="\n")
+    if bad:
+        sys.exit("bad core images: stop")
+
+
+def question_of(ds):
+    return "any_seizure" if ds == "TUSZ" else QUESTIONS[ds][0]
+
+
+def question_text(ds, prompt):
+    what = "a seizure of any type" if ds == "TUSZ" else QUESTIONS[ds][2]
+    return f"{prompt}Based only on these waveforms, does this window show {what}? Set present to true only when it does."
+
+
+def render_all(processes, out=IMAGES, only=None, table=DATA / "windows.csv", style="current"):
     by_edf = defaultdict(list)
     for row in csv.DictReader(table.open()):
         if only is None or row["path"] in only:
             by_edf[row["edf"]].append((row["path"], row["index"]))
-    jobs = [(edf, items, out) for edf, items in sorted(by_edf.items(), key=lambda kv: -len(kv[1]))]
+    jobs = [(edf, items, out, style) for edf, items in sorted(by_edf.items(), key=lambda kv: -len(kv[1]))]
     started, done, drawn, errors = time.time(), 0, 0, []
     with Pool(processes) as pool:
         for k, (n, new, error) in enumerate(pool.imap_unordered(render_recording, jobs), 1):
@@ -383,6 +659,10 @@ def main():
         background(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "datasets":
         datasets(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
+    elif sys.argv[1] == "core":
+        core(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
+    elif sys.argv[1] == "check-core":
+        check_core()
     elif sys.argv[1] == "sample":
         # 2 seizure and 2 background training windows, beside their shipped PNGs, to look at
         shipped = {r["path"]: any(r[c] == "true" for c in SEIZURES) for r in csv.DictReader((DATASET / "labels.csv").open())}
