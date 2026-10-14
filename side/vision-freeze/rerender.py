@@ -14,10 +14,16 @@
 #   python side/vision-freeze/rerender.py render [N]     # render data/windows.csv into images/ with N processes
 #   python side/vision-freeze/rerender.py sample         # 4 windows into images-sample/ to look at
 #   python side/vision-freeze/rerender.py background [N] # data/background.csv (see below), rendered into images/
+#   python side/vision-freeze/rerender.py datasets [N]   # the other corpora (see below), rendered into images/<DS>/
 # background: the scored TUSZ test set's background is 97.8% first/last windows of its recording (known-issues,
 # 2026-10-14). This lists, from the same 200 test patients, shipped test windows never scored that are background
 # only and not a recording's first or last window, up to 2 per recording spread through it (seed 0), with each
 # window's distance in windows to the nearest seizure window of its recording (from the annotations)
+# datasets (2026-10-14): does the recipe transfer? One yes/no question per other corpus (QUESTIONS), on the
+# fine-tune's vetted train/val windows (sft_labels_*.jsonl: patient caps, cross-corpus image screen) and the
+# benchmark's scored test windows. Labels come from labels.csv and must reproduce from the source annotations.
+# Writes data/<DS>-{train,val,test}.jsonl and data/<DS>-windows.csv, renders into images/<DS>/ (window names repeat
+# across corpora)
 import csv
 import json
 import random
@@ -48,6 +54,13 @@ GAIN = 2.0  # H = GAIN x the recording's background level (median over windows a
 SEED = 0
 SUBJECT = re.compile(r"aaaa[a-z]{4}")
 NAME = re.compile(r"^(train|test)/(aaaa[a-z]{4}_\d+)_(\d+)\.png$")
+ANY_NAME = re.compile(r"^(train|test)/(.+_\d+)_(\d+)\.png$")  # TUEV's excerpt patients are numbers ("000_0_2.png")
+# corpus: (question, the labels.csv classes that make it true, what the prompt asks about)
+QUESTIONS = {"TUAB": ("abnormal", ("abnormal",), "abnormal EEG activity"),
+             "TUEP": ("epilepsy", ("epilepsy",), "EEG from a patient with epilepsy"),
+             "TUAR": ("eyem", ("eyem",), "an eye movement artifact (EYEM)"),
+             "TUEV": ("epileptiform", ("spsw", "gped", "pled"),
+                      "an epileptiform discharge (a spike or sharp wave, GPED or PLED)")}
 
 
 def patient_of(edf):
@@ -276,6 +289,71 @@ def background(processes):
     render_all(processes, table=table)
 
 
+def sources(ds):
+    # the EDFs preprocess-<DS>.py rendered, and its label function, so window names map back to recordings exactly
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(f"preprocess_{ds}", ROOT / "preprocessing" / f"preprocess-{ds}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if hasattr(module, "select"):  # TUAB, TUEP: one class per recording, from its folder
+        classes = module.select()
+        return sorted(classes), lambda edf, start, stop: {classes[edf]}
+    return sorted(module.RAW.rglob("*.edf")), module.labels_for
+
+
+def datasets(processes):
+    from render import WINDOW, scan_names
+
+    prompt = config_intro()
+    with sqlite3.connect(f"file:{ROOT / 'pipeline.db'}?mode=ro", uri=True) as db:
+        for ds, (question, positive, what) in QUESTIONS.items():
+            edfs, labels_for = sources(ds)
+            names = {name: edf for edf, name in scan_names(edfs).items()}
+            labels = {r["path"]: r for r in csv.DictReader((ROOT / "datasets" / ds / "labels.csv").open())}
+            # bckg is left out: recover_tuar_background.py set it on TUAR windows the annotations leave empty (517 here)
+            classes = [c for c in next(iter(labels.values())) if c not in ("path", "ground_truth_rationale", "bckg")]
+            split = {s: [r["images"][0] for r in read_jsonl(ROOT / "datasets" / ds / f"sft_labels_{s}.jsonl")]
+                     for s in ("train", "val")}
+            split["test"] = sorted(p.split("/", 1)[1] for (p,) in db.execute(
+                "SELECT DISTINCT path FROM pipeline WHERE dataset = ? AND scope = 'full'", (ds,)))
+
+            rows, mismatches = [], 0
+            for role, paths in split.items():
+                for path in paths:
+                    _, scan, index = ANY_NAME.match(path).groups()
+                    edf, index = names[scan], int(index)
+                    shipped = {c for c in classes if labels[path][c] == "true"}
+                    mismatches += shipped != set(labels_for(edf, index * WINDOW, (index + 1) * WINDOW)) & set(classes)
+                    rows.append((path, role, scan, index, edf, bool(shipped & set(positive))))
+            print(f"{ds}: label check, {mismatches} windows whose labels differ from the annotations")
+            if mismatches:
+                sys.exit("labels do not reproduce: stop")
+
+            DATA.mkdir(parents=True, exist_ok=True)
+            table = DATA / f"{ds}-windows.csv"
+            with table.open("w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["path", "role", "scan", "index", "edf"])
+                writer.writerows([p, r, sc, i, str(e.relative_to(ROOT))] for p, r, sc, i, e, _ in rows)
+            text = f"{prompt}Based only on these waveforms, does this window show {what}? Set present to true only when it does."
+            for role in split:
+                with (DATA / f"{ds}-{role}.jsonl").open("w") as f:
+                    for p, r, _, _, _, present in rows:
+                        if r == role:
+                            f.write(json.dumps({"dataset": ds, "question": question, "instruction": text, "input": "",
+                                                "output": json.dumps({"present": present}), "images": [p]}) + "\n")
+            counts = {role: (sum(r == role for _, r, *_ in rows), sum(r == role and x for _, r, *_, x in rows)) for role in split}
+            print(f"{ds} '{question}': " + ", ".join(f"{role} {n} ({k} true)" for role, (n, k) in counts.items()), flush=True)
+            render_all(processes, out=IMAGES / ds, table=table)
+
+
+def config_intro():
+    import yaml
+
+    return yaml.safe_load((ROOT / "config.yml").read_text())["prompts"]["intro"]
+
+
 def render_all(processes, out=IMAGES, only=None, table=DATA / "windows.csv"):
     by_edf = defaultdict(list)
     for row in csv.DictReader(table.open()):
@@ -303,6 +381,8 @@ def main():
         render_all(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "background":
         background(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
+    elif sys.argv[1] == "datasets":
+        datasets(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "sample":
         # 2 seizure and 2 background training windows, beside their shipped PNGs, to look at
         shipped = {r["path"]: any(r[c] == "true" for c in SEIZURES) for r in csv.DictReader((DATASET / "labels.csv").open())}

@@ -53,3 +53,26 @@ python side/vision-freeze/rerender.py lists && python side/vision-freeze/rerende
 rsync -a side/vision-freeze/images/ narval:/scratch/luka/TUEG-VLM-prediction/side/vision-freeze/images/
 python side/vision-freeze/run.py freeze-4ep          # likewise freeze-4ep-render, freeze-4ep-render-more
 ```
+
+## Background test (2026-10-14): realistic test background
+
+97.8% of the scored TUSZ test background windows are the first or last window of their recording, so the AUROCs
+above are mostly measured against easy background. `rerender.py background` picks up to 2 never-scored, non-edge,
+background-only windows per test recording (one from each half of the candidates, seed 0), checks their labels
+against the annotations, writes `data/background.csv` (4,471 windows, 2,262 recordings, 558 in seizure recordings)
+and renders them. `run.py background-test ARM...` submits one job that scores them with each arm's own scorer into
+`results/background-<arm>.csv`, then writes `results/summary-background-<arm>.csv`: AUROC and balanced accuracy of
+the arm's seizure windows against the old and the interior background, and specificity by background type
+(seizure-free recordings, 1-2 / 3-10 / >10 windows from a seizure).
+
+`VF_RENDER_ROOT` overrides where rerendered images are read from. $SCRATCH took ~2-3.5 s to create one small file
+on 2026-10-14, so the background images went to /project instead:
+
+```bash
+python side/vision-freeze/rerender.py background 14                       # local
+rsync -a --files-from=<(tail -n +2 side/vision-freeze/data/background.csv | cut -d, -f1) \
+  side/vision-freeze/images/ narval:/project/def-milad777/luka/vision-freeze-images/
+rsync -a side/vision-freeze/data/background.csv narval:/scratch/luka/TUEG-VLM-prediction/side/vision-freeze/data/
+VF_RENDER_ROOT=/project/def-milad777/luka/vision-freeze-images \
+  python side/vision-freeze/run.py background-test r4-af-strip-more freeze-4ep-render-more freeze-4ep base-render
+```

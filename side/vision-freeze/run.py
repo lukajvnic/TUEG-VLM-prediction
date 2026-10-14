@@ -31,6 +31,10 @@
 # background-test (2026-10-14): the scored test background is 97.8% first/last windows; rerender.py background lists
 # 4,471 interior background windows of the same test patients. Each arm's P(true) on them, against its existing
 # scores on the 3,754 test seizure windows, gives AUROC and specificity on background spread through the recordings
+# Round 6 (2026-10-14), does the recipe transfer? freeze-4ep-render-more's recipe (answer only) on one yes/no question
+# per other corpus (rerender.py datasets: the fine-tune's vetted train/val windows, the benchmark's scored test
+# windows), with more epochs on the small sets (about TUSZ's ~1,000 steps, at most 12 epochs); and on qwen3-vl:4b
+# (pilot TUSZ lines, a full A100: the 2b already peaks at 17-20 GB of the 20 GB slice)
 #   python side/vision-freeze/run.py ARM [--dry-run]                 # submit one arm's MIG job
 #   python side/vision-freeze/run.py smoke                           # <=2 h job: SMOKE_ARMS, 2 steps, 24 windows
 #   python side/vision-freeze/run.py ARM --train|--score [--smoke]   # what the jobs run
@@ -89,6 +93,12 @@ for _name, _lines, _order, _weight in (
     ARMS[_name] = {**R4, "recipe": "hybrid", "lines": _lines, "order": _order, "strip": True, "weight": _weight}
 # the untrained model on the rerendered images: the rationale baseline, and a zero-shot reference on those images
 ARMS["base-render"] = {"recipe": None, "epochs": 0, "images": "render", "lines": "pilot"}
+# round 6: lines "dataset" reads rerender.py's data/<DS>-{train,val,test}.jsonl
+for _ds, _question, _epochs in (("TUAB", "abnormal", 4), ("TUEP", "epilepsy", 10), ("TUAR", "eyem", 12),
+                                ("TUEV", "epileptiform", 12)):
+    ARMS[f"r6-{_ds.lower()}-{_question}"] = {"recipe": "freeze", "epochs": _epochs, "images": "render",
+                                             "lines": "dataset", "dataset": _ds, "question": _question}
+ARMS["r6-4b-freeze-4ep-render"] = {**ARMS["freeze-4ep-render"], "model": "qwen3-vl:4b-instruct", "gpus": "a100:1"}
 RATIONALE_EVAL_WINDOWS = 300  # stratified 150 seizure / 150 not, from the probe's test windows, seed 0
 # round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines;
 # round 3's (5155519) rationale-first, the 10x weight and generation scoring; round 4's (5399669) answer-first and
@@ -104,7 +114,7 @@ RATIONALE_CHARS = 1200
 CHANNEL = re.compile(r"\b(?:EEG\s+)?([A-Za-z0-9]+)-(?:REF|LE)\b")
 # VF_RENDER_ROOT moves the rerendered images off $SCRATCH: on 2026-10-14 scratch took ~2-3.5 s to create one small
 # file (project: ~0.01 s), so the background-test images live under /project
-IMAGE_ROOTS = {"shipped": ROOT / "datasets" / "TUSZ", "render": Path(os.environ.get("VF_RENDER_ROOT", SIDE / "images"))}
+IMAGE_ROOTS = {"shipped": ROOT / "datasets", "render": Path(os.environ.get("VF_RENDER_ROOT", SIDE / "images"))}
 SOURCE = ROOT / "side" / "multilabel-pilot" / "data"  # the pilot's balanced lines; this test keeps only any_seizure
 MORE = SIDE / "data" / "more-train.jsonl"  # rerender.py lists
 BACKGROUND = SIDE / "data" / "background.csv"  # rerender.py background
@@ -127,7 +137,11 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         # round 5: train (~14 s/step with LoRA on top), score, then the rationale evaluation (~1.2 h)
         "r5-hy-af-strip-w10": "12:00:00", "r5-hy-mt-strip": "18:00:00", "r5-hy-af-strip-more": "1-08:00:00",
         "r5-hy-mt-strip-more": "1-12:00:00", "rationale-eval": "10:00:00", "base-render": "03:00:00",
-        "background-test": "06:00:00"}
+        "background-test": "06:00:00",
+        # round 6, at ~13 s/step on the slice: TUAB 1,142 steps, TUEP 1,045, TUAR 557 and TUEV 549, then 354-3,540
+        # test windows; the 4b on a full A100 at an unmeasured speed, so the pilot's 1,080 steps get room
+        "r6-tuab-abnormal": "08:00:00", "r6-tuep-epilepsy": "08:00:00", "r6-tuar-eyem": "06:00:00",
+        "r6-tuev-epileptiform": "05:00:00", "r6-4b-freeze-4ep-render": "12:00:00"}
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -151,8 +165,26 @@ def out_dir(arm, smoke=False):
     return base_dir(smoke) / "checkpoints" / arm
 
 
+def dataset_of(arm):
+    return ARMS[arm].get("dataset", DATASET)
+
+
+def model_of(arm):
+    return ARMS[arm].get("model", MODEL)
+
+
+def question_of(arm):
+    return ARMS[arm].get("question", QUESTION)
+
+
+def dataset_lines(arm, split):
+    return main.read_jsonl(SIDE / "data" / f"{dataset_of(arm)}-{split}.jsonl")
+
+
 def lines(split, smoke, arm="freeze"):
-    if ARMS[arm]["lines"] == "more" and split == "train":
+    if ARMS[arm]["lines"] == "dataset":
+        rows = dataset_lines(arm, split)
+    elif ARMS[arm]["lines"] == "more" and split == "train":
         rows = main.read_jsonl(MORE)
     else:
         rows = [r for r in main.read_jsonl(SOURCE / f"perclass-{split}.jsonl") if r["question"] == QUESTION]
@@ -221,23 +253,30 @@ def with_rationale(rows, split, spec):
 
 
 def image_root(arm):
-    return IMAGE_ROOTS[ARMS[arm]["images"]]
+    # the TUSZ rerender sits at the top of images/, the other corpora in images/<DS>/ (window names repeat across them)
+    images = ARMS[arm]["images"]
+    if images == "shipped" or dataset_of(arm) != "TUSZ":
+        return IMAGE_ROOTS[images] / dataset_of(arm)
+    return IMAGE_ROOTS[images]
 
 
 def missing_images(arm):
     # every training, val and test image this arm reads, checked before the job is submitted
-    paths = {r["images"][0] for split in ("train", "val") for r in lines(split, False, arm)} | set(test_windows())
+    paths = {r["images"][0] for split in ("train", "val") for r in lines(split, False, arm)} | set(test_windows(arm))
     return sorted(p for p in paths if not (image_root(arm) / p).exists())
 
 
-def prompt_text():
-    texts = {r["instruction"] for r in main.read_jsonl(SOURCE / "perclass-train.jsonl") if r["question"] == QUESTION}
+def prompt_text(arm="freeze"):
+    if ARMS[arm]["lines"] == "dataset":
+        texts = {r["instruction"] for r in dataset_lines(arm, "train")}
+    else:
+        texts = {r["instruction"] for r in main.read_jsonl(SOURCE / "perclass-train.jsonl") if r["question"] == QUESTION}
     assert len(texts) == 1, texts
     return texts.pop()
 
 
 def arm_config(cfg, arm, smoke):
-    settings = main.load_config(cfg, MODEL, DATASET)
+    settings = main.load_config(cfg, model_of(arm), dataset_of(arm))
     settings.update({"experiment": f"vision-freeze-{arm}", "target": "labels", "output-dir": str(out_dir(arm, smoke))})
     return settings
 
@@ -330,7 +369,7 @@ def start_wandb(settings, data, resume, smoke):
     logs.mkdir(parents=True, exist_ok=True)
 
     run = wandb.init(entity=settings["wandb"]["entity"], project=settings["wandb"]["project"],
-                     name=main.wandb_name(settings), group="vision-freeze", tags=[DATASET, settings["experiment"]],
+                     name=main.wandb_name(settings), group="vision-freeze", tags=[settings["dataset"], settings["experiment"]],
                      dir=logs, id=run_id, resume="allow" if run_id else None, config=logged)
 
     out.mkdir(parents=True, exist_ok=True)
@@ -352,7 +391,7 @@ def train(settings, arm, smoke):
     every = 1 if smoke else math.ceil(steps / EVALS)  # save-steps must equal eval-steps for the best-checkpoint reload
     settings["training"] = {**training, "epochs": epochs, "eval-steps": every, "save-steps": every}
 
-    print(f"{MODEL} on {DATASET} '{QUESTION}', arm {arm} {ARMS[arm]}: {len(data['train'])} train / "
+    print(f"{model_of(arm)} on {dataset_of(arm)} '{question_of(arm)}', arm {arm} {ARMS[arm]}: {len(data['train'])} train / "
           f"{len(data['validation'])} val lines, {steps} steps, eval every {every}, images {image_root(arm)} -> {out}",
           flush=True)
     if resume:
@@ -388,7 +427,7 @@ def train(settings, arm, smoke):
     main.write_manifest(settings, data, run.id)
     manifest = json.loads((out / "manifest.json").read_text())
     manifest.update({"arm": arm, **ARMS[arm], "image_root": str(image_root(arm).relative_to(ROOT)),
-                     "question": QUESTION, "smoke": smoke, "vision_lr": VISION_LR if recipe in ("freeze", "hybrid") else None})
+                     "question": question_of(arm), "smoke": smoke, "vision_lr": VISION_LR if recipe in ("freeze", "hybrid") else None})
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     run.finish()
 
@@ -445,9 +484,9 @@ def load_for_scoring(arm, smoke):
     import torch
     from transformers import AutoModelForImageTextToText
 
-    base = base_spec(config(), MODEL)
+    base = base_spec(config(), model_of(arm))
     if ARMS[arm]["recipe"] in ("lora", "hybrid"):
-        model, processor, _ = main.runner.load({"base": MODEL, "checkpoint": str(out_dir(arm, smoke).relative_to(ROOT))})
+        model, processor, _ = main.runner.load({"base": model_of(arm), "checkpoint": str(out_dir(arm, smoke).relative_to(ROOT))})
         return model, processor, base
 
     source = main.resolve_model(base["repo"]) if ARMS[arm]["recipe"] is None else str(out_dir(arm, smoke))
@@ -520,12 +559,16 @@ def probe_windows():
     return sorted(r["rel"] for r in read_csv(PROBE) if r["ds"] == DATASET and r["split"] == "test")
 
 
-def test_windows():
+def test_windows(arm="freeze"):
+    if ARMS[arm]["lines"] == "dataset":
+        return sorted(r["images"][0] for r in dataset_lines(arm, "test"))
     rows = db().execute("SELECT DISTINCT path FROM pipeline WHERE dataset = ? AND scope = 'full'", (DATASET,))
     return sorted(p.split("/", 1)[1] for (p,) in rows)
 
 
-def truth():
+def truth(arm="freeze"):
+    if ARMS[arm]["lines"] == "dataset":
+        return {r["images"][0]: json.loads(r["output"])["present"] for r in dataset_lines(arm, "test")}
     return {r["path"]: any(r[c] == "true" for c in SEIZURES)
             for r in read_csv(ROOT / "datasets" / DATASET / "labels.csv")}
 
@@ -538,7 +581,7 @@ def score(arm, smoke):
     out = results / f"scores-{arm}.csv"
     done = {r["path"] for r in read_csv(out)}
     rationale = order_of(arm) == "rationale-first"  # generation scoring; answer-first and multitask are teacher-forced
-    todo = [p for p in (probe_windows() if rationale else test_windows()) if p not in done]
+    todo = [p for p in (probe_windows() if rationale else test_windows(arm)) if p not in done]
     if smoke:
         todo = todo[::max(len(todo) // SMOKE_WINDOWS, 1)][:SMOKE_WINDOWS]
     print(f"arm {arm}: {len(todo)} windows to score, {len(done)} already done -> {out}", flush=True)
@@ -548,7 +591,7 @@ def score(arm, smoke):
         collator = main.DataCollator(processor, image_root(arm), base)
         words = main.boolean_token_ids(processor.tokenizer)
         ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
-        text, labels = (rationale_prompt() if order_of(arm) == "answer-first" else prompt_text()), truth()
+        text, labels = (rationale_prompt() if order_of(arm) == "answer-first" else prompt_text(arm)), truth(arm)
         answer = AF_ANSWER if order_of(arm) == "answer-first" else ANSWER
         started = time.time()
 
@@ -858,9 +901,10 @@ def submit_job(cfg, arm, dry_run, arms=()):
     steps["background-test"] = [f"{me} {a} --background" for a in arms]
     logs = base_dir(arm == "smoke") / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    text = script(name, TIME[arm], RAM, cfg["train"]["cpus"], GPUS, " && ".join(steps[arm]))
+    gpus = ARMS.get(arm, {}).get("gpus", GPUS)
+    text = script(name, TIME[arm], RAM, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
     text = text.replace(str(ROOT / "logs"), str(logs))
-    print(f"{'dry run' if dry_run else submit(text)} - {name}, {TIME[arm]}/{RAM}/gpu:{GPUS}, log in {logs}")
+    print(f"{'dry run' if dry_run else submit(text)} - {name}, {TIME[arm]}/{RAM}/gpu:{gpus}, log in {logs}")
     if dry_run:
         print(text)
 
