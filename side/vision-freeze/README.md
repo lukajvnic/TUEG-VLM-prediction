@@ -76,3 +76,27 @@ rsync -a side/vision-freeze/data/background.csv narval:/scratch/luka/TUEG-VLM-pr
 VF_RENDER_ROOT=/project/def-milad777/luka/vision-freeze-images \
   python side/vision-freeze/run.py background-test r4-af-strip-more freeze-4ep-render-more freeze-4ep base-render
 ```
+
+## Round 6 (2026-10-14): does the recipe transfer?
+
+`freeze-4ep-render-more`'s recipe (vision trained, language frozen, answer only) on one yes/no question per other
+corpus, and on qwen3-vl:4b. `rerender.py datasets` takes the fine-tune's vetted train/val windows
+(`sft_labels_*.jsonl`, which carry the patient caps and the cross-corpus image screen) and the benchmark's scored test
+windows, checks their labels against the source annotations (TUAR's `bckg` is left out of the check: the background
+recovery set it on 517 of these windows), writes `data/<DS>-{train,val,test}.jsonl` and renders into `images/<DS>/`.
+
+| arm | question (true when) | train / val / test windows (true) | epochs |
+|---|---|---|---|
+| `r6-tuab-abnormal` | abnormal | 2,283 (1,087) / 140 (52) / 1,200 (564) | 4 |
+| `r6-tuep-epilepsy` | epilepsy | 834 (515) / 83 (35) / 1,084 (638) | 10 |
+| `r6-tuar-eyem` | eyem | 371 (205) / 31 (15) / 3,540 (2,336) | 12 |
+| `r6-tuev-epileptiform` | spsw, gped or pled | 366 (181) / 17 (6) / 354 (151) | 12 |
+| `r6-4b-freeze-4ep-render` | TUSZ any seizure, qwen3-vl:4b, full A100 | the pilot lines | 4 |
+
+More epochs on the small sets bring them toward TUSZ's ~1,000 steps (at most 12). TUEV's test "patients" are excerpt
+ids, so its patient CI is optimistic.
+
+```bash
+python side/vision-freeze/rerender.py datasets 12      # local: lines, label check, images/<DS>/
+VF_RENDER_ROOT=/project/def-milad777/luka/vision-freeze-images python side/vision-freeze/run.py r6-tuab-abnormal
+```
