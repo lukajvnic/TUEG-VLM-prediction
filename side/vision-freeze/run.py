@@ -439,7 +439,8 @@ def train(settings, arm, smoke):
 
     main.write_manifest(settings, data, run.id)
     manifest = json.loads((out / "manifest.json").read_text())
-    manifest.update({"arm": arm, **ARMS[arm], "image_root": str(image_root(arm).relative_to(ROOT)),
+    root = image_root(arm)  # under /project when VF_RENDER_ROOT / VF_CORE_ROOT move it out of the repo
+    manifest.update({"arm": arm, **ARMS[arm], "image_root": str(root.relative_to(ROOT) if root.is_relative_to(ROOT) else root),
                      "question": question_of(arm), "smoke": smoke, "vision_lr": VISION_LR if recipe in ("freeze", "hybrid") else None})
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     run.finish()
