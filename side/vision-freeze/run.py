@@ -102,7 +102,9 @@ RATIONALES = ROOT / "datasets" / "TUSZ"  # sft_{train,val}.jsonl: gemma3:12b's l
 # pairs ("F8-T4"), so channel names are cut to the electrode, which the bipolar row labels contain
 RATIONALE_CHARS = 1200
 CHANNEL = re.compile(r"\b(?:EEG\s+)?([A-Za-z0-9]+)-(?:REF|LE)\b")
-IMAGE_ROOTS = {"shipped": ROOT / "datasets" / "TUSZ", "render": SIDE / "images"}
+# VF_RENDER_ROOT moves the rerendered images off $SCRATCH: on 2026-10-14 scratch took ~2-3.5 s to create one small
+# file (project: ~0.01 s), so the background-test images live under /project
+IMAGE_ROOTS = {"shipped": ROOT / "datasets" / "TUSZ", "render": Path(os.environ.get("VF_RENDER_ROOT", SIDE / "images"))}
 SOURCE = ROOT / "side" / "multilabel-pilot" / "data"  # the pilot's balanced lines; this test keeps only any_seizure
 MORE = SIDE / "data" / "more-train.jsonl"  # rerender.py lists
 BACKGROUND = SIDE / "data" / "background.csv"  # rerender.py background
@@ -841,7 +843,7 @@ def submit_job(cfg, arm, dry_run, arms=()):
     if not (SOURCE / "perclass-train.jsonl").exists():
         sys.exit("no training lines: python side/multilabel-pilot/build.py")
     for a in SMOKE_ARMS if arm == "smoke" else (arms if arm in ("rationale-eval", "background-test") else (arm,)):
-        missing = missing_images(a)
+        missing = [] if arm == "background-test" else missing_images(a)
         if arm == "background-test":
             missing += [r["path"] for r in read_csv(BACKGROUND) if not (image_root(a) / r["path"]).exists()]
         if missing:
