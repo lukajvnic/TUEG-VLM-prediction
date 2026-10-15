@@ -121,10 +121,21 @@ GRID_EXTRA = {"gemma3-4b": "gemma3:4b", "gemma3-12b": "gemma3:12b", "medgemma-4b
               "granite-2b": "granite3.2-vision:2b", "llava-7b": "llava:7b", "llava-phi3": "llava-phi3:3.8b",
               "llava-llama3": "llava-llama3:8b"}
 GRID_MODELS.update({short: (model, {"gpus": "a100:1", "ram": "64G"}) for short, model in GRID_EXTRA.items()})
+# gm-: TUAB, TUAR and TUEV in the multitask format (each window's answer line plus a separate "explain" line). Every
+# line of these corpora has a teacher rationale, so answer-first at weight 1 drowned the answer token (~1 in 150
+# target tokens): the g- answer-first runs scored AUROC 0.49-0.79 against round 6's 0.78-0.97, with train loss near
+# 0.08 and val loss rising. Multitask matched 10x weighting on TUSZ's all-rationale pilot lines (0.841 vs 0.853
+# frozen, hybrid 0.855) without weighting tokens (maintainer's choice, 2026-10-15)
+GRID_MULTITASK = ("TUAB", "TUAR", "TUEV")
 GRID_DATA = {"TUSZ": ("any_seizure", 4), "TUAB": ("abnormal", 4), "TUEP": ("epilepsy", 10), "TUAR": ("eyem", 12),
              "TUEV": ("epileptiform", 12)}
 for _short, (_model, _resources) in GRID_MODELS.items():
     for _ds, (_question, _epochs) in GRID_DATA.items():
+        if _ds in GRID_MULTITASK:
+            ARMS[f"gm-{_short}-{_ds.lower()}"] = {
+                **CORE, "recipe": "hybrid", "target": "rationale", "order": "multitask", "strip": True, "weight": 1,
+                "epochs": _epochs, "dataset": _ds, "question": _question, "model": _model, **_resources,
+                "smoke-first": _short in ("8b", "q25-7b") or _short in GRID_EXTRA}
         ARMS[f"g-{_short}-{_ds.lower()}"] = {
             **CORE, "recipe": "hybrid", "target": "rationale", "order": "answer-first", "strip": True, "weight": 1,
             "epochs": _epochs, "dataset": _ds, "question": _question, "model": _model, **_resources,
@@ -193,6 +204,9 @@ for _short, (_step, _window, _rationale) in GRID_SPEED.items():
     for _ds, (_train, _test) in GRID_LINES.items():
         _hours = 1.5 * (math.ceil(_train * GRID_DATA[_ds][1] / 8) * _step + _test * _window + 300 * _rationale + 1800) / 3600
         TIME[f"g-{_short}-{_ds.lower()}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
+        if _ds in GRID_MULTITASK:  # an explain line per window doubles the training lines
+            _hours = 1.5 * (math.ceil(2 * _train * GRID_DATA[_ds][1] / 8) * _step + _test * _window + 300 * _rationale + 1800) / 3600
+            TIME[f"gm-{_short}-{_ds.lower()}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -262,10 +276,12 @@ def strip_label(text, dataset=DATASET):
     return re.sub(r"\s{2,}", " ", out).strip()
 
 
-def explain_prompt():
+def explain_prompt(arm="freeze"):
+    # what the question asks about: "a seizure" for TUSZ, the yes/no question's subject for the other corpora
     p = config()["prompts"]
-    return (p["intro"] + "Based only on these waveforms, describe the specific evidence about whether this window shows "
-            "a seizure in the text_rationale field: which channel(s), where along the time axis, and what the curve "
+    what = "a seizure" if dataset_of(arm) == "TUSZ" else re.search(r"does this window show (.+)\? Set", prompt_text(arm)).group(1)
+    return (p["intro"] + f"Based only on these waveforms, describe the specific evidence about whether this window shows "
+            f"{what} in the text_rationale field: which channel(s), where along the time axis, and what the curve "
             "looks like there (shape, frequency, amplitude, symmetry). " + p["no-meta"])
 
 
@@ -297,7 +313,7 @@ def with_rationale(rows, split, arm):
         if order == "multitask":
             out.append(r)
             if split == "train" and Path(path).name in source:  # val keeps the answer question only, so its metric is clean
-                out.append({**r, "question": "explain", "instruction": explain_prompt(),
+                out.append({**r, "question": "explain", "instruction": explain_prompt(arm),
                             "output": json.dumps({"text_rationale": explain(path)})})
         elif Path(path).name not in source:
             out.append(r)
@@ -789,7 +805,7 @@ def rationale_eval(arm, smoke):
     for fmt in eval_formats(arm):
         out = results / f"rationale-{arm}-{fmt}.csv"
         done = {r["path"] for r in read_csv(out)}
-        prompt = explain_prompt() if fmt == "explain" else rationale_prompt(arm)
+        prompt = explain_prompt(arm) if fmt == "explain" else rationale_prompt(arm)
         prefix_fn = main.runner.enforcer(processor, eval_structure(fmt))
         started, todo = time.time(), [w for w in windows if w not in done]
         print(f"arm {arm} ({fmt}): rationale evaluation on {len(todo)} windows -> {out}", flush=True)
