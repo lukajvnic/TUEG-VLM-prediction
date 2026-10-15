@@ -113,6 +113,14 @@ for _ds, _question, _epochs in (("TUAB", "abnormal", 4), ("TUEP", "epilepsy", 10
 GRID_MODELS = {"2b": ("qwen3-vl:2b-instruct", {}), "4b": ("qwen3-vl:4b-instruct", {"gpus": "a100:1", "ram": "64G"}),
                "8b": ("qwen3-vl:8b-instruct", {"gpus": "a100:1", "ram": "64G"}),
                "q25-7b": ("qwen2.5vl:7b", {"gpus": "a100:1", "ram": "64G"})}  # 2b: the default MIG slice
+# round 7b (2026-10-15, "as many models as possible"): every other base that fits one A100 and has a separate image
+# side (vision_modules): Gemma 3/4, MedGemma, Granite, LLaVA. They see less of the 2688x896 image (Gemma resizes to
+# 896^2, LLaVA-1.5 to 336^2, Granite tiles), which is part of the result. All start with the smoke
+GRID_EXTRA = {"gemma3-4b": "gemma3:4b", "gemma3-12b": "gemma3:12b", "medgemma-4b": "medgemma:4b",
+              "medgemma15-4b": "medgemma1.5:4b", "gemma4-e2b": "gemma4:e2b", "gemma4-e4b": "gemma4:e4b",
+              "granite-2b": "granite3.2-vision:2b", "llava-7b": "llava:7b", "llava-phi3": "llava-phi3:3.8b",
+              "llava-llama3": "llava-llama3:8b"}
+GRID_MODELS.update({short: (model, {"gpus": "a100:1", "ram": "64G"}) for short, model in GRID_EXTRA.items()})
 GRID_DATA = {"TUSZ": ("any_seizure", 4), "TUAB": ("abnormal", 4), "TUEP": ("epilepsy", 10), "TUAR": ("eyem", 12),
              "TUEV": ("epileptiform", 12)}
 for _short, (_model, _resources) in GRID_MODELS.items():
@@ -120,7 +128,7 @@ for _short, (_model, _resources) in GRID_MODELS.items():
         ARMS[f"g-{_short}-{_ds.lower()}"] = {
             **CORE, "recipe": "hybrid", "target": "rationale", "order": "answer-first", "strip": True, "weight": 1,
             "epochs": _epochs, "dataset": _ds, "question": _question, "model": _model, **_resources,
-            "smoke-first": _short in ("8b", "q25-7b")}
+            "smoke-first": _short in ("8b", "q25-7b") or _short in GRID_EXTRA}
 RATIONALE_EVAL_WINDOWS = 300  # stratified 150 seizure / 150 not, from the probe's test windows, seed 0
 # round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines;
 # round 3's (5155519) rationale-first, the 10x weight and generation scoring; round 4's (5399669) answer-first and
@@ -172,13 +180,18 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         "c-tusz-more": "1-06:00:00", "c-tusz-pilot": "10:00:00", "c-tuab-abnormal": "08:00:00",
         "c-tuep-epilepsy": "08:00:00", "c-tuar-eyem": "06:00:00", "c-tuev-epileptiform": "05:00:00"}
 # grid walltimes: steps x s/step + test windows x s/window + the rationale eval (300 windows) + loading and saves,
-# with 40% margin. s/step: 2b hybrid measured 14.8 on the slice; 4b freeze measured 7.7 on an A100 (hybrid ~9,
-# estimate); 8b and 7b ~16 (estimate). Train lines: data/core, 2026-10-14
-GRID_SPEED = {"2b": (14.8, 1.0, 13), "4b": (9.0, 0.8, 10), "8b": (16.0, 1.5, 18), "q25-7b": (16.0, 1.5, 18)}
+# with 50% margin. Measured on the grid's first jobs (2026-10-15): s/step 2b 15.5-16.1 (slice), 4b 10.1-10.8 (one run
+# 26.3), 8b 14.6-15.9, qwen2.5vl:7b 24.9-41.5; scoring 0.40-0.65 s/window; rationale eval 6.4-7.4 s/window. The other
+# families are not measured: they see 256-2,000 image tokens against Qwen's 2,352-3,072, so these are loose guesses
+GRID_SPEED = {"2b": (16.5, 0.7, 8), "4b": (14.0, 0.7, 8), "8b": (16.5, 0.7, 8), "q25-7b": (42.0, 1.0, 10)}
+GRID_SPEED.update({short: (14.0, 1.0, 10) for short in ("gemma3-4b", "medgemma-4b", "medgemma15-4b", "gemma4-e2b",
+                                                        "gemma4-e4b", "granite-2b", "llava-phi3")})
+GRID_SPEED.update({short: (20.0, 1.0, 12) for short in ("llava-7b", "llava-llama3")})
+GRID_SPEED["gemma3-12b"] = (26.0, 1.5, 15)
 GRID_LINES = {"TUSZ": (8760, 8460), "TUAB": (2283, 1200), "TUEP": (826, 1084), "TUAR": (367, 3540), "TUEV": (335, 354)}
 for _short, (_step, _window, _rationale) in GRID_SPEED.items():
     for _ds, (_train, _test) in GRID_LINES.items():
-        _hours = 1.4 * (math.ceil(_train * GRID_DATA[_ds][1] / 8) * _step + _test * _window + 300 * _rationale + 1800) / 3600
+        _hours = 1.5 * (math.ceil(_train * GRID_DATA[_ds][1] / 8) * _step + _test * _window + 300 * _rationale + 1800) / 3600
         TIME[f"g-{_short}-{_ds.lower()}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
@@ -324,10 +337,26 @@ def arm_config(cfg, arm, smoke):
     return settings
 
 
-def vision_module(model):
-    names = [n for n, _ in model.named_modules() if n.split(".")[-1] == "visual"]
-    assert len(names) == 1, names
-    return names[0], model.get_submodule(names[0])
+# the image side under each family's name: Qwen's "visual" (blocks + merger), and the vision tower plus projector of
+# Gemma 3/4, LLaVA and Granite (LLaVA-NeXT)
+VISION_PARTS = ("visual", "vision_tower", "multi_modal_projector", "embed_vision")
+
+
+def vision_modules(model):
+    # the outermost module of each image part (a part nested in another one is trained with it)
+    names = [n for n, _ in model.named_modules() if n.split(".")[-1] in VISION_PARTS]
+    names = [n for n in names if not any(n.startswith(other + ".") for other in names)]
+    assert names, "no image-side module found"
+    return names
+
+
+def drop_softcap(model):
+    # Gemma 4 caps its output logits at 30: in bf16 the true/false logits both saturate, the gradient is exactly 0
+    # and P(true) is 0.5 (known-issues.md, "Gemma4's dead gradient"); only Gemma 4 sets it
+    text = model.config.get_text_config()
+    if getattr(text, "final_logit_softcapping", None):
+        print(f"final_logit_softcapping {text.final_logit_softcapping} -> None", flush=True)
+        text.final_logit_softcapping = None
 
 
 def init_frozen_language(settings):
@@ -343,14 +372,17 @@ def init_frozen_language(settings):
     model.config.use_cache = False
     model.config.keys_to_ignore_at_inference = main.EVAL_IGNORE
     model.requires_grad_(False)
+    drop_softcap(model)
 
-    name, vision = vision_module(model)
-    vision.float()
-    vision.requires_grad_(True)
+    names = vision_modules(model)
+    for name in names:
+        vision = model.get_submodule(name)
+        vision.float()
+        vision.requires_grad_(True)
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
-    print(f"trainable: {trainable / 1e6:.0f}M of {total / 1e6:.0f}M parameters ({name}, fp32); language model frozen",
-          flush=True)
+    print(f"trainable: {trainable / 1e6:.0f}M of {total / 1e6:.0f}M parameters ({', '.join(names)}, fp32); "
+          f"language model frozen", flush=True)
     return model, processor
 
 
@@ -361,13 +393,15 @@ def hybridize(model, lora):
     from peft import LoraConfig, get_peft_model
 
     language, _ = main.runner.lora_targets(model)
-    name, _ = vision_module(model)
+    names = vision_modules(model)
     model = get_peft_model(model, LoraConfig(r=lora["rank"], lora_alpha=lora["alpha"], lora_dropout=lora["dropout"],
                                              bias="none", task_type="CAUSAL_LM", target_modules=language,
-                                             modules_to_save=[name.split(".")[-1]]))
+                                             modules_to_save=sorted({n.split(".")[-1] for n in names})))
     copies = [m for n, m in model.named_modules() if n.endswith("modules_to_save.default")]
-    assert len(copies) == 1, len(copies)
-    copies[0].float()
+    assert len(copies) == len(names), (len(copies), names)
+    for copy in copies:
+        copy.float()
+    print(f"image side trained in full: {', '.join(names)}", flush=True)
     return model
 
 
@@ -382,6 +416,7 @@ def init_hybrid(settings):
     model.config.use_cache = False
     model.config.keys_to_ignore_at_inference = main.EVAL_IGNORE
     model.enable_input_require_grads()
+    drop_softcap(model)
     model = hybridize(model, settings["lora"])
     vision = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" in n)
     lora = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" not in n)
@@ -531,6 +566,7 @@ def load_for_scoring(arm, smoke):
     base = base_spec(config(), model_of(arm))
     if ARMS[arm]["recipe"] in ("lora", "hybrid"):
         model, processor, _ = main.runner.load({"base": model_of(arm), "checkpoint": str(out_dir(arm, smoke).relative_to(ROOT))})
+        drop_softcap(model)  # trained without the cap, so scored without it
         return model, processor, base
 
     source = main.resolve_model(base["repo"]) if ARMS[arm]["recipe"] is None else str(out_dir(arm, smoke))
@@ -539,6 +575,8 @@ def load_for_scoring(arm, smoke):
     print(f"loading {source}", flush=True)
     model = AutoModelForImageTextToText.from_pretrained(source, dtype=torch.bfloat16, device_map="auto")
     model.eval()
+    if ARMS[arm]["recipe"]:
+        drop_softcap(model)
     return model, main.runner.load_processor(source, base, False), base
 
 
