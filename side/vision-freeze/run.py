@@ -900,6 +900,8 @@ def summarise_tuep_scan(arm, path):
     # spaced windows, and a patient by the mean over their recordings. The top of more draws is higher, and window
     # counts differ by class (epileptic patients have more recordings, non-epileptic recordings are more often short):
     # pooling a patient's windows gave random scores a patient AUROC of 0.61, unequal counts per recording 0.55
+    if not TUEP_EXCLUDE.exists():
+        sys.exit(f"{TUEP_EXCLUDE} is missing: the TUEP patients that share recordings with TUEV training must be left out")
     rows = list({r["path"]: r for r in read_csv(path)}.values())
     excluded = {r["patient"] for r in read_csv(TUEP_EXCLUDE)}
     windows, label = {}, {}
