@@ -107,15 +107,32 @@ ARMS["c-tusz-pilot"] = {**CORE, "epochs": 4, "train": "pilot-train"}
 for _ds, _question, _epochs in (("TUAB", "abnormal", 4), ("TUEP", "epilepsy", 10), ("TUAR", "eyem", 12),
                                 ("TUEV", "epileptiform", 12)):
     ARMS[f"c-{_ds.lower()}-{_question}"] = {**CORE, "epochs": _epochs, "dataset": _ds, "question": _question}
+# round 7 (2026-10-15), the grid: the hybrid recipe (answer first, label-stripped teacher rationale, weight 1) on the
+# core images, for every Qwen-VL model that fits one A100 x five corpora. The 8b and the 7b have never run it, so
+# their jobs start with a 2-step smoke (smoke-first) and stop early if it fails
+GRID_MODELS = {"2b": ("qwen3-vl:2b-instruct", {}), "4b": ("qwen3-vl:4b-instruct", {"gpus": "a100:1", "ram": "64G"}),
+               "8b": ("qwen3-vl:8b-instruct", {"gpus": "a100:1", "ram": "64G"}),
+               "q25-7b": ("qwen2.5vl:7b", {"gpus": "a100:1", "ram": "64G"})}  # 2b: the default MIG slice
+GRID_DATA = {"TUSZ": ("any_seizure", 4), "TUAB": ("abnormal", 4), "TUEP": ("epilepsy", 10), "TUAR": ("eyem", 12),
+             "TUEV": ("epileptiform", 12)}
+for _short, (_model, _resources) in GRID_MODELS.items():
+    for _ds, (_question, _epochs) in GRID_DATA.items():
+        ARMS[f"g-{_short}-{_ds.lower()}"] = {
+            **CORE, "recipe": "hybrid", "target": "rationale", "order": "answer-first", "strip": True, "weight": 1,
+            "epochs": _epochs, "dataset": _ds, "question": _question, "model": _model, **_resources,
+            "smoke-first": _short in ("8b", "q25-7b")}
 RATIONALE_EVAL_WINDOWS = 300  # stratified 150 seizure / 150 not, from the probe's test windows, seed 0
 # round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines;
 # round 3's (5155519) rationale-first, the 10x weight and generation scoring; round 4's (5399669) answer-first and
 # multitask
 SMOKE_ARMS = ("r5-hy-af-strip-w10", "r5-hy-mt-strip")
-LABEL_CODES = r"absz|bckg|cpsz|fnsz|gnsz|mysz|spsz|tcsz|tnsz"
+# label codes the teacher wrote into its rationales, removed by strip_label; TUAB's and TUEP's labels are plain words
+# ("normal", "epilepsy"), so only their label-naming sentences go
+LABEL_CODES = {"TUSZ": r"absz|bckg|cpsz|fnsz|gnsz|mysz|spsz|tcsz|tnsz", "TUAR": r"bckg|chew|elec|elpp|eyem|musc|shiv",
+               "TUEV": r"spsw|gped|pled|eyem|artf|bckg", "TUSL": r"bckg|seiz|slow"}
 SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
 AF_ANSWER = '{"present": true, "text_rationale": ""}'  # answer-first scoring: the boolean comes before any text
-RATIONALES = ROOT / "datasets" / "TUSZ"  # sft_{train,val}.jsonl: gemma3:12b's label-conditioned rationales, same windows
+RATIONALES = ROOT / "datasets"  # <DS>/sft_{train,val}.jsonl: gemma3:12b's label-conditioned rationales, same windows
 # the rationales name the shipped images' referential channels ("EEG F8-REF", "Fp1-LE"); the rerender shows bipolar
 # pairs ("F8-T4"), so channel names are cut to the electrode, which the bipolar row labels contain
 RATIONALE_CHARS = 1200
@@ -154,6 +171,15 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         # core: round 6's step counts, plus scoring; TUSZ as freeze-4ep-render(-more)
         "c-tusz-more": "1-06:00:00", "c-tusz-pilot": "10:00:00", "c-tuab-abnormal": "08:00:00",
         "c-tuep-epilepsy": "08:00:00", "c-tuar-eyem": "06:00:00", "c-tuev-epileptiform": "05:00:00"}
+# grid walltimes: steps x s/step + test windows x s/window + the rationale eval (300 windows) + loading and saves,
+# with 40% margin. s/step: 2b hybrid measured 14.8 on the slice; 4b freeze measured 7.7 on an A100 (hybrid ~9,
+# estimate); 8b and 7b ~16 (estimate). Train lines: data/core, 2026-10-14
+GRID_SPEED = {"2b": (14.8, 1.0, 13), "4b": (9.0, 0.8, 10), "8b": (16.0, 1.5, 18), "q25-7b": (16.0, 1.5, 18)}
+GRID_LINES = {"TUSZ": (8760, 8460), "TUAB": (2283, 1200), "TUEP": (826, 1084), "TUAR": (367, 3540), "TUEV": (335, 354)}
+for _short, (_step, _window, _rationale) in GRID_SPEED.items():
+    for _ds, (_train, _test) in GRID_LINES.items():
+        _hours = 1.4 * (math.ceil(_train * GRID_DATA[_ds][1] / 8) * _step + _test * _window + 300 * _rationale + 1800) / 3600
+        TIME[f"g-{_short}-{_ds.lower()}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -202,7 +228,7 @@ def lines(split, smoke, arm="freeze"):
     else:
         rows = [r for r in main.read_jsonl(SOURCE / f"perclass-{split}.jsonl") if r["question"] == QUESTION]
     if ARMS[arm].get("target") == "rationale":
-        rows = with_rationale(rows, split, ARMS[arm])
+        rows = with_rationale(rows, split, arm)
     return rows[:SMOKE_LINES[split]] if smoke else rows
 
 
@@ -210,14 +236,16 @@ def order_of(arm):
     return ARMS[arm].get("order", "rationale-first") if ARMS[arm].get("target") == "rationale" else None
 
 
-def strip_label(text):
+def strip_label(text, dataset=DATASET):
     # the teacher wrote each rationale knowing the label and usually names it ('justifying the "fnsz" seizure
     # labeling'); drop the sentences about the labeling or introducing the report, then any label code left inline
     keep = [s for s in SENTENCE.split(text) if s.strip() and not re.search(r"label|here'?s an? |^\**report", s.strip(), re.I)]
     out = " ".join(s.strip() for s in keep)
-    out = re.sub(rf'\s*\(\s*\\?"?({LABEL_CODES})\\?"?\s*\)', "", out, flags=re.I)
-    out = re.sub(rf'\\?"({LABEL_CODES})\\?"\s*', "", out, flags=re.I)
-    out = re.sub(rf"\b({LABEL_CODES})\b", "", out, flags=re.I)
+    if dataset in LABEL_CODES:
+        codes = LABEL_CODES[dataset]
+        out = re.sub(rf'\s*\(\s*\\?"?({codes})\\?"?\s*\)', "", out, flags=re.I)
+        out = re.sub(rf'\\?"({codes})\\?"\s*', "", out, flags=re.I)
+        out = re.sub(rf"\b({codes})\b", "", out, flags=re.I)
     return re.sub(r"\s{2,}", " ", out).strip()
 
 
@@ -228,35 +256,37 @@ def explain_prompt():
             "looks like there (shape, frequency, amplitude, symmetry). " + p["no-meta"])
 
 
-def rationale_prompt():
+def rationale_prompt(arm="freeze"):
     p = config()["prompts"]
     tail = " Set present to true only when it does."
-    base = prompt_text()
+    base = prompt_text(arm)
     assert base.endswith(tail), base
     return base[:-len(tail)] + " " + p["eval"]["binary-rationale"] + p["no-meta"] + tail
 
 
-def with_rationale(rows, split, spec):
+def with_rationale(rows, split, arm):
     # the same windows and answers with each window's teacher rationale, placed by the arm's order. A window without
-    # a teacher rationale (the "more" extras) keeps the plain answer question
+    # a teacher rationale (the "more" extras) keeps the plain answer question. Rationales are matched by window name:
+    # the core lists put the val windows under val/, the teacher's files under train/
+    spec, dataset = ARMS[arm], dataset_of(arm)
     order = spec.get("order", "rationale-first")
-    source = {r["images"][0]: json.loads(r["output"])["text_rationale"]
-              for r in main.read_jsonl(RATIONALES / f"sft_{split}.jsonl")}
-    text = rationale_prompt()
+    source = {Path(r["images"][0]).name: json.loads(r["output"])["text_rationale"]
+              for r in main.read_jsonl(RATIONALES / dataset / f"sft_{split}.jsonl")}
+    text = rationale_prompt(arm)
 
     def explain(path):
-        rationale = strip_label(source[path]) if spec.get("strip") else source[path]
-        return CHANNEL.sub(r"\1", rationale)
+        rationale = source[Path(path).name]
+        return CHANNEL.sub(r"\1", strip_label(rationale, dataset) if spec.get("strip") else rationale)
 
     out = []
     for r in rows:
         path, present = r["images"][0], json.loads(r["output"])["present"]
         if order == "multitask":
             out.append(r)
-            if split == "train" and path in source:  # val keeps the answer question only, so its metric is clean
+            if split == "train" and Path(path).name in source:  # val keeps the answer question only, so its metric is clean
                 out.append({**r, "question": "explain", "instruction": explain_prompt(),
                             "output": json.dumps({"text_rationale": explain(path)})})
-        elif path not in source:
+        elif Path(path).name not in source:
             out.append(r)
         else:
             fields = {"present": present, "text_rationale": explain(path)} if order == "answer-first" else \
@@ -605,7 +635,7 @@ def score(arm, smoke):
         collator = main.DataCollator(processor, image_root(arm), base)
         words = main.boolean_token_ids(processor.tokenizer)
         ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
-        text, labels = (rationale_prompt() if order_of(arm) == "answer-first" else prompt_text(arm)), truth(arm)
+        text, labels = (rationale_prompt(arm) if order_of(arm) == "answer-first" else prompt_text(arm)), truth(arm)
         answer = AF_ANSWER if order_of(arm) == "answer-first" else ANSWER
         started = time.time()
 
@@ -632,12 +662,16 @@ def score(arm, smoke):
         summarise(arm, out)
 
 
-def rationale_eval_windows():
-    rows = [r for r in read_csv(PROBE) if r["ds"] == DATASET and r["split"] == "test"]
-    labels, rng, half = truth(), random.Random(0), RATIONALE_EVAL_WINDOWS // 2
-    seizure = sorted(r["rel"] for r in rows if labels[r["rel"]])
-    calm = sorted(r["rel"] for r in rows if not labels[r["rel"]])
-    return rng.sample(seizure, half) + rng.sample(calm, half)
+def rationale_eval_windows(arm="freeze"):
+    # TUSZ: the probe's test windows (its test paths are the same in the core lists); other corpora: their test lines
+    labels, rng, half = truth(arm), random.Random(0), RATIONALE_EVAL_WINDOWS // 2
+    if dataset_of(arm) == "TUSZ":
+        paths = [r["rel"] for r in read_csv(PROBE) if r["ds"] == DATASET and r["split"] == "test"]
+    else:
+        paths = list(labels)
+    seizure = sorted(p for p in paths if labels[p])
+    calm = sorted(p for p in paths if not labels[p])
+    return rng.sample(seizure, min(half, len(seizure))) + rng.sample(calm, min(half, len(calm)))
 
 
 def eval_formats(arm):
@@ -696,12 +730,15 @@ def rationale_eval(arm, smoke):
     # per window: the reference rationale's NLL under this model, and the model's own generated rationale
     import torch
 
-    windows = rationale_eval_windows()
+    windows = rationale_eval_windows(arm)
     windows = windows[:3] + windows[-3:] if smoke else windows
     wanted = set(windows)
-    references = {r["path"]: CHANNEL.sub(r"\1", strip_label(r["ground_truth_rationale"]))
-                  for r in read_csv(ROOT / "datasets" / DATASET / "labels.csv") if r["path"] in wanted}
-    labels = truth()
+    references = {r["path"]: CHANNEL.sub(r"\1", strip_label(r["ground_truth_rationale"], dataset_of(arm)))
+                  for r in read_csv(ROOT / "datasets" / dataset_of(arm) / "labels.csv") if r["path"] in wanted}
+    missing = [w for w in windows if not references.get(w)]
+    if missing:
+        sys.exit(f"{len(missing)} rationale-eval windows have no reference rationale in labels.csv, e.g. {missing[:3]}")
+    labels = truth(arm)
     model, processor, base = load_for_scoring(arm, smoke)
     model.eval()
     collator = main.DataCollator(processor, image_root(arm), base)
@@ -714,7 +751,7 @@ def rationale_eval(arm, smoke):
     for fmt in eval_formats(arm):
         out = results / f"rationale-{arm}-{fmt}.csv"
         done = {r["path"] for r in read_csv(out)}
-        prompt = explain_prompt() if fmt == "explain" else rationale_prompt()
+        prompt = explain_prompt() if fmt == "explain" else rationale_prompt(arm)
         prefix_fn = main.runner.enforcer(processor, eval_structure(fmt))
         started, todo = time.time(), [w for w in windows if w not in done]
         print(f"arm {arm} ({fmt}): rationale evaluation on {len(todo)} windows -> {out}", flush=True)
@@ -775,7 +812,7 @@ def background_test(arm, smoke):
         collator = main.DataCollator(processor, image_root(arm), base)
         words = main.boolean_token_ids(processor.tokenizer)
         ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
-        text = rationale_prompt() if order_of(arm) == "answer-first" else prompt_text()
+        text = rationale_prompt(arm) if order_of(arm) == "answer-first" else prompt_text(arm)
         answer = AF_ANSWER if order_of(arm) == "answer-first" else ANSWER
         started = time.time()
         for start in range(0, len(todo), SCORE_BATCH):
@@ -909,16 +946,17 @@ def submit_job(cfg, arm, dry_run, arms=()):
     me = f"python {SIDE}/run.py"
     modes = lambda a: ("score",) if ARMS[a]["recipe"] is None else \
         ("train", "score", "rationale-eval") if ARMS[a]["recipe"] == "hybrid" else ("train", "score")
-    steps = {a: [f"{me} {a} --{m}" for m in modes(a)] for a in ARMS}
+    steps = {a: [f"{me} {a} --train --smoke"] * bool(ARMS[a].get("smoke-first")) + [f"{me} {a} --{m}" for m in modes(a)]
+             for a in ARMS}
     steps["smoke"] = [f"{me} {a} --{m} --smoke" for a in SMOKE_ARMS for m in modes(a)]
     steps["rationale-eval"] = [f"{me} {a} --rationale-eval" for a in arms]
     steps["background-test"] = [f"{me} {a} --background" for a in arms]
     logs = base_dir(arm == "smoke") / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    gpus = ARMS.get(arm, {}).get("gpus", GPUS)
-    text = script(name, TIME[arm], RAM, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
+    gpus, ram = ARMS.get(arm, {}).get("gpus", GPUS), ARMS.get(arm, {}).get("ram", RAM)
+    text = script(name, TIME[arm], ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
     text = text.replace(str(ROOT / "logs"), str(logs))
-    print(f"{'dry run' if dry_run else submit(text)} - {name}, {TIME[arm]}/{RAM}/gpu:{gpus}, log in {logs}")
+    print(f"{'dry run' if dry_run else submit(text)} - {name}, {TIME[arm]}/{ram}/gpu:{gpus}, log in {logs}")
     if dry_run:
         print(text)
 
