@@ -902,8 +902,12 @@ def summarise_tuep_scan(arm, path):
     # pooling a patient's windows gave random scores a patient AUROC of 0.61, unequal counts per recording 0.55
     if not TUEP_EXCLUDE.exists():
         sys.exit(f"{TUEP_EXCLUDE} is missing: the TUEP patients that share recordings with TUEV training must be left out")
-    rows = list({r["path"]: r for r in read_csv(path)}.values())
+    listed = {r["images"][0] for r in main.read_jsonl(TUEP_SCAN)}
+    rows = [r for r in {r["path"]: r for r in read_csv(path)}.values() if r["path"] in listed]
     excluded = {r["patient"] for r in read_csv(TUEP_EXCLUDE)}
+    scanned = {Path(r["path"]).stem.rsplit("_", 2)[0] for r in rows}
+    if excluded - scanned:
+        sys.exit(f"excluded patients not in the scan: {sorted(excluded - scanned)}")
     windows, label = {}, {}
     for r in rows:
         recording = Path(r["path"]).stem.rsplit("_", 1)[0]
@@ -912,6 +916,10 @@ def summarise_tuep_scan(arm, path):
             continue
         windows.setdefault(recording, []).append((int(Path(r["path"]).stem.rsplit("_", 1)[1]), float(r["p_true"])))
         label[recording] = label[patient] = r["epilepsy"] == "true"
+    for r in windows:  # a recording scanned in full (it has window 0) loses its first and last window, like the rest
+        if min(i for i, _ in windows[r]) == 0:
+            last = max(i for i, _ in windows[r])
+            windows[r] = [(i, p) for i, p in windows[r] if 0 < i < last]
     short = [r for r in windows if len(windows[r]) < SCAN_WINDOWS]
     for r in windows:  # SCAN_WINDOWS spread through the recording, in time order
         ordered = [p for _, p in sorted(windows[r])]
@@ -921,7 +929,7 @@ def summarise_tuep_scan(arm, path):
     y_recording = np.array([label[r] for r in recordings])
     all_p = np.array([p for r in recordings for p in windows[r]])
     all_y = np.array([label[r] for r in recordings for _ in windows[r]])
-    summary = {"arm": arm, "excluded_patients": len(excluded), "short_recordings_left_out": len(short),
+    summary = {"arm": arm, "excluded_patients": len(excluded & scanned), "short_recordings_left_out": len(short),
                "windows": len(all_p), "recordings": len(recordings),
                "auroc_window": round(auroc(all_p, all_y), 4)}
     for k in SCAN_TOP:
@@ -1097,6 +1105,8 @@ def submit_job(cfg, arm, dry_run, arms=()):
         if arm == "background-test":
             missing += [r["path"] for r in read_csv(BACKGROUND) if not (image_root(a) / r["path"]).exists()]
         if arm == "tuep-scan":
+            if ARMS[a]["images"] != "core" or dataset_of(a) != "TUEV":
+                sys.exit(f"{a} is not a TUEV model on the core images")
             missing += [r["images"][0] for r in main.read_jsonl(TUEP_SCAN)
                         if not (IMAGE_ROOTS["core"] / "TUEP" / r["images"][0]).exists()]
             if not (out_dir(a) / "manifest.json").exists():

@@ -608,7 +608,7 @@ def check_core():
 
     bad, total = [], 0
     for table in sorted(CORE_DATA.glob("*-windows.csv")):
-        ds = table.name.removesuffix("-windows.csv")
+        ds = table.name.removesuffix("-windows.csv").removesuffix("-scan")  # TUEP-scan's images are in TUEP/scan/
         for row in csv.DictReader(table.open()):
             total += 1
             try:
