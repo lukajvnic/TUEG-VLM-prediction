@@ -127,6 +127,12 @@ GRID_MODELS.update({short: (model, {"gpus": "a100:1", "ram": "64G"}) for short, 
 # 0.08 and val loss rising. Multitask matched 10x weighting on TUSZ's all-rationale pilot lines (0.841 vs 0.853
 # frozen, hybrid 0.855) without weighting tokens (maintainer's choice, 2026-10-15)
 GRID_MULTITASK = ("TUAB", "TUAR", "TUEV")
+# the TUEP system (2026-10-15): TUEP's label is the patient's diagnosis and most windows of an epileptic patient look
+# normal (window AUROC 0.52 for every direct recipe), so a TUEV epileptiform detector scans whole TUEP test recordings
+# (--scan) and each patient is scored by their top spike probabilities. The detectors are the best TUSZ recipe
+# (vision trained, language frozen, answer only); every grid TUEV model also gets a scan
+ARMS["s-2b-tuev"] = {**CORE, "epochs": 12, "dataset": "TUEV", "question": "epileptiform"}
+ARMS["s-4b-tuev"] = {**ARMS["s-2b-tuev"], "model": "qwen3-vl:4b-instruct", "gpus": "a100:1", "ram": "64G"}
 GRID_DATA = {"TUSZ": ("any_seizure", 4), "TUAB": ("abnormal", 4), "TUEP": ("epilepsy", 10), "TUAR": ("eyem", 12),
              "TUEV": ("epileptiform", 12)}
 for _short, (_model, _resources) in GRID_MODELS.items():
@@ -163,6 +169,11 @@ IMAGE_ROOTS = {"shipped": ROOT / "datasets", "render": Path(os.environ.get("VF_R
 SOURCE = ROOT / "side" / "multilabel-pilot" / "data"  # the pilot's balanced lines; this test keeps only any_seizure
 MORE = SIDE / "data" / "more-train.jsonl"  # rerender.py lists
 BACKGROUND = SIDE / "data" / "background.csv"  # rerender.py background
+# the TUEP spike scan (2026-10-15): rerender.py tuep-scan's windows of every TUEP test recording, and the TUEP test
+# patients left out because they share a recording or a person with TUEV train/val (signal-fingerprint audit)
+TUEP_SCAN, TUEP_EXCLUDE = SIDE / "data" / "core" / "TUEP-scan.jsonl", SIDE / "tuep-scan-exclude.csv"
+SCAN_TOP = (1, 3, 5)  # a recording's score: the mean of its top-k window spike probabilities (top-5 feeds the patient)
+SCAN_WINDOWS = 12  # every recording is scored on exactly this many windows, evenly spaced; shorter ones are left out
 SEIZURES = ("absz", "cpsz", "fnsz", "gnsz", "mysz", "spsz", "tcsz", "tnsz")
 ANSWER = '{"present": true}'  # the scored row's answer: only the logits before its boolean are read
 VISION_LR = 1e-5  # full fine-tune of a ViT: ViTST 2e-5, TimeMaster 2e-6; NeuroCanvas does not report one
@@ -182,7 +193,7 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         # round 5: train (~14 s/step with LoRA on top), score, then the rationale evaluation (~1.2 h)
         "r5-hy-af-strip-w10": "12:00:00", "r5-hy-mt-strip": "18:00:00", "r5-hy-af-strip-more": "1-08:00:00",
         "r5-hy-mt-strip-more": "1-12:00:00", "rationale-eval": "10:00:00", "base-render": "03:00:00",
-        "background-test": "06:00:00",
+        "background-test": "06:00:00", "s-2b-tuev": "06:00:00", "s-4b-tuev": "05:00:00", "tuep-scan": "08:00:00",
         # round 6, at ~13 s/step on the slice: TUAB 1,142 steps, TUEP 1,045, TUAR 557 and TUEV 549, then 354-3,540
         # test windows; the 4b on a full A100 at an unmeasured speed, so the pilot's 1,080 steps get room
         "r6-tuab-abnormal": "08:00:00", "r6-tuep-epilepsy": "08:00:00", "r6-tuar-eyem": "06:00:00",
@@ -848,6 +859,93 @@ def summarise_rationale(arm, fmt, path):
     print(json.dumps(summary), flush=True)
 
 
+def tuep_scan(arm, smoke):
+    # a TUEV epileptiform model scores every scanned TUEP test window (same scorer and prompt as its own test set)
+    import torch
+
+    assert ARMS[arm]["images"] == "core" and dataset_of(arm) == "TUEV", f"{arm} is not a core TUEV model"
+    results = base_dir(smoke) / "results"
+    results.mkdir(parents=True, exist_ok=True)
+    out = results / f"tuep-scan-{arm}.csv"
+    rows = main.read_jsonl(TUEP_SCAN)
+    labels = {r["images"][0]: r["epilepsy"] for r in rows}
+    done = {r["path"] for r in read_csv(out)}
+    todo = [r["images"][0] for r in rows if r["images"][0] not in done]
+    if smoke:
+        todo = todo[:SMOKE_WINDOWS]
+    print(f"arm {arm}: {len(todo)} TUEP scan windows to score, {len(done)} already done -> {out}", flush=True)
+
+    if todo:
+        model, processor, base = load_for_scoring(arm, smoke)
+        collator = main.DataCollator(processor, IMAGE_ROOTS["core"] / "TUEP", base)
+        words = main.boolean_token_ids(processor.tokenizer)
+        ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
+        answer_first = order_of(arm) == "answer-first"
+        text, answer = (rationale_prompt(arm), AF_ANSWER) if answer_first else (prompt_text(arm), ANSWER)
+        started = time.time()
+        for start in range(0, len(todo), SCORE_BATCH):
+            chunk = todo[start:start + SCORE_BATCH]
+            for path, p in zip(chunk, p_true(model, collator, ids, text, chunk, answer)):
+                append_row(out, ["path", "p_true", "epilepsy"], [path, f"{p:.6f}", str(labels[path]).lower()])
+            n = start + len(chunk)
+            if n % 400 < SCORE_BATCH or n == len(todo):
+                print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
+
+    if not smoke:
+        summarise_tuep_scan(arm, out)
+
+
+def summarise_tuep_scan(arm, path):
+    # each recording is scored by the mean of its top-k window spike probabilities over exactly SCAN_WINDOWS evenly
+    # spaced windows, and a patient by the mean over their recordings. The top of more draws is higher, and window
+    # counts differ by class (epileptic patients have more recordings, non-epileptic recordings are more often short):
+    # pooling a patient's windows gave random scores a patient AUROC of 0.61, unequal counts per recording 0.55
+    rows = list({r["path"]: r for r in read_csv(path)}.values())
+    excluded = {r["patient"] for r in read_csv(TUEP_EXCLUDE)}
+    windows, label = {}, {}
+    for r in rows:
+        recording = Path(r["path"]).stem.rsplit("_", 1)[0]
+        patient = recording.rsplit("_", 1)[0]
+        if patient in excluded:
+            continue
+        windows.setdefault(recording, []).append((int(Path(r["path"]).stem.rsplit("_", 1)[1]), float(r["p_true"])))
+        label[recording] = label[patient] = r["epilepsy"] == "true"
+    short = [r for r in windows if len(windows[r]) < SCAN_WINDOWS]
+    for r in windows:  # SCAN_WINDOWS spread through the recording, in time order
+        ordered = [p for _, p in sorted(windows[r])]
+        keep = np.linspace(0, len(ordered) - 1, SCAN_WINDOWS).round().astype(int)
+        windows[r] = [ordered[i] for i in keep] if len(ordered) >= SCAN_WINDOWS else []
+    recordings = sorted(r for r in windows if windows[r])
+    y_recording = np.array([label[r] for r in recordings])
+    all_p = np.array([p for r in recordings for p in windows[r]])
+    all_y = np.array([label[r] for r in recordings for _ in windows[r]])
+    summary = {"arm": arm, "excluded_patients": len(excluded), "short_recordings_left_out": len(short),
+               "windows": len(all_p), "recordings": len(recordings),
+               "auroc_window": round(auroc(all_p, all_y), 4)}
+    for k in SCAN_TOP:
+        score = np.array([np.mean(sorted(windows[r])[-k:]) for r in recordings])
+        summary[f"auroc_recording_top{k}"] = round(auroc(score, y_recording), 4)
+    top5 = {r: np.mean(sorted(windows[r])[-5:]) for r in recordings}
+    patients = sorted({r.rsplit("_", 1)[0] for r in recordings})
+    score = np.array([np.mean([top5[r] for r in recordings if r.rsplit("_", 1)[0] == q]) for q in patients])
+    y = np.array([label[q] for q in patients])
+    rng = np.random.default_rng(0)
+    values = [auroc(score[idx], y[idx]) for idx in (rng.integers(0, len(y), len(y)) for _ in range(BOOTSTRAP))]
+    predicted = score >= 0.5
+    summary.update({"patients": len(patients), "epilepsy_patients": int(y.sum()),
+                    "auroc_patient": round(auroc(score, y), 4),
+                    "auroc_patient_ci_low": round(float(np.nanpercentile(values, 2.5)), 4),
+                    "auroc_patient_ci_high": round(float(np.nanpercentile(values, 97.5)), 4),
+                    "balanced_accuracy_patient": round(float((predicted[y].mean() + (~predicted[~y]).mean()) / 2), 4),
+                    "sensitivity_patient": round(float(predicted[y].mean()), 4),
+                    "specificity_patient": round(float((~predicted[~y]).mean()), 4)})
+    with (path.parent / f"summary-tuep-scan-{arm}.csv").open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(summary))
+        writer.writeheader()
+        writer.writerow(summary)
+    print(json.dumps(summary), flush=True)
+
+
 def background_test(arm, smoke):
     # the same teacher-forced scorer as score(), on the interior background windows
     import torch
@@ -985,15 +1083,22 @@ def summarise(arm, path):
 
 
 def submit_job(cfg, arm, dry_run, arms=()):
-    name = f"eeg-vlm-vision-freeze-{arm}" + ("-" + "-".join(arms) if arm in ("rationale-eval", "background-test") else "")
+    name = f"eeg-vlm-vision-freeze-{arm}" + ("-" + "-".join(arms) if arm in ("rationale-eval", "background-test", "tuep-scan") else "")
     if name in queued():
         sys.exit(f"{name} is already queued or running")
     if not (SOURCE / "perclass-train.jsonl").exists():
         sys.exit("no training lines: python side/multilabel-pilot/build.py")
-    for a in SMOKE_ARMS if arm == "smoke" else (arms if arm in ("rationale-eval", "background-test") else (arm,)):
-        missing = [] if arm == "background-test" else missing_images(a)
+    if arm == "tuep-scan" and len(arms) != 1:
+        sys.exit("tuep-scan takes one arm per job (the job asks for that arm's GPU)")
+    for a in SMOKE_ARMS if arm == "smoke" else (arms if arm in ("rationale-eval", "background-test", "tuep-scan") else (arm,)):
+        missing = [] if arm in ("background-test", "tuep-scan") else missing_images(a)
         if arm == "background-test":
             missing += [r["path"] for r in read_csv(BACKGROUND) if not (image_root(a) / r["path"]).exists()]
+        if arm == "tuep-scan":
+            missing += [r["images"][0] for r in main.read_jsonl(TUEP_SCAN)
+                        if not (IMAGE_ROOTS["core"] / "TUEP" / r["images"][0]).exists()]
+            if not (out_dir(a) / "manifest.json").exists():
+                sys.exit(f"{a} has not finished training")
         if missing:
             sys.exit(f"{a}: {len(missing)} images missing under {image_root(a)}, e.g. {missing[:3]}")
 
@@ -1005,9 +1110,11 @@ def submit_job(cfg, arm, dry_run, arms=()):
     steps["smoke"] = [f"{me} {a} --{m} --smoke" for a in SMOKE_ARMS for m in modes(a)]
     steps["rationale-eval"] = [f"{me} {a} --rationale-eval" for a in arms]
     steps["background-test"] = [f"{me} {a} --background" for a in arms]
+    steps["tuep-scan"] = [f"{me} {a} --scan" for a in arms]
     logs = base_dir(arm == "smoke") / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    gpus, ram = ARMS.get(arm, {}).get("gpus", GPUS), ARMS.get(arm, {}).get("ram", RAM)
+    resources = ARMS.get(arms[0] if arm == "tuep-scan" else arm, {})
+    gpus, ram = resources.get("gpus", GPUS), resources.get("ram", RAM)
     text = script(name, TIME[arm], ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
     text = text.replace(str(ROOT / "logs"), str(logs))
     print(f"{'dry run' if dry_run else submit(text)} - {name}, {TIME[arm]}/{ram}/gpu:{gpus}, log in {logs}")
@@ -1018,19 +1125,20 @@ def submit_job(cfg, arm, dry_run, arms=()):
 def main_cli():
     cfg = config()
     parser = argparse.ArgumentParser()
-    parser.add_argument("arm", choices=[*ARMS, "smoke", "rationale-eval", "background-test"])
-    parser.add_argument("arms", nargs="*", help="with rationale-eval or background-test: the finished arms, one job")
+    parser.add_argument("arm", choices=[*ARMS, "smoke", "rationale-eval", "background-test", "tuep-scan"])
+    parser.add_argument("arms", nargs="*", help="with rationale-eval, background-test or tuep-scan: the finished arms")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--train", action="store_true", help="train this arm in this process")
     mode.add_argument("--score", action="store_true", help="score this arm on the TUSZ test windows")
     mode.add_argument("--rationale-eval", action="store_true", help="reference NLL and generated rationales, 300 windows")
     mode.add_argument("--background", action="store_true", help="score data/background.csv's interior background windows")
+    mode.add_argument("--scan", action="store_true", help="a TUEV model scores the TUEP scan windows; patient summary")
     mode.add_argument("--dry-run", action="store_true", help="print the job, submit nothing")
     parser.add_argument("--smoke", action="store_true", help="with --train/--score: 2 steps, 24 windows, under smoke/")
     args = parser.parse_args()
 
-    if args.train or args.score or args.rationale_eval or args.background:
-        if args.arm in ("smoke", "rationale-eval", "background-test") or args.train and ARMS[args.arm]["recipe"] is None:
+    if args.train or args.score or args.rationale_eval or args.background or args.scan:
+        if args.arm in ("smoke", "rationale-eval", "background-test", "tuep-scan") or args.train and ARMS[args.arm]["recipe"] is None:
             parser.error(f"that mode does not apply to {args.arm}")
         os.environ.setdefault("WANDB_MODE", "offline")
         if args.train:
@@ -1039,11 +1147,13 @@ def main_cli():
             score(args.arm, args.smoke)
         elif args.background:
             background_test(args.arm, args.smoke)
+        elif args.scan:
+            tuep_scan(args.arm, args.smoke)
         else:
             rationale_eval(args.arm, args.smoke)
         return
 
-    if args.arm in ("rationale-eval", "background-test") and not args.arms:
+    if args.arm in ("rationale-eval", "background-test", "tuep-scan") and not args.arms:
         parser.error(f"{args.arm} needs the arms to evaluate")
     submit_job(cfg, args.arm, args.dry_run, tuple(args.arms))
 

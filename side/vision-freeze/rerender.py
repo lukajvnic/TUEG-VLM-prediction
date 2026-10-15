@@ -16,6 +16,7 @@
 #   python side/vision-freeze/rerender.py background [N] # data/background.csv (see below), rendered into images/
 #   python side/vision-freeze/rerender.py datasets [N]   # the other corpora (see below), rendered into images/<DS>/
 #   python side/vision-freeze/rerender.py core [N]       # every corpus in the core design (see below), images-core/
+#   python side/vision-freeze/rerender.py tuep-scan [N]  # TUEP test recordings for the spike-detector scan (see below)
 # background: the scored TUSZ test set's background is 97.8% first/last windows of its recording (known-issues,
 # 2026-10-14). This lists, from the same 200 test patients, shipped test windows never scored that are background
 # only and not a recording's first or last window, up to 2 per recording spread through it (seed 0), with each
@@ -621,6 +622,39 @@ def check_core():
         sys.exit("bad core images: stop")
 
 
+def tuep_scan(processes, per_recording=24):
+    # TUEP's label is the patient's diagnosis, and most 20 s windows of an epileptic patient look normal, so the
+    # patient-level system scans whole recordings with a TUEV spike detector (run.py --scan). Every TUEP test recording
+    # of the core lists gives up to 24 windows spread evenly through it (its first and last window left out), each
+    # labelled with the patient's diagnosis; rendered in the core design into images-core/TUEP/scan/
+    import mne
+    from render import WINDOW
+
+    recordings = {r["scan"]: r["edf"] for r in csv.DictReader((CORE_DATA / "TUEP-windows.csv").open()) if r["role"] == "test"}
+    rows = []
+    for scan, edf in sorted(recordings.items()):
+        header = mne.io.read_raw_edf(str(ROOT / edf), preload=False, verbose="ERROR")
+        n = max(1, int((header.n_times / header.info["sfreq"]) // WINDOW))
+        if n <= per_recording + 2:
+            indices = list(range(n))
+        else:
+            indices = sorted({round(1 + k * (n - 3) / (per_recording - 1)) for k in range(per_recording)})
+        rows += [(f"scan/{scan}_{i}.png", scan, i, edf, "00_epilepsy" in edf) for i in indices]
+
+    table = CORE_DATA / "TUEP-scan-windows.csv"
+    with table.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["path", "role", "scan", "index", "edf"])
+        writer.writerows([path, "scan", scan, i, edf] for path, scan, i, edf, _ in rows)
+    with (CORE_DATA / "TUEP-scan.jsonl").open("w") as f:
+        for path, scan, _, _, epilepsy in rows:
+            f.write(json.dumps({"images": [path], "patient": scan.rsplit("_", 1)[0], "epilepsy": epilepsy}) + "\n")
+    patients = {scan.rsplit("_", 1)[0] for _, scan, *_ in rows}
+    print(f"TUEP scan: {len(rows)} windows from {len(recordings)} recordings, {len(patients)} patients "
+          f"({sum(r[4] for r in rows)} windows epilepsy) -> {table}", flush=True)
+    render_all(processes, out=CORE_IMAGES / "TUEP", table=table, style="core")
+
+
 def question_of(ds):
     return "any_seizure" if ds == "TUSZ" else QUESTIONS[ds][0]
 
@@ -663,6 +697,8 @@ def main():
         core(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "check-core":
         check_core()
+    elif sys.argv[1] == "tuep-scan":
+        tuep_scan(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "sample":
         # 2 seizure and 2 background training windows, beside their shipped PNGs, to look at
         shipped = {r["path"]: any(r[c] == "true" for c in SEIZURES) for r in csv.DictReader((DATASET / "labels.csv").open())}
