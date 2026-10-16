@@ -178,7 +178,7 @@ SEIZURES = ("absz", "cpsz", "fnsz", "gnsz", "mysz", "spsz", "tcsz", "tnsz")
 ANSWER = '{"present": true}'  # the scored row's answer: only the logits before its boolean are read
 VISION_LR = 1e-5  # full fine-tune of a ViT: ViTST 2e-5, TimeMaster 2e-6; NeuroCanvas does not report one
 EVALS = 5
-SCORE_BATCH = 4  # test windows per forward
+SCORE_BATCH = 4  # test windows per forward (Qwen; score_batch)
 GPUS, RAM = "a100_3g.20gb:1", "40G"
 # measured in round 1: freeze 13.1 s/step, scoring 0.60 s/window (~1.4 h for 8,460); 4 epochs of the pilot lines =
 # 1,080 steps (~4 h), of the "more" lines = 4,664 steps (~17 h); 5 checkpoint saves of ~8 GB on top
@@ -628,6 +628,13 @@ def load_for_scoring(arm, smoke):
     return model, main.runner.load_processor(source, base, False), base
 
 
+def score_batch(model):
+    # Qwen's processor takes one flat image list for a batch of prompts; Gemma's reads a flat list as all the images of
+    # one prompt ("inconsistently sized batches of images (1) and text (4)"), so the other families score one window
+    # per forward
+    return SCORE_BATCH if "qwen" in model.config.model_type else 1
+
+
 def p_true(model, collator, ids, text, paths, answer=ANSWER):
     # the collator builds exactly the training input, answer included, so the boolean token's position is known
     # and only the logits before it are kept
@@ -736,12 +743,13 @@ def score(arm, smoke):
                     print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
             todo = []
 
-        for start in range(0, len(todo), SCORE_BATCH):
-            chunk = todo[start:start + SCORE_BATCH]
+        batch = score_batch(model)
+        for start in range(0, len(todo), batch):
+            chunk = todo[start:start + batch]
             for path, p in zip(chunk, p_true(model, collator, ids, text, chunk, answer)):
                 append_row(out, ["path", "p_true", "seizure"], [path, f"{p:.6f}", str(labels[path]).lower()])
             n = start + len(chunk)
-            if n % 200 < SCORE_BATCH or n == len(todo) or smoke and start == 0:
+            if n % 200 < batch or n == len(todo) or smoke and start == 0:
                 print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
 
     if not smoke:
@@ -904,12 +912,13 @@ def tuep_scan(arm, smoke):
         answer_first = order_of(arm) == "answer-first"
         text, answer = (rationale_prompt(arm), AF_ANSWER) if answer_first else (prompt_text(arm), ANSWER)
         started = time.time()
-        for start in range(0, len(todo), SCORE_BATCH):
-            chunk = todo[start:start + SCORE_BATCH]
+        batch = score_batch(model)
+        for start in range(0, len(todo), batch):
+            chunk = todo[start:start + batch]
             for path, p in zip(chunk, p_true(model, collator, ids, text, chunk, answer)):
                 append_row(out, ["path", "p_true", "epilepsy"], [path, f"{p:.6f}", str(labels[path]).lower()])
             n = start + len(chunk)
-            if n % 400 < SCORE_BATCH or n == len(todo):
+            if n % 400 < batch or n == len(todo):
                 print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
 
     if not smoke:
@@ -998,12 +1007,13 @@ def background_test(arm, smoke):
         text = rationale_prompt(arm) if order_of(arm) == "answer-first" else prompt_text(arm)
         answer = AF_ANSWER if order_of(arm) == "answer-first" else ANSWER
         started = time.time()
-        for start in range(0, len(todo), SCORE_BATCH):
-            chunk = todo[start:start + SCORE_BATCH]
+        batch = score_batch(model)
+        for start in range(0, len(todo), batch):
+            chunk = todo[start:start + batch]
             for path, p in zip(chunk, p_true(model, collator, ids, text, chunk, answer)):
                 append_row(out, ["path", "p_true", "seizure"], [path, f"{p:.6f}", "false"])
             n = start + len(chunk)
-            if n % 400 < SCORE_BATCH or n == len(todo):
+            if n % 400 < batch or n == len(todo):
                 print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
 
     if not smoke:
