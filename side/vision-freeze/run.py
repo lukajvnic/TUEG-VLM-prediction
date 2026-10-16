@@ -413,12 +413,33 @@ def init_frozen_language(settings):
     return model, processor
 
 
+def keyword_input():
+    # PEFT's modules_to_save wrapper takes its input positionally (forward(self, x, ...)), and Gemma 3/4 call their
+    # vision tower with keywords only (vision_tower(pixel_values=...)): a keyword-only call passes its first keyword
+    # on as that input. Qwen, LLaVA and Granite pass the input positionally and are unaffected
+    from peft.utils.other import AuxiliaryTrainingWrapper
+
+    forward = AuxiliaryTrainingWrapper.forward
+    if getattr(forward, "keyword_input", False):
+        return
+
+    def patched(self, *args, **kwargs):
+        if not args:
+            key = next(k for k in kwargs if k != "adapter_names")
+            args = (kwargs.pop(key),)
+        return forward(self, *args, **kwargs)
+
+    patched.keyword_input = True
+    AuxiliaryTrainingWrapper.forward = patched
+
+
 def hybridize(model, lora):
     # LoRA on every language Linear (the labels round's targets minus the vision ones), and the whole vision tower
     # as a PEFT modules_to_save copy: trained fully, saved in the adapter file, merged back at scoring. The trained
     # copy is fp32 (1e-5 steps are below bf16 resolution); the frozen original stays bf16
     from peft import LoraConfig, get_peft_model
 
+    keyword_input()
     language, _ = main.runner.lora_targets(model)
     names = vision_modules(model)
     model = get_peft_model(model, LoraConfig(r=lora["rank"], lora_alpha=lora["alpha"], lora_dropout=lora["dropout"],
