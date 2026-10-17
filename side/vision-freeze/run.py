@@ -199,6 +199,7 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         "r5-hy-mt-strip-more": "1-12:00:00", "rationale-eval": "10:00:00", "base-render": "03:00:00",
         # the scan (5,867 windows at 0.4-1.5 s) and the detectors (503 steps) need 1-3 h; short limits backfill sooner
         "background-test": "06:00:00", "s-2b-tuev": "03:00:00", "s-4b-tuev": "03:00:00", "tuep-scan": "03:00:00",
+        "score-last": "04:00:00",
         # round 6, at ~13 s/step on the slice: TUAB 1,142 steps, TUEP 1,045, TUAR 557 and TUEV 549, then 354-3,540
         # test windows; the 4b on a full A100 at an unmeasured speed, so the pilot's 1,080 steps get room
         "r6-tuab-abnormal": "08:00:00", "r6-tuep-epilepsy": "08:00:00", "r6-tuar-eyem": "06:00:00",
@@ -242,6 +243,25 @@ main = load_path("train_main", ROOT / "train" / "train.py")
 
 def base_dir(smoke):
     return SIDE / "smoke" if smoke else SIDE
+
+
+# --last scores a run's final checkpoint instead of the one load_best_model_at_end kept: on TUAR/TUEV's tiny val sets
+# (31 / 16 lines) every eval of some runs tied at BA <= 0.5 and the Trainer kept the first (~20% of training), so the
+# scored model was undertrained (review, 2026-10-17). Results then go to <file>-<arm>-last.csv
+LAST = False
+
+
+def tag(arm):
+    return f"{arm}-last" if LAST else arm
+
+
+def model_dir(arm, smoke=False):
+    if not LAST:
+        return out_dir(arm, smoke)
+    checkpoints = sorted(out_dir(arm, smoke).glob("checkpoint-*"), key=lambda d: int(d.name.split("-")[1]))
+    assert checkpoints, f"{out_dir(arm, smoke)} has no checkpoint-*"
+    print(f"scoring the last checkpoint: {checkpoints[-1]}", flush=True)
+    return checkpoints[-1]
 
 
 def out_dir(arm, smoke=False):
@@ -628,11 +648,11 @@ def load_for_scoring(arm, smoke):
 
     base = base_spec(config(), model_of(arm))
     if ARMS[arm]["recipe"] in ("lora", "hybrid"):
-        model, processor, _ = main.runner.load({"base": model_of(arm), "checkpoint": str(out_dir(arm, smoke).relative_to(ROOT))})
+        model, processor, _ = main.runner.load({"base": model_of(arm), "checkpoint": str(model_dir(arm, smoke).relative_to(ROOT))})
         drop_softcap(model)  # trained without the cap, so scored without it
         return model, processor, base
 
-    source = main.resolve_model(base["repo"]) if ARMS[arm]["recipe"] is None else str(out_dir(arm, smoke))
+    source = main.resolve_model(base["repo"]) if ARMS[arm]["recipe"] is None else str(model_dir(arm, smoke))
     if ARMS[arm]["recipe"] and not (out_dir(arm, smoke) / "manifest.json").exists():
         sys.exit(f"{out_dir(arm, smoke)} has no manifest.json: training has not finished")
     print(f"loading {source}", flush=True)
@@ -640,7 +660,8 @@ def load_for_scoring(arm, smoke):
     model.eval()
     if ARMS[arm]["recipe"]:
         drop_softcap(model)
-    return model, main.runner.load_processor(source, base, False), base
+    processor_source = source if ARMS[arm]["recipe"] is None else str(out_dir(arm, smoke))  # checkpoints may lack it
+    return model, main.runner.load_processor(processor_source, base, False), base
 
 
 def score_batch(model):
@@ -730,7 +751,7 @@ def score(arm, smoke):
 
     results = base_dir(smoke) / "results"
     results.mkdir(parents=True, exist_ok=True)
-    out = results / f"scores-{arm}.csv"
+    out = results / f"scores-{tag(arm)}.csv"
     done = {r["path"] for r in read_csv(out)}
     rationale = order_of(arm) == "rationale-first"  # generation scoring; answer-first and multitask are teacher-forced
     todo = [p for p in (probe_windows() if rationale else test_windows(arm)) if p not in done]
@@ -768,7 +789,7 @@ def score(arm, smoke):
                 print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
 
     if not smoke:
-        summarise(arm, out)
+        summarise(tag(arm), out)
 
 
 def rationale_eval_windows(arm="freeze"):
@@ -858,7 +879,7 @@ def rationale_eval(arm, smoke):
     header = ["path", "seizure", "reference_nll", "reference_tokens", "generated_present", "rationale_chars", "reply"]
 
     for fmt in eval_formats(arm):
-        out = results / f"rationale-{arm}-{fmt}.csv"
+        out = results / f"rationale-{tag(arm)}-{fmt}.csv"
         done = {r["path"] for r in read_csv(out)}
         prompt = explain_prompt(arm) if fmt == "explain" else rationale_prompt(arm)
         prefix_fn = main.runner.enforcer(processor, eval_structure(fmt))
@@ -880,7 +901,7 @@ def rationale_eval(arm, smoke):
             if n % 25 == 0 or n == len(todo) or smoke and n <= 2:
                 print(f"{n}/{len(todo)} ({(time.time() - started) / n:.1f} s/window)", flush=True)
         if not smoke:
-            summarise_rationale(arm, fmt, out)
+            summarise_rationale(tag(arm), fmt, out)
 
 
 def summarise_rationale(arm, fmt, path):
@@ -910,7 +931,7 @@ def tuep_scan(arm, smoke):
     assert ARMS[arm]["images"] == "core" and dataset_of(arm) == "TUEV", f"{arm} is not a core TUEV model"
     results = base_dir(smoke) / "results"
     results.mkdir(parents=True, exist_ok=True)
-    out = results / f"tuep-scan-{arm}.csv"
+    out = results / f"tuep-scan-{tag(arm)}.csv"
     rows = main.read_jsonl(TUEP_SCAN)
     labels = {r["images"][0]: r["epilepsy"] for r in rows}
     done = {r["path"] for r in read_csv(out)}
@@ -937,7 +958,7 @@ def tuep_scan(arm, smoke):
                 print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
 
     if not smoke:
-        summarise_tuep_scan(arm, out)
+        summarise_tuep_scan(tag(arm), out)
 
 
 def summarise_tuep_scan(arm, path):
@@ -1139,14 +1160,16 @@ def summarise(arm, path):
 
 
 def submit_job(cfg, arm, dry_run, arms=()):
-    name = f"eeg-vlm-vision-freeze-{arm}" + ("-" + "-".join(arms) if arm in ("rationale-eval", "background-test", "tuep-scan") else "")
+    name = f"eeg-vlm-vision-freeze-{arm}" + ("-" + "-".join(arms) if arm in ("rationale-eval", "background-test", "tuep-scan", "score-last") else "")
     if name in queued():
         sys.exit(f"{name} is already queued or running")
     if not (SOURCE / "perclass-train.jsonl").exists():
         sys.exit("no training lines: python side/multilabel-pilot/build.py")
-    if arm == "tuep-scan" and len(arms) != 1:
-        sys.exit("tuep-scan takes one arm per job (the job asks for that arm's GPU)")
-    for a in SMOKE_ARMS if arm == "smoke" else (arms if arm in ("rationale-eval", "background-test", "tuep-scan") else (arm,)):
+    if arm in ("tuep-scan", "score-last") and len(arms) != 1:
+        sys.exit(f"{arm} takes one arm per job (the job asks for that arm's GPU)")
+    if arm == "score-last" and not (out_dir(arms[0]) / "manifest.json").exists():
+        sys.exit(f"{arms[0]} has not finished training")
+    for a in SMOKE_ARMS if arm == "smoke" else (arms if arm in ("rationale-eval", "background-test", "tuep-scan", "score-last") else (arm,)):
         missing = [] if arm in ("background-test", "tuep-scan") else missing_images(a)
         if arm == "background-test":
             missing += [r["path"] for r in read_csv(BACKGROUND) if not (image_root(a) / r["path"]).exists()]
@@ -1169,9 +1192,10 @@ def submit_job(cfg, arm, dry_run, arms=()):
     steps["rationale-eval"] = [f"{me} {a} --rationale-eval" for a in arms]
     steps["background-test"] = [f"{me} {a} --background" for a in arms]
     steps["tuep-scan"] = [f"{me} {a} --scan" for a in arms]
+    steps["score-last"] = [f"{me} {a} --score --last" for a in arms]
     logs = base_dir(arm == "smoke") / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    resources = ARMS.get(arms[0] if arm == "tuep-scan" else arm, {})
+    resources = ARMS.get(arms[0] if arm in ("tuep-scan", "score-last") else arm, {})
     gpus, ram = resources.get("gpus", GPUS), resources.get("ram", RAM)
     text = script(name, TIME[arm], ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
     text = text.replace(str(ROOT / "logs"), str(logs))
@@ -1183,7 +1207,7 @@ def submit_job(cfg, arm, dry_run, arms=()):
 def main_cli():
     cfg = config()
     parser = argparse.ArgumentParser()
-    parser.add_argument("arm", choices=[*ARMS, "smoke", "rationale-eval", "background-test", "tuep-scan"])
+    parser.add_argument("arm", choices=[*ARMS, "smoke", "rationale-eval", "background-test", "tuep-scan", "score-last"])
     parser.add_argument("arms", nargs="*", help="with rationale-eval, background-test or tuep-scan: the finished arms")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--train", action="store_true", help="train this arm in this process")
@@ -1193,10 +1217,13 @@ def main_cli():
     mode.add_argument("--scan", action="store_true", help="a TUEV model scores the TUEP scan windows; patient summary")
     mode.add_argument("--dry-run", action="store_true", help="print the job, submit nothing")
     parser.add_argument("--smoke", action="store_true", help="with --train/--score: 2 steps, 24 windows, under smoke/")
+    parser.add_argument("--last", action="store_true", help="with --score/--rationale-eval/--scan: the final checkpoint")
     args = parser.parse_args()
+    global LAST
+    LAST = args.last
 
     if args.train or args.score or args.rationale_eval or args.background or args.scan:
-        if args.arm in ("smoke", "rationale-eval", "background-test", "tuep-scan") or args.train and ARMS[args.arm]["recipe"] is None:
+        if args.arm in ("smoke", "rationale-eval", "background-test", "tuep-scan", "score-last") or args.train and ARMS[args.arm]["recipe"] is None:
             parser.error(f"that mode does not apply to {args.arm}")
         os.environ.setdefault("WANDB_MODE", "offline")
         if args.train:
@@ -1211,7 +1238,7 @@ def main_cli():
             rationale_eval(args.arm, args.smoke)
         return
 
-    if args.arm in ("rationale-eval", "background-test", "tuep-scan") and not args.arms:
+    if args.arm in ("rationale-eval", "background-test", "tuep-scan", "score-last") and not args.arms:
         parser.error(f"{args.arm} needs the arms to evaluate")
     submit_job(cfg, args.arm, args.dry_run, tuple(args.arms))
 
