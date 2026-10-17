@@ -133,6 +133,10 @@ GRID_MULTITASK = ("TUAB", "TUAR", "TUEV")
 # (vision trained, language frozen, answer only); every grid TUEV model also gets a scan
 ARMS["s-2b-tuev"] = {**CORE, "epochs": 12, "dataset": "TUEV", "question": "epileptiform"}
 ARMS["s-4b-tuev"] = {**ARMS["s-2b-tuev"], "model": "qwen3-vl:4b-instruct", "gpus": "a100:1", "ram": "64G"}
+# second seeds for the two collapsed runs of otherwise strong models (2026-10-17): every earlier run used the Trainer's
+# default seed 42; "seed" also seeds model setup (LoRA init) and the data order
+for _arm in ("gm-8b-tuar", "gm-q25-7b-tuab"):
+    ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
 GRID_DATA = {"TUSZ": ("any_seizure", 4), "TUAB": ("abnormal", 4), "TUEP": ("epilepsy", 10), "TUAR": ("eyem", 12),
              "TUEV": ("epileptiform", 12)}
 for _short, (_model, _resources) in GRID_MODELS.items():
@@ -219,6 +223,8 @@ for _short, (_step, _window, _rationale) in GRID_SPEED.items():
         if _ds in GRID_MULTITASK:  # an explain line per window doubles the training lines
             _hours = 1.5 * (math.ceil(2 * _train * GRID_DATA[_ds][1] / 8) * _step + _test * _window + 300 * _rationale + 1800) / 3600
             TIME[f"gm-{_short}-{_ds.lower()}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
+for _arm in ("gm-8b-tuar", "gm-q25-7b-tuab"):
+    TIME[f"{_arm}-s2"] = TIME[_arm]
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -524,6 +530,10 @@ def train(settings, arm, smoke):
     if resume:
         print(f"resuming from {resume}", flush=True)
 
+    seed = ARMS[arm].get("seed")
+    if seed is not None:
+        from transformers import set_seed
+        set_seed(seed)
     recipe = ARMS[arm]["recipe"]
     freeze = recipe == "freeze"
     if recipe == "hybrid":
@@ -532,6 +542,8 @@ def train(settings, arm, smoke):
         model, processor = init_frozen_language(settings) if freeze else main.init_model(settings)
     run = start_wandb(settings, data, resume, smoke)
     trainer = main.init_trainer(settings, model, processor, data, image_root(arm))
+    if seed is not None:
+        trainer.args.seed = trainer.args.data_seed = seed
     if freeze:
         trainer.optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=VISION_LR,
                                               weight_decay=training["weight-decay"])
