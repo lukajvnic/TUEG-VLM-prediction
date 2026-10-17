@@ -193,7 +193,8 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         # round 5: train (~14 s/step with LoRA on top), score, then the rationale evaluation (~1.2 h)
         "r5-hy-af-strip-w10": "12:00:00", "r5-hy-mt-strip": "18:00:00", "r5-hy-af-strip-more": "1-08:00:00",
         "r5-hy-mt-strip-more": "1-12:00:00", "rationale-eval": "10:00:00", "base-render": "03:00:00",
-        "background-test": "06:00:00", "s-2b-tuev": "06:00:00", "s-4b-tuev": "05:00:00", "tuep-scan": "08:00:00",
+        # the scan (5,867 windows at 0.4-1.5 s) and the detectors (503 steps) need 1-3 h; short limits backfill sooner
+        "background-test": "06:00:00", "s-2b-tuev": "03:00:00", "s-4b-tuev": "03:00:00", "tuep-scan": "03:00:00",
         # round 6, at ~13 s/step on the slice: TUAB 1,142 steps, TUEP 1,045, TUAR 557 and TUEV 549, then 354-3,540
         # test windows; the 4b on a full A100 at an unmeasured speed, so the pilot's 1,080 steps get room
         "r6-tuab-abnormal": "08:00:00", "r6-tuep-epilepsy": "08:00:00", "r6-tuar-eyem": "06:00:00",
