@@ -133,10 +133,6 @@ GRID_MULTITASK = ("TUAB", "TUAR", "TUEV")
 # (vision trained, language frozen, answer only); every grid TUEV model also gets a scan
 ARMS["s-2b-tuev"] = {**CORE, "epochs": 12, "dataset": "TUEV", "question": "epileptiform"}
 ARMS["s-4b-tuev"] = {**ARMS["s-2b-tuev"], "model": "qwen3-vl:4b-instruct", "gpus": "a100:1", "ram": "64G"}
-# second seeds for the two collapsed runs of otherwise strong models (2026-10-17): every earlier run used the Trainer's
-# default seed 42; "seed" also seeds model setup (LoRA init) and the data order
-for _arm in ("gm-8b-tuar", "gm-q25-7b-tuab"):
-    ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
 GRID_DATA = {"TUSZ": ("any_seizure", 4), "TUAB": ("abnormal", 4), "TUEP": ("epilepsy", 10), "TUAR": ("eyem", 12),
              "TUEV": ("epileptiform", 12)}
 for _short, (_model, _resources) in GRID_MODELS.items():
@@ -150,6 +146,10 @@ for _short, (_model, _resources) in GRID_MODELS.items():
             **CORE, "recipe": "hybrid", "target": "rationale", "order": "answer-first", "strip": True, "weight": 1,
             "epochs": _epochs, "dataset": _ds, "question": _question, "model": _model, **_resources,
             "smoke-first": _short in ("8b", "q25-7b") or _short in GRID_EXTRA}
+# second seeds for the two collapsed runs of otherwise strong models (2026-10-17): every earlier run used the Trainer's
+# default seed 42; "seed" also seeds model setup (LoRA init) and the data order
+for _arm in ("gm-8b-tuar", "gm-q25-7b-tuab"):
+    ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
 RATIONALE_EVAL_WINDOWS = 300  # stratified 150 seizure / 150 not, from the probe's test windows, seed 0
 # round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines;
 # round 3's (5155519) rationale-first, the 10x weight and generation scoring; round 4's (5399669) answer-first and
