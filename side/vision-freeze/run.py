@@ -542,8 +542,10 @@ def train(settings, arm, smoke):
         model, processor = init_frozen_language(settings) if freeze else main.init_model(settings)
     run = start_wandb(settings, data, resume, smoke)
     trainer = main.init_trainer(settings, model, processor, data, image_root(arm))
-    if seed is not None:
+    if seed is not None:  # Trainer.__init__ reseeded with args.seed (42); the data order comes from accelerate's config
+        set_seed(seed)
         trainer.args.seed = trainer.args.data_seed = seed
+        trainer.accelerator.dataloader_config.data_seed = seed
     if freeze:
         trainer.optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=VISION_LR,
                                               weight_decay=training["weight-decay"])
