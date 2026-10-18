@@ -120,7 +120,9 @@ GRID_MODELS = {"2b": ("qwen3-vl:2b-instruct", {}), "4b": ("qwen3-vl:4b-instruct"
 GRID_EXTRA = {"gemma3-4b": "gemma3:4b", "gemma3-12b": "gemma3:12b", "medgemma-4b": "medgemma:4b",
               "medgemma15-4b": "medgemma1.5:4b", "gemma4-e2b": "gemma4:e2b", "gemma4-e4b": "gemma4:e4b",
               "granite-2b": "granite3.2-vision:2b", "llava-7b": "llava:7b", "llava-phi3": "llava-phi3:3.8b",
-              "llava-llama3": "llava-llama3:8b"}
+              "llava-llama3": "llava-llama3:8b",
+              # round 7c (2026-10-18, "as many as possible"): the other bases on Narval that fit one A100
+              "gemma4-12b": "gemma4:12b", "minicpm46-1b": "minicpm-v4.6:1b", "glm-ocr": "glm-ocr:latest"}
 GRID_MODELS.update({short: (model, {"gpus": "a100:1", "ram": "64G"}) for short, model in GRID_EXTRA.items()})
 # gm-: TUAB, TUAR and TUEV in the multitask format (each window's answer line plus a separate "explain" line). Every
 # line of these corpora has a teacher rationale, so answer-first at weight 1 drowned the answer token (~1 in 150
@@ -149,13 +151,16 @@ for _short, (_model, _resources) in GRID_MODELS.items():
             "smoke-first": _short in ("8b", "q25-7b") or _short in GRID_EXTRA}
 # second seeds for the two collapsed runs of otherwise strong models (2026-10-17): every earlier run used the Trainer's
 # default seed 42; "seed" also seeds model setup (LoRA init) and the data order
-for _arm in ("gm-8b-tuar", "gm-q25-7b-tuab"):
+# (2026-10-18: seed 2 took gm-8b-tuar from 0.524 to 0.776, so every collapsed or weak pair gets one)
+SEED_2 = ("gm-8b-tuar", "gm-q25-7b-tuab", "gm-gemma3-12b-tuar", "gm-llava-7b-tuar", "gm-llava-7b-tuev",
+          "gm-llava-phi3-tuev", "gm-2b-tuar", "gm-gemma3-4b-tuar", "gm-granite-2b-tuar")
+for _arm in SEED_2:
     ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
-# zero-shot baselines (2026-10-17): the focus models untrained, scored on the core test lines and images with the
+# zero-shot baselines (2026-10-17): every grid model untrained, scored on the core test lines and images with the
 # fine-tunes' scorer, so every fine-tune has a baseline on the same images and question. The 33-model Ollama benchmark
 # ran on the shipped images and stands as the off-the-shelf result. TUSZ's also run the final test (final-test)
-FOCUS = [short for short in GRID_MODELS if short not in ("llava-7b", "llava-phi3", "gemma3-12b")]
-for _short in FOCUS:
+ZERO_SHOT = list(GRID_MODELS)
+for _short in ZERO_SHOT:
     for _ds in ("TUSZ", "TUAB", "TUAR", "TUEV"):
         ARMS[f"z-{_short}-{_ds.lower()}"] = {**CORE, "recipe": None, "dataset": _ds, "question": GRID_DATA[_ds][0],
                                              "model": GRID_MODELS[_short][0], **GRID_MODELS[_short][1],
@@ -235,7 +240,8 @@ GRID_SPEED = {"2b": (16.5, 0.7, 8), "4b": (14.0, 0.7, 8), "8b": (16.5, 0.7, 8), 
 GRID_SPEED.update({short: (14.0, 1.0, 10) for short in ("gemma3-4b", "medgemma-4b", "medgemma15-4b", "gemma4-e2b",
                                                         "gemma4-e4b", "granite-2b", "llava-phi3")})
 GRID_SPEED.update({short: (20.0, 1.0, 12) for short in ("llava-7b", "llava-llama3")})
-GRID_SPEED["gemma3-12b"] = (26.0, 1.5, 15)
+GRID_SPEED["gemma3-12b"] = GRID_SPEED["gemma4-12b"] = (26.0, 1.5, 15)
+GRID_SPEED.update({short: (14.0, 1.0, 10) for short in ("minicpm46-1b", "glm-ocr")})
 GRID_LINES = {"TUSZ": (8760, 8460), "TUAB": (2283, 1200), "TUEP": (826, 1084), "TUAR": (367, 3540), "TUEV": (335, 354)}
 for _short, (_step, _window, _rationale) in GRID_SPEED.items():
     for _ds, (_train, _test) in GRID_LINES.items():
@@ -244,10 +250,10 @@ for _short, (_step, _window, _rationale) in GRID_SPEED.items():
         if _ds in GRID_MULTITASK:  # an explain line per window doubles the training lines
             _hours = 1.5 * (math.ceil(2 * _train * GRID_DATA[_ds][1] / 8) * _step + _test * _window + 300 * _rationale + 1800) / 3600
             TIME[f"gm-{_short}-{_ds.lower()}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
-for _arm in ("gm-8b-tuar", "gm-q25-7b-tuab"):
+for _arm in SEED_2:
     TIME[f"{_arm}-s2"] = TIME[_arm]
 # zero-shot: the test windows (TUSZ: plus the 5,929 held-out and 4,471 interior background windows) and loading
-for _short in FOCUS:
+for _short in ZERO_SHOT:
     for _ds, (_, _test) in GRID_LINES.items():
         if f"z-{_short}-{_ds.lower()}" in ARMS:
             _hours = max(1.0, 1.5 * ((_test + 10400 * (_ds == "TUSZ")) * GRID_SPEED[_short][1] + 1200) / 3600)
