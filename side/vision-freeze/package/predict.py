@@ -19,7 +19,9 @@ MAX_NEW_TOKENS = 512
 
 def load(model_dir):
     spec = json.loads((model_dir / "model.json").read_text())
-    model = AutoModelForImageTextToText.from_pretrained(spec["base"], dtype=torch.bfloat16, device_map="auto")
+    # on CPU everything stays in RAM: device_map="auto" offloads to disk when RAM is short, which peft cannot merge into
+    model = AutoModelForImageTextToText.from_pretrained(spec["base"], dtype=torch.bfloat16,
+                                                        device_map="auto" if torch.cuda.is_available() else None)
     model = PeftModel.from_pretrained(model, str(model_dir / "adapter")).merge_and_unload()
     model.eval()
     text = model.config.get_text_config()

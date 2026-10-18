@@ -31,8 +31,9 @@ pip install -r requirements.txt
 python predict.py models/<name> image1.png image2.png [--explain] [--out predictions.csv]
 ```
 
-Check an install by running a model on its `samples/*.png` and comparing with `samples/expected.csv`. Small
-differences (around 0.01) are normal across GPUs and batch sizes.
+Check an install by running a model on its `samples/*.png` and comparing with `samples/expected.csv`. Expect
+differences of about 0.005, and up to 0.03 for windows near 0.5, where bf16 rounding decides the last digits (the
+cluster ran on A100s; our check on a laptop CPU matched within these margins).
 
 ## Things to know
 
