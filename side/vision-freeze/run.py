@@ -198,6 +198,10 @@ VISION_LR = 1e-5  # full fine-tune of a ViT: ViTST 2e-5, TimeMaster 2e-6; NeuroC
 EVALS = 5
 SCORE_BATCH = 4  # test windows per forward (Qwen; score_batch)
 GPUS, RAM = "a100_3g.20gb:1", "40G"
+# Fir (2026-10-18), the second site for Narval's Oct 27 - Nov 3 outage, runs the same jobs on H100s ($CC_CLUSTER picks
+# it). A 2b arm peaks near 20 GB, so Narval's 20 GB slice becomes a 40 GB one; the full-A100 arms peak at ~42 GB, too
+# close to 40, so they get a whole H100
+FIR_GPUS = {"a100_3g.20gb:1": "nvidia_h100_80gb_hbm3_3g.40gb:1", "a100:1": "h100:1"}
 # measured in round 1: freeze 13.1 s/step, scoring 0.60 s/window (~1.4 h for 8,460); 4 epochs of the pilot lines =
 # 1,080 steps (~4 h), of the "more" lines = 4,664 steps (~17 h); 5 checkpoint saves of ~8 GB on top
 TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4ep": "10:00:00",
@@ -1289,6 +1293,8 @@ def submit_job(cfg, arm, dry_run, arms=()):
     logs.mkdir(parents=True, exist_ok=True)
     resources = ARMS.get(arms[0] if arm in SINGLE else arm, {})
     gpus, ram = resources.get("gpus", GPUS), resources.get("ram", RAM)
+    if os.environ.get("CC_CLUSTER") == "fir":
+        gpus = FIR_GPUS[gpus]
     text = script(name, TIME[arm], ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
     text = text.replace(str(ROOT / "logs"), str(logs))
     print(f"{'dry run' if dry_run else submit(text)} - {name}, {TIME[arm]}/{ram}/gpu:{gpus}, log in {logs}")
