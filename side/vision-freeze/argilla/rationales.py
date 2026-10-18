@@ -6,7 +6,8 @@
 # training-window pairs need a generation pass over train windows first
 #   python side/vision-freeze/argilla/rationales.py build LABELS_ROOT records.jsonl  # .venv-rehearsal (imports run.py)
 #   python side/vision-freeze/argilla/rationales.py push records.jsonl              # a venv with argilla 2.x
-# push reads ARGILLA_API_URL, ARGILLA_API_KEY and HF_TOKEN (the Space is private)
+# push reads ARGILLA_API_URL and ARGILLA_API_KEY, ARGILLA_WORKSPACE (default "argilla", the Space's; the local docker
+# compose makes "default") and, for a private Space, HF_TOKEN
 import base64
 import csv
 import importlib.util
@@ -75,8 +76,9 @@ def build(labels_root, out):
 def push(path):
     import argilla as rg
 
+    token = os.environ.get("HF_TOKEN")
     client = rg.Argilla(api_url=os.environ["ARGILLA_API_URL"], api_key=os.environ["ARGILLA_API_KEY"],
-                        headers={"Authorization": f"Bearer {os.environ['HF_TOKEN']}"})
+                        headers={"Authorization": f"Bearer {token}"} if token else {})
     records = [json.loads(line) for line in path.open()]
     for ds in BEST:
         settings = rg.Settings(
@@ -91,11 +93,12 @@ def push(path):
                        rg.LabelQuestion(name="grounded", title="Does the better rationale point to the right channels "
                                         "and time?", labels=["yes", "partly", "no"]),
                        rg.TextQuestion(name="correction", title="Correction (optional)", required=False)],
-            metadata=[rg.TermsMetadataProperty(name="label"),
+            metadata=[rg.TermsMetadataProperty(name="tuh_label"),
                       rg.TermsMetadataProperty(name="a_source", visible_for_annotators=False),
                       rg.TermsMetadataProperty(name="model", visible_for_annotators=False)],
         )
-        dataset = rg.Dataset(name=f"{ds.lower()}-rationales", workspace="argilla", settings=settings, client=client)
+        dataset = rg.Dataset(name=f"{ds.lower()}-rationales", workspace=os.environ.get("ARGILLA_WORKSPACE", "argilla"),
+                             settings=settings, client=client)
         dataset.create()
         mine = [r for r in records if r["dataset"] == ds]
         dataset.records.log([rg.Record(
@@ -103,7 +106,7 @@ def push(path):
             fields={"eeg": "data:image/png;base64," + base64.b64encode(Path(r["image"]).read_bytes()).decode(),
                     "question": r["question"], "label": r["label"], "rationale_a": r["rationale_a"],
                     "rationale_b": r["rationale_b"]},
-            metadata={"label": r["label"], "a_source": r["a_source"], "model": r["model"]}) for r in mine])
+            metadata={"tuh_label": r["label"], "a_source": r["a_source"], "model": r["model"]}) for r in mine])
         print(f"{dataset.name}: {len(mine)} records")
 
 
