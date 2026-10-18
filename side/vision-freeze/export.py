@@ -8,6 +8,7 @@ import re
 import sys
 from pathlib import Path
 
+import tables
 from tables import MODELS
 
 RESULTS = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent / "results"
@@ -27,6 +28,10 @@ discharge. Images: 20 s windows, 25-row TCP bipolar montage, 2688x896.
 kind: zero-shot = the base model untrained; fine-tuned = vision tower trained in full plus LoRA on the language
 model, trained on the label with a teacher rationale (TUSZ answer-first, the others in the multitask format);
 variant "last" = the run's final checkpoint instead of the best validation one, "seed2" = a second seed.
+
+## summary_table.csv
+The headline table: test AUROC per model and dataset, zero-shot against fine-tuned, with the 95% CI, plus the final
+checkpoint ("last") and a second seed ("s2") where they exist.
 
 ## metrics.csv
 model, dataset, question, kind, variant, arm, set (test / heldout = 62 TUSZ patients no model trained on /
@@ -146,6 +151,12 @@ def main():
                                "image": r["path"], "label": r["seizure"], "generated_present": r["generated_present"],
                                "reference_nll": r["reference_nll"], "rationale": r["reply"]})
 
+    tables.RESULTS = RESULTS
+    _, header, rows = tables.grid()
+    with (out / "summary_table.csv").open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
     tuep = [s for path in sorted(RESULTS.glob("summary-tuep-scan-*.csv")) for s in read(path)]
     for name, rows in (("metrics", metrics), ("predictions", predictions), ("rationales", rationales), ("tuep_scan", tuep)):
         with (out / f"{name}.csv").open("w", newline="") as f:
