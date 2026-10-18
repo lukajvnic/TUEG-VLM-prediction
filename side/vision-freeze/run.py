@@ -28,6 +28,7 @@
 # the model's own generated rationale (saved, for reading and for the judge)
 #   python side/vision-freeze/run.py rationale-eval ARM [ARM ...]    # one job evaluating finished arms
 #   python side/vision-freeze/run.py background-test ARM [ARM ...]   # score finished arms on data/background.csv
+#   python side/vision-freeze/run.py final-test ARM                  # held-out TUSZ patients + interior background
 # background-test (2026-10-14): the scored test background is 97.8% first/last windows; rerender.py background lists
 # 4,471 interior background windows of the same test patients. Each arm's P(true) on them, against its existing
 # scores on the 3,754 test seizure windows, gives AUROC and specificity on background spread through the recordings
@@ -150,6 +151,18 @@ for _short, (_model, _resources) in GRID_MODELS.items():
 # default seed 42; "seed" also seeds model setup (LoRA init) and the data order
 for _arm in ("gm-8b-tuar", "gm-q25-7b-tuab"):
     ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
+# zero-shot baselines (2026-10-17): the focus models untrained, scored on the core test lines and images with the
+# fine-tunes' scorer, so every fine-tune has a baseline on the same images and question. The 33-model Ollama benchmark
+# ran on the shipped images and stands as the off-the-shelf result. TUSZ's also run the final test (final-test)
+FOCUS = [short for short in GRID_MODELS if short not in ("llava-7b", "llava-phi3", "gemma3-12b")]
+for _short in FOCUS:
+    for _ds in ("TUSZ", "TUAB", "TUAR", "TUEV"):
+        ARMS[f"z-{_short}-{_ds.lower()}"] = {**CORE, "recipe": None, "dataset": _ds, "question": GRID_DATA[_ds][0],
+                                             "model": GRID_MODELS[_short][0], **GRID_MODELS[_short][1],
+                                             "final-test": _ds == "TUSZ"}
+# pseudo-arms: jobs that evaluate finished arms; the single ones take one arm per job and ask for its GPU
+PSEUDO = ("rationale-eval", "background-test", "tuep-scan", "score-last", "final-test")
+SINGLE = ("tuep-scan", "score-last", "final-test")
 RATIONALE_EVAL_WINDOWS = 300  # stratified 150 seizure / 150 not, from the probe's test windows, seed 0
 # round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines;
 # round 3's (5155519) rationale-first, the 10x weight and generation scoring; round 4's (5399669) answer-first and
@@ -173,6 +186,7 @@ IMAGE_ROOTS = {"shipped": ROOT / "datasets", "render": Path(os.environ.get("VF_R
 SOURCE = ROOT / "side" / "multilabel-pilot" / "data"  # the pilot's balanced lines; this test keeps only any_seizure
 MORE = SIDE / "data" / "more-train.jsonl"  # rerender.py lists
 BACKGROUND = SIDE / "data" / "background.csv"  # rerender.py background
+HELDOUT = SIDE / "data" / "core" / "TUSZ-heldout.jsonl"  # rerender.py heldout: the final TUSZ test
 # the TUEP spike scan (2026-10-15): rerender.py tuep-scan's windows of every TUEP test recording, and the TUEP test
 # patients left out because they share a recording or a person with TUEV train/val (signal-fingerprint audit)
 TUEP_SCAN, TUEP_EXCLUDE = SIDE / "data" / "core" / "TUEP-scan.jsonl", SIDE / "tuep-scan-exclude.csv"
@@ -200,6 +214,8 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         # the scan (5,867 windows at 0.4-1.5 s) and the detectors (503 steps) need 1-3 h; short limits backfill sooner
         "background-test": "06:00:00", "s-2b-tuev": "03:00:00", "s-4b-tuev": "03:00:00", "tuep-scan": "03:00:00",
         "score-last": "04:00:00",
+        # held-out (5,929) and interior background (4,471) windows at the measured 0.14-0.69 s/window, plus loading
+        "final-test": "03:00:00",
         # round 6, at ~13 s/step on the slice: TUAB 1,142 steps, TUEP 1,045, TUAR 557 and TUEV 549, then 354-3,540
         # test windows; the 4b on a full A100 at an unmeasured speed, so the pilot's 1,080 steps get room
         "r6-tuab-abnormal": "08:00:00", "r6-tuep-epilepsy": "08:00:00", "r6-tuar-eyem": "06:00:00",
@@ -226,6 +242,12 @@ for _short, (_step, _window, _rationale) in GRID_SPEED.items():
             TIME[f"gm-{_short}-{_ds.lower()}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
 for _arm in ("gm-8b-tuar", "gm-q25-7b-tuab"):
     TIME[f"{_arm}-s2"] = TIME[_arm]
+# zero-shot: the test windows (TUSZ: plus the 5,929 held-out and 4,471 interior background windows) and loading
+for _short in FOCUS:
+    for _ds, (_, _test) in GRID_LINES.items():
+        if f"z-{_short}-{_ds.lower()}" in ARMS:
+            _hours = max(1.0, 1.5 * ((_test + 10400 * (_ds == "TUSZ")) * GRID_SPEED[_short][1] + 1200) / 3600)
+            TIME[f"z-{_short}-{_ds.lower()}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -575,6 +597,8 @@ def train(settings, arm, smoke):
     if order_of(arm) == "rationale-first":
         # the teacher-forced val metric reads the boolean after the gold rationale, which names the label
         trainer.args.load_best_model_at_end = False
+    if ARMS[arm].get("select") == "auroc":
+        select_by_auroc(trainer, processor)
     if ARMS[arm].get("weight", 1) > 1:
         trainer = weighted(trainer, processor, data, ARMS[arm]["weight"], first=order_of(arm) != "rationale-first")
     if smoke:
@@ -592,6 +616,35 @@ def train(settings, arm, smoke):
                      "question": question_of(arm), "smoke": smoke, "vision_lr": VISION_LR if recipe in ("freeze", "hybrid") else None})
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     run.finish()
+
+
+def select_by_auroc(trainer, processor):
+    # keep the checkpoint with the best val AUROC of the answer's P(true). Argmax balanced accuracy on TUAR's and
+    # TUEV's 31 / 16 val lines tied at <= 0.5 across every eval of some runs, and the Trainer kept the first (~20% of
+    # training; review, 2026-10-17). AUROC rarely ties and is the reported metric. The balanced accuracy logged beside
+    # it compares P(true) with P(false) only, where the default one takes the argmax over the vocabulary
+    import torch
+
+    words = main.boolean_token_ids(processor.tokenizer)
+    true, false, both = sorted(words["true"]), sorted(words["false"]), sorted(words["true"] | words["false"])
+
+    def margins(logits, labels):
+        logits = logits[0] if isinstance(logits, tuple) else logits
+        return torch.logsumexp(logits[..., true].float(), -1) - torch.logsumexp(logits[..., false].float(), -1)
+
+    def compute(prediction):
+        scores, labels = prediction.predictions[:, :-1], prediction.label_ids[:, 1:]
+        found = [(row, np.isin(labels[row], both).nonzero()[0]) for row in range(len(labels))]
+        rows = [(row, positions[0]) for row, positions in found if len(positions)]  # the answer: the first boolean
+        y = np.array([labels[row, k] in words["true"] for row, k in rows], bool)
+        margin = np.array([scores[row, k] for row, k in rows], float)
+        if not y.any() or y.all():
+            return {"label_auroc": 0.0, "label_balanced_accuracy": 0.0, "label_positions": len(rows)}
+        return {"label_auroc": auroc(margin, y), "label_positions": len(rows),
+                "label_balanced_accuracy": float(((margin[y] > 0).mean() + (margin[~y] <= 0).mean()) / 2)}
+
+    trainer.compute_metrics, trainer.preprocess_logits_for_metrics = compute, margins
+    trainer.args.metric_for_best_model = "label_auroc"
 
 
 def weighted(base, processor, data, weight, first=False):
@@ -1022,10 +1075,46 @@ def summarise_tuep_scan(arm, path):
     print(json.dumps(summary), flush=True)
 
 
-def background_test(arm, smoke):
-    # the same teacher-forced scorer as score(), on the interior background windows
+def score_windows(arm, smoke, todo, labels, out):
+    # score()'s teacher-forced P(true), on any list of windows, appended to out
     import torch
 
+    model, processor, base = load_for_scoring(arm, smoke)
+    collator = main.DataCollator(processor, image_root(arm), base)
+    words = main.boolean_token_ids(processor.tokenizer)
+    ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
+    text = rationale_prompt(arm) if order_of(arm) == "answer-first" else prompt_text(arm)
+    answer = AF_ANSWER if order_of(arm) == "answer-first" else ANSWER
+    started, batch = time.time(), score_batch(model)
+    for start in range(0, len(todo), batch):
+        chunk = todo[start:start + batch]
+        for path, p in zip(chunk, p_true(model, collator, ids, text, chunk, answer)):
+            append_row(out, ["path", "p_true", "seizure"], [path, f"{p:.6f}", str(labels[path]).lower()])
+        n = start + len(chunk)
+        if n % 400 < batch or n == len(todo):
+            print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
+
+
+def heldout_test(arm, smoke):
+    # the final TUSZ test: every shipped window of the 62 patients in no core split (rerender.py heldout)
+    assert dataset_of(arm) == "TUSZ" and ARMS[arm]["images"] == "core", f"{arm} is not a core TUSZ arm"
+    results = base_dir(smoke) / "results"
+    results.mkdir(parents=True, exist_ok=True)
+    out = results / f"heldout-{tag(arm)}.csv"
+    labels = {r["images"][0]: json.loads(r["output"])["present"] for r in main.read_jsonl(HELDOUT)}
+    done = {r["path"] for r in read_csv(out)}
+    todo = [p for p in labels if p not in done]
+    if smoke:
+        todo = todo[::max(len(todo) // SMOKE_WINDOWS, 1)][:SMOKE_WINDOWS]
+    print(f"arm {arm}: {len(todo)} held-out windows to score, {len(done)} already done -> {out}", flush=True)
+    if todo:
+        score_windows(arm, smoke, todo, labels, out)
+    if not smoke:
+        summarise(f"heldout-{tag(arm)}", out)
+
+
+def background_test(arm, smoke):
+    # the same teacher-forced scorer as score(), on the interior background windows
     results = base_dir(smoke) / "results"
     results.mkdir(parents=True, exist_ok=True)
     out = results / f"background-{arm}.csv"
@@ -1036,21 +1125,7 @@ def background_test(arm, smoke):
     print(f"arm {arm}: {len(todo)} interior background windows to score, {len(done)} already done -> {out}", flush=True)
 
     if todo:
-        model, processor, base = load_for_scoring(arm, smoke)
-        collator = main.DataCollator(processor, image_root(arm), base)
-        words = main.boolean_token_ids(processor.tokenizer)
-        ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
-        text = rationale_prompt(arm) if order_of(arm) == "answer-first" else prompt_text(arm)
-        answer = AF_ANSWER if order_of(arm) == "answer-first" else ANSWER
-        started = time.time()
-        batch = score_batch(model)
-        for start in range(0, len(todo), batch):
-            chunk = todo[start:start + batch]
-            for path, p in zip(chunk, p_true(model, collator, ids, text, chunk, answer)):
-                append_row(out, ["path", "p_true", "seizure"], [path, f"{p:.6f}", "false"])
-            n = start + len(chunk)
-            if n % 400 < batch or n == len(todo):
-                print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
+        score_windows(arm, smoke, todo, dict.fromkeys(todo, False), out)
 
     if not smoke:
         summarise_background(arm, out)
@@ -1160,19 +1235,23 @@ def summarise(arm, path):
 
 
 def submit_job(cfg, arm, dry_run, arms=()):
-    name = f"eeg-vlm-vision-freeze-{arm}" + ("-" + "-".join(arms) if arm in ("rationale-eval", "background-test", "tuep-scan", "score-last") else "")
+    name = f"eeg-vlm-vision-freeze-{arm}" + ("-" + "-".join(arms) if arm in PSEUDO else "")
     if name in queued():
         sys.exit(f"{name} is already queued or running")
     if not (SOURCE / "perclass-train.jsonl").exists():
         sys.exit("no training lines: python side/multilabel-pilot/build.py")
-    if arm in ("tuep-scan", "score-last") and len(arms) != 1:
+    if arm in SINGLE and len(arms) != 1:
         sys.exit(f"{arm} takes one arm per job (the job asks for that arm's GPU)")
     if arm == "score-last" and not (out_dir(arms[0]) / "manifest.json").exists():
         sys.exit(f"{arms[0]} has not finished training")
-    for a in SMOKE_ARMS if arm == "smoke" else (arms if arm in ("rationale-eval", "background-test", "tuep-scan", "score-last") else (arm,)):
-        missing = [] if arm in ("background-test", "tuep-scan") else missing_images(a)
-        if arm == "background-test":
+    for a in SMOKE_ARMS if arm == "smoke" else (arms if arm in PSEUDO else (arm,)):
+        missing = [] if arm in ("background-test", "tuep-scan", "final-test") else missing_images(a)
+        if arm == "background-test" or arm == "final-test" or ARMS.get(a, {}).get("final-test"):
             missing += [r["path"] for r in read_csv(BACKGROUND) if not (image_root(a) / r["path"]).exists()]
+        if arm == "final-test" or ARMS.get(a, {}).get("final-test"):
+            missing += [r["images"][0] for r in main.read_jsonl(HELDOUT) if not (image_root(a) / r["images"][0]).exists()]
+        if arm == "final-test" and not (base_dir(False) / "results" / f"scores-{a}.csv").exists():
+            sys.exit(f"{a} has no test scores (the background summary reads them)")
         if arm == "tuep-scan":
             if ARMS[a]["images"] != "core" or dataset_of(a) != "TUEV":
                 sys.exit(f"{a} is not a TUEV model on the core images")
@@ -1184,7 +1263,8 @@ def submit_job(cfg, arm, dry_run, arms=()):
             sys.exit(f"{a}: {len(missing)} images missing under {image_root(a)}, e.g. {missing[:3]}")
 
     me = f"python {SIDE}/run.py"
-    modes = lambda a: ("score",) if ARMS[a]["recipe"] is None else \
+    modes = lambda a: ("score", "heldout", "background") if ARMS[a].get("final-test") else \
+        ("score",) if ARMS[a]["recipe"] is None else \
         ("train", "score", "rationale-eval") if ARMS[a]["recipe"] == "hybrid" else ("train", "score")
     steps = {a: [f"{me} {a} --train --smoke"] * bool(ARMS[a].get("smoke-first")) + [f"{me} {a} --{m}" for m in modes(a)]
              for a in ARMS}
@@ -1193,9 +1273,10 @@ def submit_job(cfg, arm, dry_run, arms=()):
     steps["background-test"] = [f"{me} {a} --background" for a in arms]
     steps["tuep-scan"] = [f"{me} {a} --scan" for a in arms]
     steps["score-last"] = [f"{me} {a} --score --last" for a in arms]
+    steps["final-test"] = [f"{me} {a} --{m}" for a in arms for m in ("heldout", "background")]
     logs = base_dir(arm == "smoke") / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    resources = ARMS.get(arms[0] if arm in ("tuep-scan", "score-last") else arm, {})
+    resources = ARMS.get(arms[0] if arm in SINGLE else arm, {})
     gpus, ram = resources.get("gpus", GPUS), resources.get("ram", RAM)
     text = script(name, TIME[arm], ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
     text = text.replace(str(ROOT / "logs"), str(logs))
@@ -1207,13 +1288,14 @@ def submit_job(cfg, arm, dry_run, arms=()):
 def main_cli():
     cfg = config()
     parser = argparse.ArgumentParser()
-    parser.add_argument("arm", choices=[*ARMS, "smoke", "rationale-eval", "background-test", "tuep-scan", "score-last"])
-    parser.add_argument("arms", nargs="*", help="with rationale-eval, background-test or tuep-scan: the finished arms")
+    parser.add_argument("arm", choices=[*ARMS, "smoke", *PSEUDO])
+    parser.add_argument("arms", nargs="*", help="with a pseudo-arm (PSEUDO): the finished arms")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--train", action="store_true", help="train this arm in this process")
     mode.add_argument("--score", action="store_true", help="score this arm on the TUSZ test windows")
     mode.add_argument("--rationale-eval", action="store_true", help="reference NLL and generated rationales, 300 windows")
     mode.add_argument("--background", action="store_true", help="score data/background.csv's interior background windows")
+    mode.add_argument("--heldout", action="store_true", help="score the 62 held-out TUSZ patients (final test)")
     mode.add_argument("--scan", action="store_true", help="a TUEV model scores the TUEP scan windows; patient summary")
     mode.add_argument("--dry-run", action="store_true", help="print the job, submit nothing")
     parser.add_argument("--smoke", action="store_true", help="with --train/--score: 2 steps, 24 windows, under smoke/")
@@ -1222,8 +1304,8 @@ def main_cli():
     global LAST
     LAST = args.last
 
-    if args.train or args.score or args.rationale_eval or args.background or args.scan:
-        if args.arm in ("smoke", "rationale-eval", "background-test", "tuep-scan", "score-last") or args.train and ARMS[args.arm]["recipe"] is None:
+    if args.train or args.score or args.rationale_eval or args.background or args.heldout or args.scan:
+        if args.arm in ("smoke", *PSEUDO) or args.train and ARMS[args.arm]["recipe"] is None:
             parser.error(f"that mode does not apply to {args.arm}")
         os.environ.setdefault("WANDB_MODE", "offline")
         if args.train:
@@ -1232,13 +1314,15 @@ def main_cli():
             score(args.arm, args.smoke)
         elif args.background:
             background_test(args.arm, args.smoke)
+        elif args.heldout:
+            heldout_test(args.arm, args.smoke)
         elif args.scan:
             tuep_scan(args.arm, args.smoke)
         else:
             rationale_eval(args.arm, args.smoke)
         return
 
-    if args.arm in ("rationale-eval", "background-test", "tuep-scan", "score-last") and not args.arms:
+    if args.arm in PSEUDO and not args.arms:
         parser.error(f"{args.arm} needs the arms to evaluate")
     submit_job(cfg, args.arm, args.dry_run, tuple(args.arms))
 

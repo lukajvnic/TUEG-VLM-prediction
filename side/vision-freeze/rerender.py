@@ -17,6 +17,7 @@
 #   python side/vision-freeze/rerender.py datasets [N]   # the other corpora (see below), rendered into images/<DS>/
 #   python side/vision-freeze/rerender.py core [N]       # every corpus in the core design (see below), images-core/
 #   python side/vision-freeze/rerender.py tuep-scan [N]  # TUEP test recordings for the spike-detector scan (see below)
+#   python side/vision-freeze/rerender.py heldout [N]    # the final TUSZ test: the 62 patients in no core split
 # background: the scored TUSZ test set's background is 97.8% first/last windows of its recording (known-issues,
 # 2026-10-14). This lists, from the same 200 test patients, shipped test windows never scored that are background
 # only and not a recording's first or last window, up to 2 per recording spread through it (seed 0), with each
@@ -608,7 +609,7 @@ def check_core():
 
     bad, total = [], 0
     for table in sorted(CORE_DATA.glob("*-windows.csv")):
-        ds = table.name.removesuffix("-windows.csv").removesuffix("-scan")  # TUEP-scan's images are in TUEP/scan/
+        ds = table.name.split("-")[0]  # TUEP-scan's images are in TUEP/scan/, TUSZ-heldout's in TUSZ/heldout/
         for row in csv.DictReader(table.open()):
             total += 1
             try:
@@ -655,6 +656,56 @@ def tuep_scan(processes, per_recording=24):
     render_all(processes, out=CORE_IMAGES / "TUEP", table=table, style="core")
 
 
+def heldout(processes):
+    # the final TUSZ test: every shipped window of the 62 patients in no core TUSZ split (the sampler held them out as
+    # other corpora's test patients, so no model trained on them). Scored once per finalist (run.py --heldout)
+    import mne
+    from render import WINDOW
+
+    names = scans()
+    used = {r["scan"].rsplit("_", 1)[0] for r in csv.DictReader((CORE_DATA / "TUSZ-windows.csv").open())}
+    trained = set()
+    for table in CORE_DATA.glob("*-windows.csv"):
+        trained |= {SUBJECT.search(r["edf"]).group(0) for r in csv.DictReader(table.open())
+                    if r["role"] in ("train", "val") and SUBJECT.search(r["edf"])}
+    shipped = {r["path"]: {c for c in LABELS if r[c] == "true"} for r in csv.DictReader((DATASET / "labels.csv").open())}
+    by_recording = defaultdict(list)
+    for path in shipped:
+        _, scan, index = NAME.match(path).groups()
+        if scan.rsplit("_", 1)[0] not in used:
+            by_recording[scan].append((int(index), path))
+    patients = {scan.rsplit("_", 1)[0] for scan in by_recording}
+    if patients & trained:
+        sys.exit(f"{len(patients & trained)} held-out patients are in a core train/val split, e.g. "
+                 f"{sorted(patients & trained)[:3]}: stop")
+
+    rows, mismatches = [], 0
+    for scan in sorted(by_recording):
+        edf = names[scan]
+        header = mne.io.read_raw_edf(str(edf), preload=False, verbose="ERROR")
+        found = window_labels(edf, max(1, int((header.n_times / header.info["sfreq"]) // WINDOW)))
+        for index, path in sorted(by_recording[scan]):
+            mismatches += shipped[path] != found[index]
+            rows.append((f"heldout/{scan}_{index}.png", scan, index, str(edf.relative_to(ROOT)), bool(shipped[path] & SEIZURES)))
+    print(f"label check: {mismatches} held-out windows whose labels differ from the annotations")
+    if mismatches:
+        sys.exit("labels do not reproduce: stop")
+
+    table = CORE_DATA / "TUSZ-heldout-windows.csv"
+    with table.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["path", "role", "scan", "index", "edf"])
+        writer.writerows([path, "heldout", scan, index, edf] for path, scan, index, edf, _ in rows)
+    text = question_text("TUSZ", config_intro())
+    with (CORE_DATA / "TUSZ-heldout.jsonl").open("w") as f:
+        for path, *_, present in rows:
+            f.write(json.dumps({"dataset": "TUSZ", "question": "any_seizure", "instruction": text, "input": "",
+                                "output": json.dumps({"present": present}), "images": [path]}) + "\n")
+    print(f"held-out: {len(rows)} windows ({sum(r[4] for r in rows)} seizure) from {len(by_recording)} recordings, "
+          f"{len(patients)} patients, none in any core train/val split -> {table}", flush=True)
+    render_all(processes, out=CORE_IMAGES / "TUSZ", table=table, style="core")
+
+
 def question_of(ds):
     return "any_seizure" if ds == "TUSZ" else QUESTIONS[ds][0]
 
@@ -699,6 +750,8 @@ def main():
         check_core()
     elif sys.argv[1] == "tuep-scan":
         tuep_scan(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
+    elif sys.argv[1] == "heldout":
+        heldout(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "sample":
         # 2 seizure and 2 background training windows, beside their shipped PNGs, to look at
         shipped = {r["path"]: any(r[c] == "true" for c in SEIZURES) for r in csv.DictReader((DATASET / "labels.csv").open())}
