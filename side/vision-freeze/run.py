@@ -700,6 +700,17 @@ def load_for_scoring(arm, smoke):
     from transformers import AutoModelForImageTextToText
 
     base = base_spec(config(), model_of(arm))
+    if ARMS[arm]["recipe"] in ("lora", "hybrid") and LAST:
+        # a checkpoint-N dir has the adapter and the processor but no manifest.json, which runner.load requires
+        # (score-last-gm-2b-tuar/tuev failed on it, 2026-10-17)
+        from peft import PeftModel
+
+        checkpoint = model_dir(arm, smoke)
+        model, _, _ = main.runner.load({"base": model_of(arm)})
+        model = PeftModel.from_pretrained(model, str(checkpoint)).merge_and_unload()
+        model.eval()
+        drop_softcap(model)
+        return model, main.runner.load_processor(str(checkpoint), base, base.get("trust-remote-code", False)), base
     if ARMS[arm]["recipe"] in ("lora", "hybrid"):
         model, processor, _ = main.runner.load({"base": model_of(arm), "checkpoint": str(model_dir(arm, smoke).relative_to(ROOT))})
         drop_softcap(model)  # trained without the cap, so scored without it
