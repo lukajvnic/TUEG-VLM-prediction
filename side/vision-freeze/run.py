@@ -1300,7 +1300,10 @@ def submit_job(cfg, arm, dry_run, arms=()):
     resources = ARMS.get(arms[0] if arm in SINGLE else arm, {})
     gpus, ram = resources.get("gpus", GPUS), resources.get("ram", RAM)
     if os.environ.get("CC_CLUSTER") == "fir":
-        gpus = FIR_GPUS[gpus]
+        # scoring holds no optimizer state (the largest base, 12B, is ~24 GB in bf16), so it takes a 40 GB slice, which
+        # starts within minutes where a whole H100 waits behind ~950 jobs (2026-10-18)
+        scoring = arm in PSEUDO or ARMS.get(arm, {}).get("recipe", "train") is None
+        gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if scoring else FIR_GPUS[gpus]
     text = script(name, TIME[arm], ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
     text = text.replace(str(ROOT / "logs"), str(logs))
     print(f"{'dry run' if dry_run else submit(text)} - {name}, {TIME[arm]}/{ram}/gpu:{gpus}, log in {logs}")
