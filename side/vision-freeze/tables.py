@@ -11,8 +11,9 @@ MODELS = {"2b": "Qwen3-VL 2B", "4b": "Qwen3-VL 4B", "8b": "Qwen3-VL 8B", "q25-7b
           "gemma3-4b": "Gemma 3 4B", "medgemma-4b": "MedGemma 4B", "medgemma15-4b": "MedGemma 1.5 4B",
           "gemma4-e2b": "Gemma 4 E2B", "gemma4-e4b": "Gemma 4 E4B", "granite-2b": "Granite Vision 3.2 2B",
           "llava-llama3": "LLaVA-Llama3 8B", "gemma3-12b": "Gemma 3 12B", "llava-7b": "LLaVA 1.5 7B",
-          "llava-phi3": "LLaVA-Phi3 3.8B", "gemma4-12b": "Gemma 4 12B", "minicpm46-1b": "MiniCPM-V 4.6 1B",
-          "glm-ocr": "GLM-OCR"}
+          "llava-phi3": "LLaVA-Phi3 3.8B", "gemma4-12b": "Gemma 4 12B", "glm-ocr": "GLM-OCR"}
+# minicpm46-1b is left out: it gives every window the same P(true), zero-shot and fine-tuned (2026-10-19), so the image
+# never reaches the model in run.py's input
 DATASETS = ["TUSZ", "TUAB", "TUAR", "TUEV"]
 
 
