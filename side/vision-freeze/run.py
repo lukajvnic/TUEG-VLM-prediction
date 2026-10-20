@@ -151,9 +151,11 @@ for _short, (_model, _resources) in GRID_MODELS.items():
             "smoke-first": _short in ("8b", "q25-7b") or _short in GRID_EXTRA}
 # second seeds for the two collapsed runs of otherwise strong models (2026-10-17): every earlier run used the Trainer's
 # default seed 42; "seed" also seeds model setup (LoRA init) and the data order
-# (2026-10-18: seed 2 took gm-8b-tuar from 0.524 to 0.776, so every collapsed or weak pair gets one)
-SEED_2 = ("gm-8b-tuar", "gm-q25-7b-tuab", "gm-gemma3-12b-tuar", "gm-llava-7b-tuar", "gm-llava-7b-tuev",
-          "gm-llava-phi3-tuev", "gm-2b-tuar", "gm-gemma3-4b-tuar", "gm-granite-2b-tuar")
+# (2026-10-18: seed 2 took gm-8b-tuar from 0.524 to 0.776, so every collapsed or weak pair got one; 2026-10-20: seed 2
+# moved 9 small-corpus cells by 0.06-0.45 both ways, so every pair of every valid grid model gets one, maintainer's
+# choice; minicpm46-1b is left out, its image never reaches the model)
+SEED_2 = tuple(f"{'g' if ds == 'TUSZ' else 'gm'}-{short}-{ds.lower()}" for short in GRID_MODELS if short != "minicpm46-1b"
+               for ds in ("TUSZ", "TUAB", "TUAR", "TUEV"))
 for _arm in SEED_2:
     ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
 # zero-shot baselines (2026-10-17): every grid model untrained, scored on the core test lines and images with the
