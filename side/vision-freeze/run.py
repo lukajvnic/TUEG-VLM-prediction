@@ -124,6 +124,19 @@ GRID_EXTRA = {"gemma3-4b": "gemma3:4b", "gemma3-12b": "gemma3:12b", "medgemma-4b
               # round 7c (2026-10-18, "as many as possible"): the other bases on Narval that fit one A100
               "gemma4-12b": "gemma4:12b", "minicpm46-1b": "minicpm-v4.6:1b", "glm-ocr": "glm-ocr:latest"}
 GRID_MODELS.update({short: (model, {"gpus": "a100:1", "ram": "64G"}) for short, model in GRID_EXTRA.items()})
+# round 7d (2026-10-21, "as many remaining models as you can", all on Fir for the Narval outage): HF-native bases our
+# collator and hybrid recipe take as they are (checked on the meta device and with each chat template). Left out:
+# GLM-4.1V-9B-Thinking (its template prints the assistant's content list as text), LLaVA-OneVision (the answer turn
+# does not extend the generation prompt), PaliGemma 2 (no chat template), InternVL3 14B (too big for one 40 GB GPU),
+# Llama 3.2 Vision, Aya Vision and PerceptionLM (licences not accepted). They train on a 40 GB H100 slice, which starts
+# within minutes on Fir, and every job first checks that the image reaches the model (--image-check)
+GRID_FIR = {"internvl3-1b": "internvl3:1b", "internvl3-2b": "internvl3:2b", "internvl3-8b": "internvl3:8b",
+            "lfm2vl-450m": "lfm2-vl:450m", "lfm2vl-16b": "lfm2-vl:1.6b", "q25-3b": "qwen2.5vl:3b",
+            "smolvlm2-22b": "smolvlm2:2.2b", "idefics3-8b": "idefics3:8b", "llava-next-7b": "llava-next:7b",
+            "gemma3n-e2b": "gemma3n:e2b", "gemma3n-e4b": "gemma3n:e4b"}
+GRID_EXTRA.update(GRID_FIR)
+GRID_MODELS.update({short: (model, {"gpus": "a100:1", "ram": "64G", "fir-gpus": "nvidia_h100_80gb_hbm3_3g.40gb:1",
+                                    "image-check": True}) for short, model in GRID_FIR.items()})
 # gm-: TUAB, TUAR and TUEV in the multitask format (each window's answer line plus a separate "explain" line). Every
 # line of these corpora has a teacher rationale, so answer-first at weight 1 drowned the answer token (~1 in 150
 # target tokens): the g- answer-first runs scored AUROC 0.49-0.79 against round 6's 0.78-0.97, with train loss near
@@ -243,6 +256,7 @@ GRID_SPEED.update({short: (14.0, 1.0, 10) for short in ("gemma3-4b", "medgemma-4
                                                         "gemma4-e4b", "granite-2b", "llava-phi3")})
 GRID_SPEED.update({short: (20.0, 1.0, 12) for short in ("llava-7b", "llava-llama3")})
 GRID_SPEED["gemma3-12b"] = GRID_SPEED["gemma4-12b"] = (26.0, 1.5, 15)
+GRID_SPEED.update({short: (14.0, 1.0, 10) for short in GRID_FIR})  # unmeasured: the 4b-class guess
 GRID_SPEED.update({short: (14.0, 1.0, 10) for short in ("minicpm46-1b", "glm-ocr")})
 GRID_LINES = {"TUSZ": (8760, 8460), "TUAB": (2283, 1200), "TUEP": (826, 1084), "TUAR": (367, 3540), "TUEV": (335, 354)}
 for _short, (_step, _window, _rationale) in GRID_SPEED.items():
@@ -427,7 +441,8 @@ def arm_config(cfg, arm, smoke):
 
 # the image side under each family's name: Qwen's "visual" (blocks + merger), and the vision tower plus projector of
 # Gemma 3/4, LLaVA and Granite (LLaVA-NeXT)
-VISION_PARTS = ("visual", "vision_tower", "multi_modal_projector", "embed_vision")
+VISION_PARTS = ("visual", "vision_tower", "multi_modal_projector", "embed_vision",
+                "vision_model", "connector")  # the last two: SmolVLM2 / Idefics3 (2026-10-21)
 
 
 def vision_modules(model):
@@ -503,6 +518,8 @@ def hybridize(model, lora):
     keyword_input()
     language, _ = main.runner.lora_targets(model)
     names = vision_modules(model)
+    # a Linear inside a fully trained image part gets no LoRA (Idefics3's connector is not in lora_targets' vision hints)
+    language = [n for n in language if not any(n.startswith(v + ".") for v in names)]
     model = get_peft_model(model, LoraConfig(r=lora["rank"], lora_alpha=lora["alpha"], lora_dropout=lora["dropout"],
                                              bias="none", task_type="CAUSAL_LM", target_modules=language,
                                              modules_to_save=sorted({n.split(".")[-1] for n in names})))
@@ -1118,6 +1135,26 @@ def score_windows(arm, smoke, todo, labels, out):
             print(f"{n}/{len(todo)} ({(time.time() - started) / n:.2f} s/window)", flush=True)
 
 
+def image_check(arm):
+    # the untrained base on 8 of the arm's test windows (4 with the class, 4 without): a P(true) that is the same for all
+    # of them means the image never reaches the model (MiniCPM-V 4.6, 2026-10-19), so the job stops before training
+    import torch
+
+    labels = truth(arm)
+    windows = sorted(p for p in labels if labels[p])[:4] + sorted(p for p in labels if not labels[p])[:4]
+    model, processor, _ = main.runner.load({"base": model_of(arm)})
+    base = base_spec(config(), model_of(arm))
+    collator = main.DataCollator(processor, image_root(arm), base)
+    words = main.boolean_token_ids(processor.tokenizer)
+    ids = {w: torch.tensor(sorted(words[w]), device=model.device) for w in ("true", "false")}
+    text = rationale_prompt(arm) if order_of(arm) == "answer-first" else prompt_text(arm)
+    answer = AF_ANSWER if order_of(arm) == "answer-first" else ANSWER
+    p = [q for path in windows for q in p_true(model, collator, ids, text, [path], answer)]
+    print(f"image check, {model_of(arm)}: P(true) " + " ".join(f"{q:.6f}" for q in p), flush=True)
+    if len({round(q, 6) for q in p}) == 1:
+        sys.exit(f"{arm}: the same P(true) for every window, the image does not reach the model: stop")
+
+
 def heldout_test(arm, smoke):
     # the final TUSZ test: every shipped window of the 62 patients in no core split (rerender.py heldout)
     assert dataset_of(arm) == "TUSZ" and ARMS[arm]["images"] == "core", f"{arm} is not a core TUSZ arm"
@@ -1289,7 +1326,8 @@ def submit_job(cfg, arm, dry_run, arms=()):
     modes = lambda a: ("score", "heldout", "background") if ARMS[a].get("final-test") else \
         ("score",) if ARMS[a]["recipe"] is None else \
         ("train", "score", "rationale-eval") if ARMS[a]["recipe"] == "hybrid" else ("train", "score")
-    steps = {a: [f"{me} {a} --train --smoke"] * bool(ARMS[a].get("smoke-first")) + [f"{me} {a} --{m}" for m in modes(a)]
+    steps = {a: [f"{me} {a} --image-check"] * bool(ARMS[a].get("image-check")) +
+                [f"{me} {a} --train --smoke"] * bool(ARMS[a].get("smoke-first")) + [f"{me} {a} --{m}" for m in modes(a)]
              for a in ARMS}
     steps["smoke"] = [f"{me} {a} --{m} --smoke" for a in SMOKE_ARMS for m in modes(a)]
     steps["rationale-eval"] = [f"{me} {a} --rationale-eval" for a in arms]
@@ -1305,7 +1343,7 @@ def submit_job(cfg, arm, dry_run, arms=()):
         # scoring holds no optimizer state (the largest base, 12B, is ~24 GB in bf16), so it takes a 40 GB slice, which
         # starts within minutes where a whole H100 waits behind ~950 jobs (2026-10-18)
         scoring = arm in PSEUDO or ARMS.get(arm, {}).get("recipe", "train") is None
-        gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if scoring else FIR_GPUS[gpus]
+        gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if scoring else resources.get("fir-gpus", FIR_GPUS[gpus])
     text = script(name, TIME[arm], ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
     text = text.replace(str(ROOT / "logs"), str(logs))
     print(f"{'dry run' if dry_run else submit(text)} - {name}, {TIME[arm]}/{ram}/gpu:{gpus}, log in {logs}")
@@ -1324,6 +1362,7 @@ def main_cli():
     mode.add_argument("--rationale-eval", action="store_true", help="reference NLL and generated rationales, 300 windows")
     mode.add_argument("--background", action="store_true", help="score data/background.csv's interior background windows")
     mode.add_argument("--heldout", action="store_true", help="score the 62 held-out TUSZ patients (final test)")
+    mode.add_argument("--image-check", action="store_true", help="stop if the untrained base ignores the image")
     mode.add_argument("--scan", action="store_true", help="a TUEV model scores the TUEP scan windows; patient summary")
     mode.add_argument("--dry-run", action="store_true", help="print the job, submit nothing")
     parser.add_argument("--smoke", action="store_true", help="with --train/--score: 2 steps, 24 windows, under smoke/")
@@ -1332,7 +1371,7 @@ def main_cli():
     global LAST
     LAST = args.last
 
-    if args.train or args.score or args.rationale_eval or args.background or args.heldout or args.scan:
+    if args.train or args.score or args.rationale_eval or args.background or args.heldout or args.scan or args.image_check:
         if args.arm in ("smoke", *PSEUDO) or args.train and ARMS[args.arm]["recipe"] is None:
             parser.error(f"that mode does not apply to {args.arm}")
         os.environ.setdefault("WANDB_MODE", "offline")
@@ -1344,6 +1383,8 @@ def main_cli():
             background_test(args.arm, args.smoke)
         elif args.heldout:
             heldout_test(args.arm, args.smoke)
+        elif args.image_check:
+            image_check(args.arm)
         elif args.scan:
             tuep_scan(args.arm, args.smoke)
         else:

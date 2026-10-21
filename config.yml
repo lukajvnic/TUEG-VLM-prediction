@@ -249,6 +249,18 @@ bases:
   qwen2.5vl:7b: {repo: Qwen/Qwen2.5-VL-7B-Instruct, time: '12:00:00'}  # per-dataset run ~5.5 h (estimate); 12 h gets the b2 GPU partition
   qwen2.5vl:32b: {repo: Qwen/Qwen2.5-VL-32B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}
   qwen3-vl:2b-instruct: {repo: Qwen/Qwen3-VL-2B-Instruct}
+  # round 7d (2026-10-21): HF-native bases for the fine-tune grid only (not in the Ollama benchmark), on Fir
+  internvl3:1b: {repo: OpenGVLab/InternVL3-1B-hf}
+  internvl3:2b: {repo: OpenGVLab/InternVL3-2B-hf}
+  internvl3:8b: {repo: OpenGVLab/InternVL3-8B-hf}
+  lfm2-vl:450m: {repo: LiquidAI/LFM2-VL-450M}
+  lfm2-vl:1.6b: {repo: LiquidAI/LFM2-VL-1.6B}
+  qwen2.5vl:3b: {repo: Qwen/Qwen2.5-VL-3B-Instruct}
+  smolvlm2:2.2b: {repo: HuggingFaceTB/SmolVLM2-2.2B-Instruct}
+  idefics3:8b: {repo: HuggingFaceM4/Idefics3-8B-Llama3}
+  llava-next:7b: {repo: llava-hf/llava-v1.6-mistral-7b-hf}
+  gemma3n:e2b: {repo: google/gemma-3n-E2B-it}
+  gemma3n:e4b: {repo: google/gemma-3n-E4B-it}
   qwen3-vl:4b-instruct: {repo: Qwen/Qwen3-VL-4B-Instruct}
   qwen3-vl:8b-instruct: {repo: Qwen/Qwen3-VL-8B-Instruct}
   qwen3-vl:30b-a3b-instruct: {repo: Qwen/Qwen3-VL-30B-A3B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}
