@@ -1,10 +1,12 @@
 # one grouped bar chart per corpus from the results/summary-*.csv files: test AUROC per model, zero-shot (the base,
 # untrained, same images and scorer) beside fine-tuned (main seed), each with its 95% patient-bootstrap CI, and the
-# 0.5 chance line. Models keep one order in every chart (mean fine-tuned AUROC over the 4 corpora). PNG and PDF per
+# 0.5 chance line; and the same charts for balanced accuracy at a 0.5 threshold (ba-*), its CI bootstrapped here from
+# the per-window scores (1,000 patient resamples, seed 0). Models keep one order in every chart (mean fine-tuned AUROC over the 4 corpora). PNG and PDF per
 # corpus plus a 2x2 overview, in results/figures/. Also the loss curves of every main-seed run, from the last
 # checkpoint's trainer_state.json (results/trainer-states/<arm>/checkpoint-N/, an rsync of the cluster's checkpoints/
 # keeping only those files): one chart per model and corpus in results/figures/loss/<ds>/, and a 4x4 grid per corpus
 #   python side/vision-freeze/figures.py [RESULTS_DIR]
+import csv
 import json
 import sys
 from pathlib import Path
@@ -23,15 +25,45 @@ QUESTIONS = {"TUSZ": "seizure (any type)", "TUAB": "abnormal EEG", "TUAR": "eye 
 ZERO, TUNED = "#2a78d6", "#eb6834"
 SURFACE, TEXT, SECONDARY, MUTED, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9"
 WIDTH = 0.3  # of a model's slot: two bars and air, ~22 px each at 100 dpi
+METRICS = {"auroc": ("Test AUROC", "Bars: test AUROC"),
+           "ba": ("Balanced accuracy (threshold 0.5)", "Bars: test balanced accuracy at a 0.5 threshold")}
 
 
-def values(ds):
+def balanced_accuracy(arm):
+    # (BA, CI low, CI high): BA at 0.5 on the arm's test scores, CI from 1,000 patient resamples
+    path = RESULTS / f"scores-{arm}.csv"
+    if not path.exists():
+        return None
+    with path.open() as f:
+        rows = [r for r in {r["path"]: r for r in csv.DictReader(f)}.values() if r["p_true"] != ""]
+    patients = sorted({Path(r["path"]).stem.split("_")[0] for r in rows})
+    index = {p: i for i, p in enumerate(patients)}
+    counts = np.zeros((len(patients), 4))  # true positives, false negatives, true negatives, false positives
+    for r in rows:
+        positive, said = r["seizure"] == "true", float(r["p_true"]) >= 0.5
+        counts[index[Path(r["path"]).stem.split("_")[0]], [1, 0, 2, 3][2 * (not positive) + said]] += 1
+
+    def ba(total):
+        sensitivity = total[..., 0] / np.maximum(total[..., 0] + total[..., 1], 1)
+        specificity = total[..., 2] / np.maximum(total[..., 2] + total[..., 3], 1)
+        return (sensitivity + specificity) / 2
+
+    draws = np.random.default_rng(0).multinomial(len(patients), np.full(len(patients), 1 / len(patients)), size=1000)
+    low, high = np.percentile(ba(draws @ counts), [2.5, 97.5])
+    return float(ba(counts.sum(0))), float(low), float(high)
+
+
+def values(ds, metric):
     out = {}
     for short in tables.MODELS:
         for kind, arm in (("zero", f"z-{short}-{ds.lower()}"), ("tuned", tables.trained(short, ds))):
-            s = tables.summary(arm)
-            if s:
-                out[short, kind] = tuple(float(s[k]) for k in ("auroc", "auroc_ci_low", "auroc_ci_high"))
+            if metric == "ba":
+                found = balanced_accuracy(arm)
+            else:
+                s = tables.summary(arm)
+                found = tuple(float(s[k]) for k in ("auroc", "auroc_ci_low", "auroc_ci_high")) if s else None
+            if found:
+                out[short, kind] = found
     return out
 
 
@@ -44,7 +76,7 @@ def order(data):
     return sorted(means, key=lambda s: -means[s])
 
 
-def draw(ax, ds, data, models, legend=True):
+def draw(ax, ds, data, models, legend=True, ylabel="Test AUROC"):
     ax.set_facecolor(SURFACE)
     x = np.arange(len(models))
     for offset, kind, color, label in ((-WIDTH / 2 - 0.01, "zero", ZERO, "Zero-shot (untrained)"),
@@ -72,7 +104,7 @@ def draw(ax, ds, data, models, legend=True):
     ax.set_xticklabels([tables.MODELS[m] for m in models], rotation=40, ha="right", fontsize=8, color=TEXT)
     ax.tick_params(axis="y", labelsize=8, colors=SECONDARY)
     ax.tick_params(axis="x", length=0)
-    ax.set_ylabel("Test AUROC", fontsize=9, color=SECONDARY)
+    ax.set_ylabel(ylabel, fontsize=9, color=SECONDARY)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     for side in ("left", "bottom"):
@@ -86,25 +118,26 @@ def main():
     tables.RESULTS = RESULTS
     out = RESULTS / "figures"
     out.mkdir(exist_ok=True)
-    data = {ds: values(ds) for ds in QUESTIONS}
-    models = order(data)
-    note = "Bars: test AUROC; whiskers: 95% patient-bootstrap CI; fine-tuned = main seed."
-    for ds in QUESTIONS:
-        fig, ax = plt.subplots(figsize=(12, 4.8), facecolor=SURFACE)
-        draw(ax, ds, data[ds], models)
-        fig.text(0.01, 0.01, note, fontsize=7, color=MUTED)
-        fig.tight_layout(rect=(0, 0.03, 0.97, 1))
+    models = order({ds: values(ds, "auroc") for ds in QUESTIONS})  # one model order for both metrics
+    for metric, (ylabel, bars) in METRICS.items():
+        data = {ds: values(ds, metric) for ds in QUESTIONS}
+        note = f"{bars}; whiskers: 95% patient-bootstrap CI; fine-tuned = main seed."
+        for ds in QUESTIONS:
+            fig, ax = plt.subplots(figsize=(12, 4.8), facecolor=SURFACE)
+            draw(ax, ds, data[ds], models, ylabel=ylabel)
+            fig.text(0.01, 0.01, note, fontsize=7, color=MUTED)
+            fig.tight_layout(rect=(0, 0.03, 0.97, 1))
+            for suffix in ("png", "pdf"):
+                fig.savefig(out / f"{metric}-{ds.lower()}.{suffix}", dpi=200, facecolor=SURFACE)
+            plt.close(fig)
+        fig, axes = plt.subplots(2, 2, figsize=(18, 10), facecolor=SURFACE)
+        for k, (ax, ds) in enumerate(zip(axes.flat, QUESTIONS)):
+            draw(ax, ds, data[ds], models, legend=k == 0, ylabel=ylabel)
+        fig.text(0.01, 0.005, note, fontsize=8, color=MUTED)
+        fig.tight_layout(rect=(0, 0.02, 0.98, 1))
         for suffix in ("png", "pdf"):
-            fig.savefig(out / f"auroc-{ds.lower()}.{suffix}", dpi=200, facecolor=SURFACE)
+            fig.savefig(out / f"{metric}-all.{suffix}", dpi=200, facecolor=SURFACE)
         plt.close(fig)
-    fig, axes = plt.subplots(2, 2, figsize=(18, 10), facecolor=SURFACE)
-    for k, (ax, ds) in enumerate(zip(axes.flat, QUESTIONS)):
-        draw(ax, ds, data[ds], models, legend=k == 0)
-    fig.text(0.01, 0.005, note, fontsize=8, color=MUTED)
-    fig.tight_layout(rect=(0, 0.02, 0.98, 1))
-    for suffix in ("png", "pdf"):
-        fig.savefig(out / f"auroc-all.{suffix}", dpi=200, facecolor=SURFACE)
-    plt.close(fig)
     print(f"{len(models)} models -> {out}")
     losses(out, models)
 
