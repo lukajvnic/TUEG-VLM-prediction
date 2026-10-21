@@ -1,8 +1,11 @@
 # one grouped bar chart per corpus from the results/summary-*.csv files: test AUROC per model, zero-shot (the base,
 # untrained, same images and scorer) beside fine-tuned (main seed), each with its 95% patient-bootstrap CI, and the
 # 0.5 chance line. Models keep one order in every chart (mean fine-tuned AUROC over the 4 corpora). PNG and PDF per
-# corpus plus a 2x2 overview, in results/figures/
+# corpus plus a 2x2 overview, in results/figures/. Also the loss curves of every main-seed run, from the last
+# checkpoint's trainer_state.json (results/trainer-states/<arm>/checkpoint-N/, an rsync of the cluster's checkpoints/
+# keeping only those files): one chart per model and corpus in results/figures/loss/<ds>/, and a 4x4 grid per corpus
 #   python side/vision-freeze/figures.py [RESULTS_DIR]
+import json
 import sys
 from pathlib import Path
 
@@ -103,6 +106,90 @@ def main():
         fig.savefig(out / f"auroc-all.{suffix}", dpi=200, facecolor=SURFACE)
     plt.close(fig)
     print(f"{len(models)} models -> {out}")
+    losses(out, models)
+
+
+def history(arm):
+    # the last checkpoint's log covers the whole run, resumed parts included
+    checkpoints = sorted((RESULTS / "trainer-states" / arm).glob("checkpoint-*/trainer_state.json"),
+                         key=lambda p: int(p.parent.name.split("-")[1]))
+    return json.loads(checkpoints[-1].read_text()) if checkpoints else None
+
+
+def smooth(values, window=5):
+    return np.convolve(np.pad(values, (window // 2, window - 1 - window // 2), mode="edge"), np.ones(window) / window,
+                       mode="valid")
+
+
+def draw_loss(ax, state, small=False):
+    ax.set_facecolor(SURFACE)
+    train = [(h["epoch"], h["loss"]) for h in state["log_history"] if "loss" in h]
+    val = [(h["epoch"], h["eval_loss"]) for h in state["log_history"] if "eval_loss" in h]
+    epochs, loss = np.array(train).T
+    ax.plot(epochs, loss, color=ZERO, linewidth=0.6, alpha=0.35, zorder=2)
+    ax.plot(epochs, smooth(loss), color=ZERO, linewidth=1.5 if small else 2, label="Training loss", zorder=3)
+    if val:
+        e, v = np.array(val).T
+        ax.plot(e, v, color=TUNED, linewidth=1.5 if small else 2, marker="o", markersize=3 if small else 5,
+                label="Validation loss", zorder=4)
+    kept = state.get("best_model_checkpoint")
+    if kept:
+        step = int(kept.rstrip("/").rsplit("-", 1)[1])
+        epoch = next((h["epoch"] for h in state["log_history"] if h.get("step") == step), None)
+        if epoch is not None:
+            ax.axvline(epoch, color=MUTED, linewidth=1, linestyle=(0, (4, 3)), zorder=1, label="Kept checkpoint")
+    ax.set_yscale("log")
+    ax.yaxis.grid(True, color=GRID, linewidth=0.6, which="major")
+    ax.set_axisbelow(True)
+    ax.tick_params(labelsize=7 if small else 8, colors=SECONDARY)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(MUTED)
+
+
+def losses(out, models):
+    note = {"TUSZ": "Training and validation loss: answer + teacher rationale tokens (answer-first).",
+            "multitask": "Training loss: answer lines + rationale lines (multitask); validation loss: answer lines only."}
+    for ds in QUESTIONS:
+        folder = out / "loss" / ds.lower()
+        folder.mkdir(parents=True, exist_ok=True)
+        text = note["TUSZ" if ds == "TUSZ" else "multitask"]
+        runs = [(m, history(tables.trained(m, ds))) for m in models]
+        runs = [(m, state) for m, state in runs if state]
+        for m, state in runs:
+            summary = tables.summary(tables.trained(m, ds))
+            fig, ax = plt.subplots(figsize=(7, 4), facecolor=SURFACE)
+            draw_loss(ax, state)
+            ax.set_title(f"{tables.MODELS[m]}, {ds}", loc="left", fontsize=11, color=TEXT, fontweight="bold")
+            if summary:
+                ax.set_title(f"test AUROC {float(summary['auroc']):.3f}", loc="right", fontsize=9, color=SECONDARY)
+            ax.set_xlabel("Epoch", fontsize=9, color=SECONDARY)
+            ax.set_ylabel("Loss (log scale)", fontsize=9, color=SECONDARY)
+            ax.legend(frameon=False, fontsize=8, labelcolor=TEXT, loc="upper right")
+            fig.text(0.01, 0.01, text, fontsize=7, color=MUTED)
+            fig.tight_layout(rect=(0, 0.04, 1, 1))
+            fig.savefig(folder / f"{tables.MODELS[m].lower().replace(' ', '-')}.png", dpi=200, facecolor=SURFACE)
+            plt.close(fig)
+        fig, axes = plt.subplots(4, 4, figsize=(16, 13), facecolor=SURFACE, sharey=True)
+        for ax, (m, state) in zip(axes.flat, runs):
+            draw_loss(ax, state, small=True)
+            summary = tables.summary(tables.trained(m, ds))
+            auroc = f"  (AUROC {float(summary['auroc']):.2f})" if summary else ""
+            ax.set_title(f"{tables.MODELS[m]}{auroc}", loc="left", fontsize=9, color=TEXT)
+        for ax in list(axes.flat)[len(runs):]:
+            ax.axis("off")
+        handles, labels = axes.flat[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="upper right", ncol=3, frameon=False, fontsize=9, labelcolor=TEXT)
+        fig.suptitle(f"{ds}: {QUESTIONS[ds]}, loss by epoch", x=0.01, ha="left", fontsize=13, color=TEXT,
+                     fontweight="bold")
+        fig.text(0.01, 0.005, text + " Log scale; dashed line: the checkpoint that was scored.", fontsize=8,
+                 color=MUTED)
+        fig.tight_layout(rect=(0, 0.02, 1, 0.96))
+        for suffix in ("png", "pdf"):
+            fig.savefig(out / f"loss-{ds.lower()}.{suffix}", dpi=200, facecolor=SURFACE)
+        plt.close(fig)
+        print(f"{ds}: {len(runs)} loss curves -> {folder}")
 
 
 if __name__ == "__main__":
