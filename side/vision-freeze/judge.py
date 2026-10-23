@@ -191,7 +191,7 @@ SBATCH = """#!/bin/bash
 #SBATCH --output={logs}/{job}-%j.out
 {dependency}
 set -euo pipefail
-module load StdEnv/2023 apptainer/1.4.5
+module load StdEnv/2023 apptainer/1.4.5 2>/dev/null || module load StdEnv/2023 apptainer  # Fir has 1.3.5
 source {root}/.venv/bin/activate
 port=$((20000 + SLURM_JOB_ID % 40000))
 export OLLAMA_HOST=127.0.0.1:$port
