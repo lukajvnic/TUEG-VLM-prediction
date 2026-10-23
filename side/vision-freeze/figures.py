@@ -140,6 +140,58 @@ def main():
         plt.close(fig)
     print(f"{len(models)} models -> {out}")
     losses(out, models)
+    tuep_scan(out)
+
+
+def tuep_scan(out):
+    # TUEP patient-level AUROC of the spike scan, one bar per TUEV detector (main-seed gm- arms and the s- detectors),
+    # 95% patient-bootstrap CI, the chance line; the direct window-level fine-tune goes in the caption
+    rows = []
+    for path in sorted(RESULTS.glob("summary-tuep-scan-*.csv")):
+        with path.open() as f:
+            s = next(csv.DictReader(f))
+        arm = s["arm"]
+        short = arm.split("-", 1)[1].rsplit("-", 1)[0]
+        if arm.endswith("-s2") or short not in tables.MODELS:
+            continue
+        name = tables.MODELS[short] + (" (vision-only detector)" if arm.startswith("s-") else "")
+        rows.append((name, float(s["auroc_patient"]), float(s["auroc_patient_ci_low"]), float(s["auroc_patient_ci_high"])))
+    rows.sort(key=lambda r: r[1])
+    fig, ax = plt.subplots(figsize=(9, 0.42 * len(rows) + 1.6), facecolor=SURFACE)
+    ax.set_facecolor(SURFACE)
+    y = np.arange(len(rows))
+    auroc = np.array([r[1] for r in rows])
+    ax.barh(y, auroc, 0.55, color=ZERO, edgecolor=SURFACE, linewidth=1, zorder=2)
+    ax.errorbar(auroc, y, xerr=[auroc - [r[2] for r in rows], np.array([r[3] for r in rows]) - auroc], fmt="none",
+                ecolor=SECONDARY, elinewidth=0.9, capsize=0, zorder=3)
+    ax.axvline(0.5, color=MUTED, linewidth=1, linestyle=(0, (4, 3)), zorder=1)
+    ax.text(0.5, len(rows) - 0.35, "chance", ha="center", va="bottom", fontsize=8, color=MUTED)
+    ax.set_yticks(y)
+    ax.set_yticklabels([r[0] for r in rows], fontsize=8.5, color=TEXT)
+    ax.set_xlim(0, 1)
+    ax.set_xticks(np.arange(0, 1.01, 0.2))
+    ax.xaxis.grid(True, color=GRID, linewidth=0.6)
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="x", labelsize=8, colors=SECONDARY)
+    ax.tick_params(axis="y", length=0)
+    ax.set_xlabel("Patient-level AUROC (epilepsy vs not)", fontsize=9, color=SECONDARY)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(MUTED)
+    ax.set_title("TUEP: epilepsy diagnosis from a spike scan", loc="left", fontsize=11, color=TEXT, fontweight="bold")
+    direct = tables.summary("r6-tuep-epilepsy")
+    note = ("Each TUEV-trained model scores 12 windows per TUEP test recording; recording = mean of its top 5, patient = "
+            "mean of their recordings; 107 patients (53 epilepsy). Whiskers: 95% patient-bootstrap CI.")
+    if direct:
+        note += (f"\nDirect fine-tuning on TUEP windows (Qwen3-VL 2B, earlier images): window AUROC "
+                 f"{float(direct['auroc']):.2f} [{float(direct['auroc_ci_low']):.2f}, {float(direct['auroc_ci_high']):.2f}].")
+    import textwrap
+    note = "\n".join(textwrap.fill(line, 150) for line in note.split("\n"))
+    fig.text(0.01, 0.01, note, fontsize=7, color=MUTED, va="bottom")
+    fig.tight_layout(rect=(0, 0.09, 1, 1))
+    for suffix in ("png", "pdf"):
+        fig.savefig(out / f"tuep-scan.{suffix}", dpi=200, facecolor=SURFACE)
+    plt.close(fig)
 
 
 def history(arm):
