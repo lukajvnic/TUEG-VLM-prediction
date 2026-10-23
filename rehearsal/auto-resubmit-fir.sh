@@ -4,7 +4,7 @@
 # smoke, or out of memory on a 40 GB slice) is reported as FAILED for a decision by hand
 cd /scratch/luka/TUEG-VLM-prediction
 R=side/vision-freeze/results
-records=$(sacct -u luka -S 2026-10-18T00:00 -X -n -P -o JobName,State | grep -E "^eeg-vlm-vision-freeze-(g-[^|]*-tusz|gm-|s-|z-)" | sed "s/^eeg-vlm-vision-freeze-//")
+records=$(sacct -u luka -S 2026-10-18T00:00 -X -n -P -o JobName,State | grep -E "^eeg-vlm-vision-freeze-(g-[^|]*-tusz|gm-|s-|z-|final-test-)" | sed "s/^eeg-vlm-vision-freeze-//")
 queued=$(squeue -u luka -h -o %j | sed "s/^eeg-vlm-vision-freeze-//")
 done_arm() {
   case $1 in
@@ -18,13 +18,13 @@ submit() {
   source .venv/bin/activate
   python side/vision-freeze/run.py $1 2>&1 | grep -v -i warn | tail -1
 }
-for arm in $(echo "$records" | awk -F"|" '$2 ~ /TIMEOUT/ {print $1}' | sort -u); do
+for arm in $(echo "$records" | awk -F"|" '$2 ~ /TIMEOUT/ {print $1}' | grep -v "^final-test-" | sort -u); do
   done_arm $arm && continue
   echo "$queued" | grep -qx "$arm" && continue
   echo "resubmitting $arm (timed out)"
   submit $arm
 done
-for arm in $(echo "$records" | awk -F"|" '$2 ~ /FAILED|OUT_OF_ME|NODE_FAIL/ {print $1}' | sort -u); do
+for arm in $(echo "$records" | awk -F"|" '$2 ~ /FAILED|OUT_OF_ME|NODE_FAIL/ {print $1}' | grep -v "^final-test-" | sort -u); do
   done_arm $arm && continue
   echo "$queued" | grep -qx "$arm" && continue
   failures=$(echo "$records" | grep -E "^$arm\|(FAILED|OUT_OF_ME|NODE_FAIL)" | wc -l)
@@ -34,4 +34,15 @@ for arm in $(echo "$records" | awk -F"|" '$2 ~ /FAILED|OUT_OF_ME|NODE_FAIL/ {pri
   else
     echo "FAILED $arm ($failures failures, manifest: $([ -f side/vision-freeze/checkpoints/$arm/manifest.json ] && echo yes || echo no))"
   fi
+done
+# the TUSZ final test (62 held-out patients + interior background) for every finished TUSZ grid run on Fir, as Narval's
+# auto-scan.sh does there (added 2026-10-22)
+for arm in $(ls $R/scores-g-*-tusz.csv $R/scores-g-*-tusz-s2.csv 2>/dev/null | xargs -n1 basename | sed -e "s/^scores-//" -e "s/\.csv$//"); do
+  case $arm in *-s2) continue;; esac  # final tests are for the main seed
+  [ -f $R/summary-rationale-$arm-answer-first.csv ] || continue
+  [ -f $R/summary-heldout-$arm.csv ] && [ -f $R/summary-background-$arm.csv ] && continue
+  echo "$queued" | grep -qx "final-test-$arm" && continue
+  if echo "$records" | grep -qE "^final-test-$arm\|(FAILED|OUT_OF_ME)"; then echo "FAILED final-test-$arm"; continue; fi
+  echo "final test for $arm"
+  submit "final-test $arm"
 done
