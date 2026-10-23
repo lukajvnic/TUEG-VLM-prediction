@@ -181,9 +181,15 @@ for _arm in SEED_2:
 ZERO_SHOT = list(GRID_MODELS)
 for _short in ZERO_SHOT:
     for _ds in ("TUSZ", "TUAB", "TUAR", "TUEV"):
+        # 2026-10-23: TUSZ's fine-tuned arms answer first, so its zero-shot arm is scored with the same answer-first
+        # prompt and answer (it was the plain question before; those results are kept as *-plain files), and every
+        # zero-shot arm also writes rationales in its corpus's trained format for the judge ("eval-format")
         ARMS[f"z-{_short}-{_ds.lower()}"] = {**CORE, "recipe": None, "dataset": _ds, "question": GRID_DATA[_ds][0],
                                              "model": GRID_MODELS[_short][0], **GRID_MODELS[_short][1],
-                                             "final-test": _ds == "TUSZ"}
+                                             "final-test": _ds == "TUSZ",
+                                             **({"target": "rationale", "order": "answer-first", "strip": True}
+                                                if _ds == "TUSZ" else {}),
+                                             "eval-format": "answer-first" if _ds == "TUSZ" else "explain"}
 # pseudo-arms: jobs that evaluate finished arms; the single ones take one arm per job and ask for its GPU
 PSEUDO = ("rationale-eval", "background-test", "tuep-scan", "score-last", "final-test")
 SINGLE = ("tuep-scan", "score-last", "final-test")
@@ -903,7 +909,10 @@ def rationale_eval_windows(arm="freeze"):
 
 
 def eval_formats(arm):
-    # an untrained arm is evaluated in both trained formats, so each trained arm has a baseline in its own format
+    # an untrained arm is evaluated in both trained formats, so each trained arm has a baseline in its own format; a
+    # zero-shot grid arm only in its corpus's trained format
+    if ARMS[arm].get("eval-format"):
+        return [ARMS[arm]["eval-format"]]
     if ARMS[arm]["recipe"] is None:
         return ["answer-first", "explain"]
     return [{"multitask": "explain", "rationale-first": "rationale-first"}.get(order_of(arm), "answer-first")]
@@ -1328,7 +1337,8 @@ def submit_job(cfg, arm, dry_run, arms=()):
             sys.exit(f"{a}: {len(missing)} images missing under {image_root(a)}, e.g. {missing[:3]}")
 
     me = f"python {SIDE}/run.py"
-    modes = lambda a: ("score", "heldout", "background") if ARMS[a].get("final-test") else \
+    modes = lambda a: ("score", "heldout", "background", "rationale-eval") if ARMS[a].get("final-test") else \
+        ("score", "rationale-eval") if ARMS[a].get("eval-format") else \
         ("score",) if ARMS[a]["recipe"] is None else \
         ("train", "score", "rationale-eval") if ARMS[a]["recipe"] == "hybrid" else ("train", "score")
     steps = {a: [f"{me} {a} --image-check"] * bool(ARMS[a].get("image-check")) +
