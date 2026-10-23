@@ -1,9 +1,8 @@
 # human-facing copies of the core images with every annotated event marked (2026-10-23): the same 25-row render, the
 # annotated rows shaded for the seconds the event covers (TUSZ, TUAR, TUSL annotate per TCP channel; TUEV numbers the
-# same channels), a title strip with the window's question and label, and a legend of the events present. TUAB and
-# TUEP carry one label per recording, so their images get the title only. Written to images-annotated/<DS>/<split>/
-# under the core image's name; the model never sees these
-#   python side/vision-freeze/annotate.py sample        # 5 windows (TUSZ, TUAR, TUEV, TUSL, TUAB) into images-annotated-sample/
+# same channels), a title strip with the window's question and label, and a legend of the events present. Written to
+# images-annotated/<DS>/<split>/ under the core image's name; the model never sees these
+#   python side/vision-freeze/annotate.py sample        # one window per corpus into images-annotated-sample/
 #   python side/vision-freeze/annotate.py all [N]       # every core window, N processes
 import csv
 import json
@@ -32,9 +31,10 @@ TUEV_CHANNELS = ["FP1-F7", "F7-T3", "T3-T5", "T5-O1", "FP2-F8", "F8-T4", "T4-T6"
 TUEV_CODES = {"1": "spsw", "2": "gped", "3": "pled", "4": "eyem", "5": "artf"}  # 6 (bckg) is not drawn
 QUESTION = {"TUSZ": "seizure", "TUAB": "abnormal EEG", "TUAR": "eye movement artifact", "TUEV": "epileptiform discharge",
             "TUEP": "epilepsy patient", "TUSL": "slowing"}
-TABLES = [("TUSZ", "TUSZ-windows.csv"), ("TUSZ", "TUSZ-heldout-windows.csv"), ("TUAB", "TUAB-windows.csv"),
-          ("TUAR", "TUAR-windows.csv"), ("TUEV", "TUEV-windows.csv"), ("TUEP", "TUEP-windows.csv"),
-          ("TUEP", "TUEP-scan-windows.csv"), ("TUSL", "TUSL-windows.csv")]
+# the corpora annotated per channel and event (maintainer, 2026-10-23): TUSL is cut from the paper, and TUAB and TUEP
+# label whole recordings, so there is nothing to shade
+TABLES = [("TUSZ", "TUSZ-windows.csv"), ("TUSZ", "TUSZ-heldout-windows.csv"), ("TUAR", "TUAR-windows.csv"),
+          ("TUEV", "TUEV-windows.csv")]
 
 
 def events(ds, edf):
