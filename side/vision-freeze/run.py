@@ -108,6 +108,10 @@ ARMS["c-tusz-pilot"] = {**CORE, "epochs": 4, "train": "pilot-train"}
 for _ds, _question, _epochs in (("TUAB", "abnormal", 4), ("TUEP", "epilepsy", 10), ("TUAR", "eyem", 12),
                                 ("TUEV", "epileptiform", 12)):
     ARMS[f"c-{_ds.lower()}-{_question}"] = {**CORE, "epochs": _epochs, "dataset": _ds, "question": _question}
+# the split control for TUEP (2026-10-22): the EMBC 2026 paper split TUEP images at random, so patients sat on both
+# sides; c-tuep-random is c-tuep-epilepsy on rerender.py tuep-random's split (whole recordings at random, same windows
+# and sizes), so the two differ only in the split rule
+ARMS["c-tuep-random"] = {**ARMS["c-tuep-epilepsy"], "splits": "random"}
 # round 7 (2026-10-15), the grid: the hybrid recipe (answer first, label-stripped teacher rationale, weight 1) on the
 # core images, for every Qwen-VL model that fits one A100 x five corpora. The 8b and the 7b have never run it, so
 # their jobs start with a 2-step smoke (smoke-first) and stop early if it fails
@@ -246,7 +250,7 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         "r6-tuev-epileptiform": "05:00:00", "r6-4b-freeze-4ep-render": "12:00:00",
         # core: round 6's step counts, plus scoring; TUSZ as freeze-4ep-render(-more)
         "c-tusz-more": "1-06:00:00", "c-tusz-pilot": "10:00:00", "c-tuab-abnormal": "08:00:00",
-        "c-tuep-epilepsy": "08:00:00", "c-tuar-eyem": "06:00:00", "c-tuev-epileptiform": "05:00:00"}
+        "c-tuep-epilepsy": "08:00:00", "c-tuep-random": "08:00:00", "c-tuar-eyem": "06:00:00", "c-tuev-epileptiform": "05:00:00"}
 # grid walltimes: steps x s/step + test windows x s/window + the rationale eval (300 windows) + loading and saves,
 # with 50% margin. Measured on the grid's first jobs (2026-10-15): s/step 2b 15.5-16.1 (slice), 4b 10.1-10.8 (one run
 # 26.3), 8b 14.6-15.9, qwen2.5vl:7b 24.9-41.5; scoring 0.40-0.65 s/window; rationale eval 6.4-7.4 s/window. The other
@@ -330,7 +334,8 @@ def question_of(arm):
 
 def dataset_lines(arm, split):
     folder = SIDE / "data" / ("core" if ARMS[arm]["lines"] == "core" else "")
-    return main.read_jsonl(folder / f"{dataset_of(arm)}-{split}.jsonl")
+    name = f"{dataset_of(arm)}-{ARMS[arm]['splits']}" if ARMS[arm].get("splits") else dataset_of(arm)
+    return main.read_jsonl(folder / f"{name}-{split}.jsonl")
 
 
 def lines(split, smoke, arm="freeze"):

@@ -706,6 +706,34 @@ def heldout(processes):
     render_all(processes, out=CORE_IMAGES / "TUSZ", table=table, style="core")
 
 
+def tuep_random():
+    # the EMBC 2026 TUEP setup's split (2026-10-22): whole recordings assigned to train / val / test at random, so a
+    # patient can sit on both sides, against our patient-disjoint split. Same windows, images and split sizes; only the
+    # split rule differs. Writes data/core/TUEP-random-{train,val,test}.jsonl (seed 0)
+    lines = {split: read_jsonl(CORE_DATA / f"TUEP-{split}.jsonl") for split in ("train", "val", "test")}
+    sizes = {split: len(rows) for split, rows in lines.items()}
+    core_name = re.compile(r"^(train|val|test)/(.+_\d+)_(\d+)\.png$")
+    by_recording = defaultdict(list)
+    for rows in lines.values():
+        for r in rows:
+            by_recording[core_name.match(r["images"][0]).group(2)].append(r)
+    recordings = sorted(by_recording)
+    random.Random(SEED).shuffle(recordings)
+    out = {"test": [], "val": [], "train": []}
+    for scan in recordings:
+        split = "test" if len(out["test"]) < sizes["test"] else "val" if len(out["val"]) < sizes["val"] else "train"
+        out[split] += by_recording[scan]
+    patients = {split: {core_name.match(r["images"][0]).group(2).rsplit("_", 1)[0] for r in rows} for split, rows in out.items()}
+    for split, rows in out.items():
+        with (CORE_DATA / f"TUEP-random-{split}.jsonl").open("w") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+        positives = sum(json.loads(r["output"])["present"] for r in rows)
+        print(f"{split}: {len(rows)} windows ({positives} epilepsy), {len(patients[split])} patients")
+    shared = patients["test"] & (patients["train"] | patients["val"])
+    print(f"test patients also in train/val: {len(shared)} of {len(patients['test'])}")
+
+
 def question_of(ds):
     return "any_seizure" if ds == "TUSZ" else QUESTIONS[ds][0]
 
@@ -750,6 +778,8 @@ def main():
         check_core()
     elif sys.argv[1] == "tuep-scan":
         tuep_scan(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
+    elif sys.argv[1] == "tuep-random":
+        tuep_random()
     elif sys.argv[1] == "heldout":
         heldout(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "sample":
