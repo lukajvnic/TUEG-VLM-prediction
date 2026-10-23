@@ -94,6 +94,7 @@ CORE_GROUPS = [("#1f4e9c", [("FP1", "F7"), ("F7", "T3"), ("T3", "T5"), ("T5", "O
                ("#5e3a96", [("A1", "T3"), ("T3", "C3"), ("C3", "CZ"), ("CZ", "C4"), ("C4", "T4"), ("T4", "A2")])]
 EKG_COLOR, MISSING_COLOR = "#6b6b6b", "#bdbdbd"
 GRID_COLORS = ("#e2e2e2", "#c4c4c4")
+ANNOTATED_HEADER = 60  # px: annotate.py's title and legend strip above the plot
 
 
 @functools.cache
@@ -282,7 +283,10 @@ def core_rows(raw):
     return rows + [("EKG", EKG_COLOR, data[ekg[0]] if ekg else None)]
 
 
-def draw_core(rows, level, sfreq, start, png):
+def draw_core(rows, level, sfreq, start, png, spans=(), header=None):
+    # spans and header are for annotate.py's human-facing copies: (row label or None for every row, start s, stop s,
+    # colour) shaded behind the traces, and a title strip with a legend above the plot. Without them the image is the
+    # core design, byte for byte
     import matplotlib
 
     matplotlib.use("Agg")
@@ -293,12 +297,31 @@ def draw_core(rows, level, sfreq, start, png):
     from render import WINDOW
 
     width, height = CORE_SIZE
-    fig = plt.figure(figsize=(width / CORE_DPI, height / CORE_DPI), dpi=CORE_DPI)
-    ax = fig.add_axes([CORE_GUTTER / width, 6 / height, 1 - (CORE_GUTTER + CORE_MARGIN) / width, 1 - 12 / height])
+    if header is None:
+        fig = plt.figure(figsize=(width / CORE_DPI, height / CORE_DPI), dpi=CORE_DPI)
+        ax = fig.add_axes([CORE_GUTTER / width, 6 / height, 1 - (CORE_GUTTER + CORE_MARGIN) / width, 1 - 12 / height])
+    else:
+        total = height + ANNOTATED_HEADER
+        fig = plt.figure(figsize=(width / CORE_DPI, total / CORE_DPI), dpi=CORE_DPI)
+        ax = fig.add_axes([CORE_GUTTER / width, 6 / total, 1 - (CORE_GUTTER + CORE_MARGIN) / width, (height - 12) / total])
+        title, legend = header
+        fig.text(CORE_GUTTER / width, 1 - 30 / total, title, ha="left", va="center", fontsize=13, weight="bold")
+        if legend:
+            from matplotlib.patches import Patch
+            fig.legend([Patch(facecolor=c, alpha=0.35, edgecolor=c) for _, c in legend], [name for name, _ in legend],
+                       loc="upper right", bbox_to_anchor=(1 - 8 / width, 1 - 6 / total), ncol=min(len(legend), 4),
+                       frameon=False, fontsize=11)
+        else:
+            fig.text(1 - CORE_MARGIN / width, 1 - 30 / total, "no annotated event in this window", ha="right",
+                     va="center", fontsize=11, color="#6b6b6b")
     a, b = int(round(start * sfreq)), int(round((start + WINDOW) * sfreq))
     seconds = np.arange(b - a) / sfreq
     gain = GAIN * level
     n = len(rows)
+    centers = {label.upper(): n - 1 - k for k, (label, _, _) in enumerate(rows)}
+    for row, x0, x1, color in spans:
+        low, high = (centers[row] - 0.5, centers[row] + 0.5) if row in centers else (-0.6, n - 0.4)
+        ax.fill_between([x0, x1], low, high, color=color, alpha=0.28, linewidth=0, zorder=0.5)
     lines, colors, missing = [], [], []
     for k, (label, color, y) in enumerate(rows):
         center = n - 1 - k
@@ -338,7 +361,10 @@ def draw_core(rows, level, sfreq, start, png):
     # temporary name first: an interrupted run must not leave a truncated PNG that a rerun would skip
     image = Image.open(buffer).convert("RGB")
     partial = png.with_suffix(".partial")
-    image.quantize(palette=core_palette(), dither=Image.Dither.NONE).save(partial, "PNG", optimize=True)
+    if header is None:
+        image.quantize(palette=core_palette(), dither=Image.Dither.NONE).save(partial, "PNG", optimize=True)
+    else:  # the shaded spans add colours the fixed palette lacks
+        image.quantize(colors=256, dither=Image.Dither.NONE).save(partial, "PNG", optimize=True)
     os.replace(partial, png)
 
 
