@@ -465,12 +465,15 @@ def vision_modules(model):
 
 
 def drop_softcap(model):
-    # Gemma 4 caps its output logits at 30: in bf16 the true/false logits both saturate, the gradient is exactly 0
-    # and P(true) is 0.5 (known-issues.md, "Gemma4's dead gradient"); only Gemma 4 sets it
+    # Gemma 4 and Gemma 3n cap their output logits at 30: in bf16 the true/false logits both saturate, the gradient is
+    # exactly 0 and P(true) is 0.5 (known-issues.md, "Gemma4's dead gradient"); no other family sets it
     text = model.config.get_text_config()
     if getattr(text, "final_logit_softcapping", None):
         print(f"final_logit_softcapping {text.final_logit_softcapping} -> None", flush=True)
-        text.final_logit_softcapping = None
+        try:
+            text.final_logit_softcapping = None
+        except Exception:  # Gemma 3n's strict config takes only a float; tanh(x / 1e6) * 1e6 leaves the logits as they are
+            text.final_logit_softcapping = 1e6
 
 
 def init_frozen_language(settings):
