@@ -196,7 +196,9 @@ for _short in ZERO_SHOT:
 PSEUDO = ("rationale-eval", "background-test", "tuep-scan", "score-last", "final-test", "dpo-gen")
 SINGLE = ("tuep-scan", "score-last", "final-test", "dpo-gen")
 RATIONALE_EVAL_WINDOWS = 300  # stratified 150 seizure / 150 not, from the probe's test windows, seed 0
-DPO_WINDOWS = 30  # training windows per model for the expert DPO review (dpo_gen): half with the class, seed 0
+DPO_WINDOWS = 30  # training windows per question for the expert DPO review (dpo_gen): half with the class, seed 0
+# TUAB has one question, so 90 windows to match TUAR's and TUEV's three (maintainer, 2026-10-25: "lets up tuab")
+DPO_PER_QUESTION = {"TUAB": 90}
 # round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines;
 # round 3's (5155519) rationale-first, the 10x weight and generation scoring; round 4's (5399669) answer-first and
 # multitask
@@ -1182,7 +1184,7 @@ def dpo_windows(arm):
             for question in ARMS[arm]["questions"]:
                 key = "is_abnormal" if question == "abnormal" else f"has_{question}"
                 answers[path].setdefault(question, flags[Path(path).name][key])
-        rng, half, picks = random.Random(0), DPO_WINDOWS // 2, []
+        rng, half, picks = random.Random(0), DPO_PER_QUESTION.get(dataset_of(arm), DPO_WINDOWS) // 2, []
         for question in ARMS[arm]["questions"]:
             for value in (True, False):
                 pool = sorted(p for p in teacher if answers[p].get(question) is value and p not in picks)
