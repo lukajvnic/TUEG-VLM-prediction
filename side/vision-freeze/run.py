@@ -324,6 +324,11 @@ for _short in GRID_MODELS:
         TIME[_arm] = TIME[f"{_arm}-s2"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
         _hours = max(1.0, 1.5 * (8460 * _window + 1200) / 3600)
         TIME[f"z-{_short}-tusz-{_question}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
+# the 8B per-annotation runs that trained on gemma3:12b's rationales of the shipped images (2026-10-25, before teacher.py):
+# their dpo-gen pairs keep those rationales (the DPO fallback, option A)
+for _arm in [f"gm-8b-tusz-{q}" for q in TUSZ_TYPES] + [f"gm-8b-tuev-{q}" for q in EXTRA_QUESTIONS["TUEV"]] + \
+        [f"gm-8b-tuar-{q}" for q in EXTRA_QUESTIONS["TUAR"]] + ["gm-8b-tuar", "gm-8b-tuab"]:
+    ARMS[_arm]["rationales"] = "old"
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -437,8 +442,13 @@ def with_rationale(rows, split, arm):
     # the core lists put the val windows under val/, the teacher's files under train/
     spec, dataset = ARMS[arm], dataset_of(arm)
     order = spec.get("order", "rationale-first")
+    # "rationales": "old" pins an arm to the rationales it trained on once teacher.py assemble has replaced them
+    # (sft_<split>-old.jsonl): the first 8B per-annotation runs, so their dpo-gen pairs show the teacher they learned from
+    name = f"sft_{split}-old.jsonl" if spec.get("rationales") == "old" else f"sft_{split}.jsonl"
+    if not (RATIONALES / dataset / name).exists():
+        name = f"sft_{split}.jsonl"
     source = {Path(r["images"][0]).name: json.loads(r["output"])["text_rationale"]
-              for r in main.read_jsonl(RATIONALES / dataset / f"sft_{split}.jsonl")}
+              for r in main.read_jsonl(RATIONALES / dataset / name)}
     text = rationale_prompt(arm)
 
     def explain(path):
