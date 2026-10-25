@@ -102,8 +102,9 @@ def run(model, shard, shards, smoke):
 
 def submit_jobs(model, shards, smoke):
     gpus, ram, limit = RESOURCES[model]
-    if os.environ.get("CC_CLUSTER") in ("fir", "nibi"):  # 80 GB H100s: a 30-32B teacher fits one, a 12B one a 40 GB slice
-        gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if gpus == "a100:1" else "h100:1"
+    if os.environ.get("CC_CLUSTER") in ("fir", "nibi", "trillium"):  # 80 GB H100s: a 30-32B teacher fits one
+        # (Trillium has no slices, so a 12B teacher takes a whole H100 there too)
+        gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if gpus == "a100:1" and os.environ["CC_CLUSTER"] != "trillium" else "h100:1"
     for shard in [0] if smoke else range(shards):
         name = f"eeg-vlm-teacher-{short(model)}-" + ("smoke" if smoke else f"{shard:03d}")
         command = f"python {SIDE}/teacher.py run {model} {shard} {shards}" + (" --smoke" if smoke else "")
