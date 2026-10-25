@@ -302,6 +302,27 @@ for _short in GRID_MODELS:
                                                              "splits": _question}
             TIME[_arm] = TIME[f"{_arm}-s2"] = TIME[_base]
             TIME[f"z-{_short}-{_ds.lower()}-{_question}"] = TIME[f"z-{_short}-{_ds.lower()}"]
+# TUSZ, one question per seizure type with training patients (maintainer, 2026-10-25), on rerender.py tusz-types' lines
+# (every window of the type plus as many others). Multitask format, as TUAB/TUAR/TUEV: the teacher wrote each TUSZ
+# rationale about the whole window, so behind a per-type answer it could describe a seizure the answer says is absent;
+# a separate explain line keeps the answer clean. Focal and generalised keep TUSZ's 4 epochs; the smaller types get the
+# small corpora's 12 and keep the final checkpoint (2-4 positives in val). The zero-shot baselines score the test only
+TUSZ_TYPES = {"fnsz": (4, 5699), "gnsz": (4, 3547), "cpsz": (12, 1050), "absz": (12, 225), "tcsz": (12, 249)}  # epochs, lines
+for _short in GRID_MODELS:
+    if _short == "minicpm46-1b":
+        continue
+    for _question, (_epochs, _lines) in TUSZ_TYPES.items():
+        _arm = f"gm-{_short}-tusz-{_question}"
+        ARMS[_arm] = {**ARMS[f"g-{_short}-tusz"], "order": "multitask", "question": _question, "splits": _question,
+                      "epochs": _epochs, **({"select": "last"} if _epochs == 12 else {})}
+        ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
+        ARMS[f"z-{_short}-tusz-{_question}"] = {**ARMS[f"z-{_short}-tuar"], "dataset": "TUSZ", "question": _question,
+                                                "splits": _question}
+        _step, _window, _rationale = GRID_SPEED[_short]
+        _hours = 1.5 * (math.ceil(_lines * _epochs / 8) * _step + 8460 * _window + 300 * _rationale + 1800) / 3600
+        TIME[_arm] = TIME[f"{_arm}-s2"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
+        _hours = max(1.0, 1.5 * (8460 * _window + 1200) / 3600)
+        TIME[f"z-{_short}-tusz-{_question}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -394,7 +415,8 @@ def strip_label(text, dataset=DATASET):
 def explain_prompt(arm="freeze"):
     # what the question asks about: "a seizure" for TUSZ, the yes/no question's subject for the other corpora
     p = config()["prompts"]
-    what = "a seizure" if dataset_of(arm) == "TUSZ" else re.search(r"does this window show (.+)\? Set", prompt_text(arm)).group(1)
+    what = "a seizure" if dataset_of(arm) == "TUSZ" and not ARMS[arm].get("splits") else \
+        re.search(r"does this window show (.+)\? Set", prompt_text(arm)).group(1)
     return (p["intro"] + f"Based only on these waveforms, describe the specific evidence about whether this window shows "
             f"{what} in the text_rationale field: which channel(s), where along the time axis, and what the curve "
             "looks like there (shape, frequency, amplitude, symmetry). " + p["no-meta"])

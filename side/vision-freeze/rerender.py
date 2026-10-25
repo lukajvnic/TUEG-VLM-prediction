@@ -19,6 +19,7 @@
 #   python side/vision-freeze/rerender.py tuep-scan [N]  # TUEP test recordings for the spike-detector scan (see below)
 #   python side/vision-freeze/rerender.py heldout [N]    # the final TUSZ test: the 62 patients in no core split
 #   python side/vision-freeze/rerender.py extra DS         # one question per class of EXTRA[DS], same windows (data/core/)
+#   python side/vision-freeze/rerender.py tusz-types       # one question per TUSZ seizure type with training patients
 # background: the scored TUSZ test set's background is 97.8% first/last windows of its recording (known-issues,
 # 2026-10-14). This lists, from the same 200 test patients, shipped test windows never scored that are background
 # only and not a recording's first or last window, up to 2 per recording spread through it (seed 0), with each
@@ -81,6 +82,9 @@ QUESTIONS = {"TUAB": ("abnormal", ("abnormal",), "abnormal EEG activity"),
 EXTRA = {"TUAR": {"musc": "a muscle artifact (MUSC)", "elec": "an electrode artifact (ELEC)"},
          "TUEV": {"spsw": "a spike or sharp wave (SPSW)", "gped": "a generalized periodic epileptiform discharge (GPED)",
                   "pled": "a periodic lateralized epileptiform discharge (PLED)"}}
+TUSZ_TYPES = {"fnsz": "a focal non-specific seizure (FNSZ)", "gnsz": "a generalized non-specific seizure (GNSZ)",
+              "cpsz": "a complex partial seizure (CPSZ)", "absz": "an absence seizure (ABSZ)",
+              "tcsz": "a tonic-clonic seizure (TCSZ)"}  # tusz_types()
 CORE_IMAGES, CORE_DATA = SIDE / "images-core", DATA / "core"
 # TUEV train/val windows dropped from the core lists: a signal-fingerprint audit (2026-10-14) found 2 TUEV recordings
 # copied into test under other names (007 = 021, 008 = 022, so every 007 and 008 window goes) and 2 patients with
@@ -787,6 +791,39 @@ def extra(ds):
             print(f"{ds} {cls} {split}: {len(rows)} ({sum(x for _, x in rows)} true)")
 
 
+def tusz_types():
+    # each seizure type with training patients as its own question (maintainer, 2026-10-25: the paper detects the
+    # annotated events). Train: every window of the type in the core TUSZ training windows, plus as many other windows
+    # (background and other types, seed 0), then the missing-row balance; val and test: the core windows, labelled
+    # for the type from the annotations. tnsz has no training window, spsz and mysz one patient and no test window
+    splits, tables = core_splits()
+    prompt = config_intro()
+    found = {}
+    for split in ("train", "val", "test"):
+        by_edf = defaultdict(list)
+        for path, _ in splits["TUSZ"][split]:
+            by_edf[tables["TUSZ"][path]["edf"]].append((path, int(tables["TUSZ"][path]["index"])))
+        for edf, items in by_edf.items():
+            labels = window_labels(ROOT / edf, max(i for _, i in items) + 1)
+            found.update({path: labels[i] for path, i in items})
+    rng = random.Random(SEED)
+    for cls, what in TUSZ_TYPES.items():
+        text = f"{prompt}Based only on these waveforms, does this window show {what}? Set present to true only when it does."
+        for split in ("train", "val", "test"):
+            rows = [(path, cls in found[path]) for path, _ in splits["TUSZ"][split]]
+            if split == "train":
+                positive = [r for r in rows if r[1]]
+                negative = rng.sample([r for r in rows if not r[1]], len(positive))
+                rows, report = balance(sorted(positive + negative), tables["TUSZ"])
+                print(f"TUSZ {cls} train: missing-row balance, " + ("; ".join(report) or "nothing missing"))
+            with (CORE_DATA / f"TUSZ-{cls}-{split}.jsonl").open("w") as f:
+                for path, present in rows:
+                    f.write(json.dumps({"dataset": "TUSZ", "question": cls, "instruction": text, "input": "",
+                                        "output": json.dumps({"present": present}),
+                                        "images": [f"{split}/{path.split('/', 1)[1]}"]}) + "\n")
+            print(f"TUSZ {cls} {split}: {len(rows)} ({sum(x for _, x in rows)} true)")
+
+
 def question_of(ds):
     return "any_seizure" if ds == "TUSZ" else QUESTIONS[ds][0]
 
@@ -835,6 +872,8 @@ def main():
         tuep_random()
     elif sys.argv[1] == "extra":
         extra(sys.argv[2])
+    elif sys.argv[1] == "tusz-types":
+        tusz_types()
     elif sys.argv[1] == "heldout":
         heldout(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "sample":
