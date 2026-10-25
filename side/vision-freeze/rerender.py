@@ -20,6 +20,7 @@
 #   python side/vision-freeze/rerender.py heldout [N]    # the final TUSZ test: the 62 patients in no core split
 #   python side/vision-freeze/rerender.py extra DS         # one question per class of EXTRA[DS], same windows (data/core/)
 #   python side/vision-freeze/rerender.py tusz-types       # one question per TUSZ seizure type with training patients
+#   python side/vision-freeze/rerender.py dataset-all      # each dataset's question lines merged for one model per dataset
 # background: the scored TUSZ test set's background is 97.8% first/last windows of its recording (known-issues,
 # 2026-10-14). This lists, from the same 200 test patients, shipped test windows never scored that are background
 # only and not a recording's first or last window, up to 2 per recording spread through it (seed 0), with each
@@ -824,6 +825,40 @@ def tusz_types():
             print(f"TUSZ {cls} {split}: {len(rows)} ({sum(x for _, x in rows)} true)")
 
 
+def dataset_all():
+    # one model per dataset (maintainer, 2026-10-25: "three separate prompts, but all to train the same model"): each
+    # dataset's question lines merged into <DS>-all-{train,val,test}.jsonl, one yes/no line per window and question as
+    # each question's own lines have it. TUSZ windows whose only labels are cut seizure types answer no to both questions
+    # but have a teacher text describing a seizure, so they are marked "explain": false and get no explain line
+    # (maintainer: "cut them")
+    sources = {"TUSZ": {"fnsz": "TUSZ-fnsz", "gnsz": "TUSZ-gnsz"},
+               "TUAR": {"eyem": "TUAR", "musc": "TUAR-musc", "elec": "TUAR-elec"},
+               "TUEV": {"spsw": "TUEV-spsw", "gped": "TUEV-gped", "pled": "TUEV-pled"}, "TUAB": {"abnormal": "TUAB"}}
+    splits, tables = core_splits()
+    found = {}
+    for path, _ in splits["TUSZ"]["train"]:
+        found.setdefault(tables["TUSZ"][path]["edf"], []).append((path, int(tables["TUSZ"][path]["index"])))
+    seizure_only = set()
+    for edf, items in found.items():
+        labels = window_labels(ROOT / edf, max(i for _, i in items) + 1)
+        for path, i in items:
+            if labels[i] & (SEIZURES - {"fnsz", "gnsz"}) and not labels[i] & {"fnsz", "gnsz"}:
+                seizure_only.add(f"train/{path.split('/', 1)[1]}")
+    for ds, questions in sources.items():
+        for split in ("train", "val", "test"):
+            rows = []
+            for question, stem in questions.items():
+                for r in read_jsonl(CORE_DATA / f"{stem}-{split}.jsonl"):
+                    assert r["question"] == question, (stem, r["question"])
+                    no_explain = ds == "TUSZ" and r["images"][0] in seizure_only  # names repeat across corpora
+                    rows.append({**r, **({"explain": False} if no_explain else {})})
+            with (CORE_DATA / f"{ds}-all-{split}.jsonl").open("w") as f:
+                f.writelines(json.dumps(r) + "\n" for r in rows)
+            marked = len({r["images"][0] for r in rows if r.get("explain") is False})
+            print(f"{ds}-all {split}: {len(rows)} lines, {len({r['images'][0] for r in rows})} windows"
+                  + (f", {marked} windows without an explain line" if marked else ""))
+
+
 def question_of(ds):
     return "any_seizure" if ds == "TUSZ" else QUESTIONS[ds][0]
 
@@ -874,6 +909,8 @@ def main():
         extra(sys.argv[2])
     elif sys.argv[1] == "tusz-types":
         tusz_types()
+    elif sys.argv[1] == "dataset-all":
+        dataset_all()
     elif sys.argv[1] == "heldout":
         heldout(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "sample":

@@ -20,10 +20,13 @@ from pathlib import Path
 
 SIDE = Path(__file__).resolve().parents[1]
 PER_CLASS = 25
-# the DPO review (2026-10-25): the per-annotation models of the DPO base, Qwen3-VL 8B, on training windows
-# (run.py dpo-gen), one Argilla dataset per corpus, "<ds>-dpo"
-DPO_ARMS = [f"gm-8b-{ds}-{q}" for ds, qs in (("tusz", ("fnsz", "gnsz", "cpsz", "absz", "tcsz")), ("tuev", ("spsw", "gped", "pled")),
-                                            ("tuar", ("eyem", "musc", "elec")), ("tuab", ("abnormal",))) for q in qs]
+# the DPO review (2026-10-25): the Qwen3-VL 8B dataset models (one per dataset, every question to the same model) on
+# training windows (run.py dpo-gen), one Argilla dataset per corpus, "<ds>-dpo"; each record shows the window's TUH
+# labels for every question of its dataset (maintainer: "yes")
+DPO_ARMS = ["gm-8b-tusz-all", "gm-8b-tuar-all", "gm-8b-tuev-all", "gm-8b-tuab-all"]
+CLASS_NAMES = {"fnsz": "focal seizure", "gnsz": "generalized seizure", "eyem": "eye movement artifact",
+               "musc": "muscle artifact", "elec": "electrode artifact", "spsw": "spike or sharp wave", "gped": "GPED",
+               "pled": "PLED", "abnormal": "abnormal EEG"}
 BEST = {"TUSZ": ("g-8b-tusz", "answer-first"), "TUAB": ("gm-gemma4-e4b-tuab", "explain"),
         "TUAR": ("gm-medgemma15-4b-tuar", "explain"), "TUEV": ("gm-granite-2b-tuev", "explain")}
 GUIDELINES = """Each record is a 20-second EEG window: 25 rows, TUH bipolar montage (left chains above right, then the
@@ -87,7 +90,6 @@ def build_dpo(out):
 
     rng, records, missing = random.Random(0), [], []
     for arm in DPO_ARMS:
-        arm = arm if arm in run.ARMS else arm.rsplit("-", 1)[0]  # TUAR eye movement is the corpus's original arm
         path = SIDE / "results" / f"dpo-gen-{arm}.csv"
         if not path.exists():
             missing.append(arm)
@@ -98,12 +100,15 @@ def build_dpo(out):
                 model_text = json.loads(r["reply"])["text_rationale"]
             except (json.JSONDecodeError, KeyError):
                 model_text = r["reply"]
+            labels = json.loads(r["present"])
+            label_text = " · ".join(f"{CLASS_NAMES[q]}: {'present' if labels[q] else 'absent'}" for q in run.ARMS[arm]["questions"])
             model_first = rng.random() < 0.5
             records.append({
                 "dataset": ds, "group": f"{ds.lower()}-dpo", "id": f"{arm}-{Path(r['path']).stem}",
                 "image": str(SIDE / "images-core" / ds / r["path"]),
-                "question": "Does this window show " + run.prompt_text(arm).split("does this window show ", 1)[1].split("?")[0] + "?",
-                "label": "present" if r["present"] == "true" else "absent",
+                "question": "Which of these does this window show: "
+                            + ", ".join(CLASS_NAMES[q] for q in run.ARMS[arm]["questions"]) + "?",
+                "label": label_text,
                 "rationale_a": model_text if model_first else r["teacher"],
                 "rationale_b": r["teacher"] if model_first else model_text,
                 "a_source": "model" if model_first else "teacher", "model": arm})

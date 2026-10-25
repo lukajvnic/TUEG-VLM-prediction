@@ -41,6 +41,7 @@
 #   python side/vision-freeze/run.py ARM --train|--score [--smoke]   # what the jobs run
 import argparse
 import csv
+import hashlib
 import importlib.util
 import json
 import math
@@ -49,6 +50,7 @@ import random
 import re
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -329,6 +331,39 @@ for _short in GRID_MODELS:
 for _arm in [f"gm-8b-tusz-{q}" for q in TUSZ_TYPES] + [f"gm-8b-tuev-{q}" for q in EXTRA_QUESTIONS["TUEV"]] + \
         [f"gm-8b-tuar-{q}" for q in EXTRA_QUESTIONS["TUAR"]] + ["gm-8b-tuar", "gm-8b-tuab"]:
     ARMS[_arm]["rationales"] = "old"
+# one model per dataset (maintainer, 2026-10-25: "three separate prompts, but all to train the same model"): gm-<model>-
+# <ds>-all trains on its dataset's question lines merged (rerender.py dataset-all) plus one explain line per window, and
+# each question is scored through a view arm gm-<model>-<ds>-all-<q> that reads the dataset model's directory and that
+# question's own test lines and prompt. Questions as decided 2026-10-25 (complex partial, absence, tonic-clonic and
+# chewing cut). Checkpoint: best val balanced accuracy for TUSZ and TUAB, the last one for TUAR and TUEV, whose val sets
+# are too small to choose on (maintainer: "do what you originally said")
+DATASET_QUESTIONS = {"TUSZ": ("fnsz", "gnsz"), "TUAR": ("eyem", "musc", "elec"), "TUEV": ("spsw", "gped", "pled"),
+                     "TUAB": ("abnormal",)}
+DATASET_EPOCHS = {"TUSZ": 4, "TUAB": 4, "TUAR": 12, "TUEV": 12}
+DATASET_WHAT = {"TUSZ": "a focal or a generalized seizure", "TUAR": "an eye movement, muscle or electrode artifact",
+                "TUEV": "a spike or sharp wave, a GPED or a PLED", "TUAB": "abnormal EEG activity"}
+DATASET_LINES = {"TUSZ": (7347, 1525, 8460), "TUAR": (1095, 367, 3540), "TUEV": (1005, 335, 354),
+                 "TUAB": (2283, 2283, 1200)}  # answer lines, explain lines (estimate: windows with a rationale), test windows
+for _short in GRID_MODELS:
+    if _short == "minicpm46-1b":
+        continue
+    for _ds, _questions in DATASET_QUESTIONS.items():
+        _arm = f"gm-{_short}-{_ds.lower()}-all"
+        _spec = {k: v for k, v in ARMS[f"gm-{_short}-tuar"].items() if k not in ("rationales", "select", "seed")}
+        ARMS[_arm] = {**_spec, "dataset": _ds, "splits": "all", "questions": _questions, "question": "all",
+                      "epochs": DATASET_EPOCHS[_ds], **({"select": "last"} if _ds in ("TUAR", "TUEV") else {})}
+        ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
+        _step, _window, _rationale = GRID_SPEED[_short]
+        _answers, _explains, _test = DATASET_LINES[_ds]
+        _hours = 1.5 * (math.ceil((_answers + _explains) * DATASET_EPOCHS[_ds] / 8) * _step
+                        + _test * len(_questions) * _window + 300 * _rationale + 1800) / 3600
+        for _name in (_arm, f"{_arm}-s2"):
+            TIME[_name] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
+            for _question in _questions:
+                ARMS[f"{_name}-{_question}"] = {**ARMS[_name], "view": _name, "question": _question,
+                                                "splits": None if _question in ("eyem", "abnormal") else _question}
+                del ARMS[f"{_name}-{_question}"]["questions"]
+                TIME[f"{_name}-{_question}"] = TIME[_name]
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -368,7 +403,7 @@ def model_dir(arm, smoke=False):
 
 
 def out_dir(arm, smoke=False):
-    return base_dir(smoke) / "checkpoints" / arm
+    return base_dir(smoke) / "checkpoints" / ARMS.get(arm, {}).get("view", arm)
 
 
 def dataset_of(arm):
@@ -421,8 +456,12 @@ def strip_label(text, dataset=DATASET):
 def explain_prompt(arm="freeze"):
     # what the question asks about: "a seizure" for TUSZ, the yes/no question's subject for the other corpora
     p = config()["prompts"]
-    what = "a seizure" if dataset_of(arm) == "TUSZ" and not ARMS[arm].get("splits") else \
-        re.search(r"does this window show (.+)\? Set", prompt_text(arm)).group(1)
+    if ARMS[arm].get("questions"):
+        what = DATASET_WHAT[dataset_of(arm)]
+    elif dataset_of(arm) == "TUSZ" and not ARMS[arm].get("splits"):
+        what = "a seizure"
+    else:
+        what = re.search(r"does this window show (.+)\? Set", prompt_text(arm)).group(1)
     return (p["intro"] + f"Based only on these waveforms, describe the specific evidence about whether this window shows "
             f"{what} in the text_rationale field: which channel(s), where along the time axis, and what the curve "
             "looks like there (shape, frequency, amplitude, symmetry). " + p["no-meta"])
@@ -449,13 +488,22 @@ def with_rationale(rows, split, arm):
         name = f"sft_{split}.jsonl"
     source = {Path(r["images"][0]).name: json.loads(r["output"])["text_rationale"]
               for r in main.read_jsonl(RATIONALES / dataset / name)}
-    text = rationale_prompt(arm)
 
     def explain(path):
         rationale = source[Path(path).name]
         return CHANNEL.sub(r"\1", strip_label(rationale, dataset) if spec.get("strip") else rationale)
 
-    out = []
+    out, explained = [], set()
+    if spec.get("questions"):  # a dataset model: the answer lines as they are, one explain line per window
+        for r in rows:
+            out.append(r)
+            name = Path(r["images"][0]).name
+            if split == "train" and name in source and name not in explained and r.get("explain", True):
+                explained.add(name)
+                out.append({**r, "question": "explain", "instruction": explain_prompt(arm),
+                            "output": json.dumps({"text_rationale": explain(r["images"][0])})})
+        return out
+    text = rationale_prompt(arm)
     for r in rows:
         path, present = r["images"][0], json.loads(r["output"])["present"]
         if order == "multitask":
@@ -649,6 +697,16 @@ def start_wandb(settings, data, resume, smoke):
 def train(settings, arm, smoke):
     import torch
 
+    if ARMS[arm].get("view"):
+        sys.exit(f"{arm} is a scoring view of {ARMS[arm]['view']}: train that arm")
+    if ARMS[arm].get("questions"):  # a dataset arm trains only on the new teacher's rationales (teacher.py assemble)
+        folder = RATIONALES / dataset_of(arm)
+        digest = hashlib.md5((folder / "sft_train.jsonl").read_bytes()).hexdigest()
+        expected = (folder / "sft_train.md5").read_text().strip() if (folder / "sft_train.md5").exists() else None
+        if not (folder / "sft_train-old.jsonl").exists() or digest != expected:
+            sys.exit(f"{arm}: {folder / 'sft_train.jsonl'} is not the assembled new-teacher file (md5 {digest}, expected "
+                     f"{expected}): copy the new file and its sft_train.md5 here first")
+        print(f"teacher rationales: {folder / 'sft_train.jsonl'} md5 {digest}", flush=True)
     out = Path(settings["output-dir"])
     if (out / "manifest.json").exists():  # a resubmitted job whose scoring was cut off: go straight to scoring
         print(f"{out} is already trained (manifest.json exists)", flush=True)
@@ -899,6 +957,11 @@ def test_windows(arm="freeze"):
 
 
 def truth(arm="freeze"):
+    if ARMS[arm].get("questions"):  # a dataset model: positive when any of its questions is
+        labels = {}
+        for r in dataset_lines(arm, "test"):
+            labels[r["images"][0]] = labels.get(r["images"][0], False) or json.loads(r["output"])["present"]
+        return labels
     if ARMS[arm]["lines"] in ("dataset", "core"):
         return {r["images"][0]: json.loads(r["output"])["present"] for r in dataset_lines(arm, "test")}
     return {r["path"]: any(r[c] == "true" for c in SEIZURES)
@@ -908,6 +971,8 @@ def truth(arm="freeze"):
 def score(arm, smoke):
     import torch
 
+    if ARMS[arm].get("questions"):
+        sys.exit(f"{arm} answers several questions: score its views ({', '.join(f'{arm}-{q}' for q in ARMS[arm]['questions'])})")
     results = base_dir(smoke) / "results"
     results.mkdir(parents=True, exist_ok=True)
     out = results / f"scores-{tag(arm)}.csv"
@@ -1025,8 +1090,14 @@ def rationale_eval(arm, smoke):
     windows = rationale_eval_windows(arm)
     windows = windows[:3] + windows[-3:] if smoke else windows
     wanted = set(windows)
-    references = {r["path"]: CHANNEL.sub(r"\1", strip_label(r["ground_truth_rationale"], dataset_of(arm)))
-                  for r in read_csv(ROOT / "datasets" / dataset_of(arm) / "labels.csv") if r["path"] in wanted}
+    # a dataset arm is graded against the new teacher's test-side references (teacher.py assemble-refs), and requires
+    # them; every other arm keeps labels.csv's gemma3:12b text
+    refs = RATIONALES / dataset_of(arm) / "references-test.jsonl"
+    if ARMS[arm].get("questions") and not refs.exists():
+        sys.exit(f"{arm}: no {refs} yet (teacher.py assemble-refs)")
+    source = {r["path"]: r["text_rationale"] for r in main.read_jsonl(refs)} if ARMS[arm].get("questions") else \
+        {r["path"]: r["ground_truth_rationale"] for r in read_csv(ROOT / "datasets" / dataset_of(arm) / "labels.csv")}
+    references = {path: CHANNEL.sub(r"\1", strip_label(text, dataset_of(arm))) for path, text in source.items() if path in wanted}
     missing = [w for w in windows if not references.get(w)]
     if missing:
         sys.exit(f"{len(missing)} rationale-eval windows have no reference rationale in labels.csv, e.g. {missing[:3]}")
@@ -1068,8 +1139,30 @@ def rationale_eval(arm, smoke):
 
 def dpo_windows(arm):
     # training windows with a teacher rationale (the review sets the model's rationale against the teacher's), half
-    # with the arm's class and half without, as (path, present, teacher rationale as trained)
+    # with the arm's class and half without, as (path, present, teacher rationale as trained). A dataset model: per
+    # question 15 with and 15 without, de-duplicated, present = {question: answer} for every question of the window
     rows = lines("train", False, arm)
+    if ARMS[arm].get("questions"):
+        answers, teacher = defaultdict(dict), {}
+        for r in rows:
+            if r["question"] == "explain":
+                teacher[r["images"][0]] = json.loads(r["output"])["text_rationale"]
+            else:
+                answers[r["images"][0]][r["question"]] = json.loads(r["output"])["present"]
+        # a window can be in one question's training lines and not another's: every question's answer comes from the
+        # window's TUH labels in the rationale file (has_<class> / is_abnormal), so a record shows them all
+        flags = {Path(r["images"][0]).name: json.loads(r["output"])
+                 for r in main.read_jsonl(RATIONALES / dataset_of(arm) / "sft_train.jsonl")}
+        for path in teacher:
+            for question in ARMS[arm]["questions"]:
+                key = "is_abnormal" if question == "abnormal" else f"has_{question}"
+                answers[path].setdefault(question, flags[Path(path).name][key])
+        rng, half, picks = random.Random(0), DPO_WINDOWS // 2, []
+        for question in ARMS[arm]["questions"]:
+            for value in (True, False):
+                pool = sorted(p for p in teacher if answers[p].get(question) is value and p not in picks)
+                picks += rng.sample(pool, min(half, len(pool)))
+        return [(p, answers[p], teacher[p]) for p in picks]
     present = {r["images"][0]: json.loads(r["output"])["present"] for r in rows if r["question"] != "explain"}
     teacher = {r["images"][0]: json.loads(r["output"])["text_rationale"] for r in rows if r["question"] == "explain"}
     rng, half = random.Random(0), DPO_WINDOWS // 2
@@ -1095,7 +1188,8 @@ def dpo_gen(arm, smoke):
     print(f"arm {arm}: DPO generation on {len(todo)} training windows -> {out}", flush=True)
     for n, (path, present, teacher) in enumerate(todo, 1):
         reply = generate_reply(model, processor, main.runner, prefix_fn, prompt, image_root(arm) / path)
-        append_row(out, ["path", "present", "teacher", "reply"], [path, str(present).lower(), teacher, reply])
+        present = json.dumps(present) if isinstance(present, dict) else str(present).lower()
+        append_row(out, ["path", "present", "teacher", "reply"], [path, present, teacher, reply])
         if n % 10 == 0 or n == len(todo):
             print(f"{n}/{len(todo)} ({(time.time() - started) / n:.1f} s/window)", flush=True)
 
@@ -1434,6 +1528,14 @@ def submit_job(cfg, arm, dry_run, arms=()):
     steps = {a: [f"{me} {a} --image-check"] * bool(ARMS[a].get("image-check")) +
                 [f"{me} {a} --train --smoke"] * bool(ARMS[a].get("smoke-first")) + [f"{me} {a} --{m}" for m in modes(a)]
              for a in ARMS}
+    for a in ARMS:
+        if ARMS[a].get("questions"):
+            views = [f"{a}-{q}" for q in ARMS[a]["questions"]]
+            # the 8B dataset models feed DPO: their review rationales are written right after training, in the same job
+            steps[a] = ([f"{me} {views[0]} --image-check"] * bool(ARMS[a].get("image-check")) +
+                        [f"{me} {a} --train --smoke"] * bool(ARMS[a].get("smoke-first")) + [f"{me} {a} --train"] +
+                        [f"{me} {a} --dpo-gen"] * (model_of(a) == "qwen3-vl:8b-instruct" and not ARMS[a].get("seed")) +
+                        [f"{me} {v} --score" for v in views] + [f"{me} {a} --rationale-eval"])
     steps["smoke"] = [f"{me} {a} --{m} --smoke" for a in SMOKE_ARMS for m in modes(a)]
     steps["rationale-eval"] = [f"{me} {a} --rationale-eval" for a in arms]
     steps["background-test"] = [f"{me} {a} --background" for a in arms]
@@ -1450,7 +1552,14 @@ def submit_job(cfg, arm, dry_run, arms=()):
         # starts within minutes where a whole H100 waits behind ~950 jobs (2026-10-18)
         scoring = arm in PSEUDO or ARMS.get(arm, {}).get("recipe", "train") is None
         gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if scoring else resources.get("fir-gpus", FIR_GPUS[gpus])
-    text = script(name, TIME[arm], ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
+    limit = TIME[arm]
+    if os.environ.get("CC_CLUSTER") == "trillium":  # whole H100s only, 24 h at most (jobs resume when resubmitted)
+        hours = (int(limit.split("-")[0]) * 24 if "-" in limit else 0) + int(limit.split("-")[-1].split(":")[0])
+        gpus, limit = "h100:1", limit if hours < 24 else "1-00:00:00"
+    text = script(name, limit, ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
+    if os.environ.get("CC_CLUSTER") == "trillium":
+        text = text.replace("#SBATCH --gres=gpu:", "#SBATCH --gpus-per-node=")
+        text = "\n".join(line for line in text.split("\n") if not line.startswith("#SBATCH --mem="))
     if after:
         text = text.replace("#SBATCH", f"#SBATCH --dependency=afterok:{after}\n#SBATCH", 1)
     text = text.replace(str(ROOT / "logs"), str(logs))
