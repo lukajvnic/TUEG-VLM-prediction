@@ -191,9 +191,10 @@ for _short in ZERO_SHOT:
                                                 if _ds == "TUSZ" else {}),
                                              "eval-format": "answer-first" if _ds == "TUSZ" else "explain"}
 # pseudo-arms: jobs that evaluate finished arms; the single ones take one arm per job and ask for its GPU
-PSEUDO = ("rationale-eval", "background-test", "tuep-scan", "score-last", "final-test")
-SINGLE = ("tuep-scan", "score-last", "final-test")
+PSEUDO = ("rationale-eval", "background-test", "tuep-scan", "score-last", "final-test", "dpo-gen")
+SINGLE = ("tuep-scan", "score-last", "final-test", "dpo-gen")
 RATIONALE_EVAL_WINDOWS = 300  # stratified 150 seizure / 150 not, from the probe's test windows, seed 0
+DPO_WINDOWS = 30  # training windows per model for the expert DPO review (dpo_gen): half with the class, seed 0
 # round 1's smoke (4833152) covered freeze, lora and base; round 2's (4961204) the rerender and the "more" lines;
 # round 3's (5155519) rationale-first, the 10x weight and generation scoring; round 4's (5399669) answer-first and
 # multitask
@@ -247,7 +248,7 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         "r5-hy-mt-strip-more": "1-12:00:00", "rationale-eval": "10:00:00", "base-render": "03:00:00",
         # the scan (5,867 windows at 0.4-1.5 s) and the detectors (503 steps) need 1-3 h; short limits backfill sooner
         "background-test": "06:00:00", "s-2b-tuev": "03:00:00", "s-4b-tuev": "03:00:00", "tuep-scan": "03:00:00",
-        "score-last": "04:00:00",
+        "score-last": "04:00:00", "dpo-gen": "02:00:00",
         # held-out (5,929) and interior background (4,471) windows at the measured 0.14-0.69 s/window, plus loading
         "final-test": "03:00:00",
         # round 6, at ~13 s/step on the slice: TUAB 1,142 steps, TUEP 1,045, TUAR 557 and TUEV 549, then 354-3,540
@@ -1055,6 +1056,40 @@ def rationale_eval(arm, smoke):
             summarise_rationale(tag(arm), fmt, out)
 
 
+def dpo_windows(arm):
+    # training windows with a teacher rationale (the review sets the model's rationale against the teacher's), half
+    # with the arm's class and half without, as (path, present, teacher rationale as trained)
+    rows = lines("train", False, arm)
+    present = {r["images"][0]: json.loads(r["output"])["present"] for r in rows if r["question"] != "explain"}
+    teacher = {r["images"][0]: json.loads(r["output"])["text_rationale"] for r in rows if r["question"] == "explain"}
+    rng, half = random.Random(0), DPO_WINDOWS // 2
+    picks = []
+    for value in (True, False):
+        pool = sorted(p for p in teacher if present.get(p) is value)
+        picks += rng.sample(pool, min(half, len(pool)))
+    return [(p, present[p], teacher[p]) for p in picks]
+
+
+def dpo_gen(arm, smoke):
+    # the trained model's explain-format rationale on DPO_WINDOWS training windows: with the teacher's, the pairs the
+    # expert ranks for DPO (argilla/rationales.py build-dpo). Training windows only, so test windows never reach DPO
+    windows = dpo_windows(arm)
+    windows = windows[:2] if smoke else windows
+    model, processor, base = load_for_scoring(arm, smoke)
+    model.eval()
+    prompt, prefix_fn = explain_prompt(arm), main.runner.enforcer(processor, eval_structure("explain"))
+    out = base_dir(smoke) / "results" / f"dpo-gen-{tag(arm)}.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    done = {r["path"] for r in read_csv(out)}
+    started, todo = time.time(), [w for w in windows if w[0] not in done]
+    print(f"arm {arm}: DPO generation on {len(todo)} training windows -> {out}", flush=True)
+    for n, (path, present, teacher) in enumerate(todo, 1):
+        reply = generate_reply(model, processor, main.runner, prefix_fn, prompt, image_root(arm) / path)
+        append_row(out, ["path", "present", "teacher", "reply"], [path, str(present).lower(), teacher, reply])
+        if n % 10 == 0 or n == len(todo):
+            print(f"{n}/{len(todo)} ({(time.time() - started) / n:.1f} s/window)", flush=True)
+
+
 def summarise_rationale(arm, fmt, path):
     rows = list({r["path"]: r for r in read_csv(path)}.values())
     nll = np.array([float(r["reference_nll"]) for r in rows])
@@ -1360,7 +1395,7 @@ def submit_job(cfg, arm, dry_run, arms=()):
         sys.exit("no training lines: python side/multilabel-pilot/build.py")
     if arm in SINGLE and len(arms) != 1:
         sys.exit(f"{arm} takes one arm per job (the job asks for that arm's GPU)")
-    if arm == "score-last" and not (out_dir(arms[0]) / "manifest.json").exists():
+    if arm in ("score-last", "dpo-gen") and not (out_dir(arms[0]) / "manifest.json").exists():
         sys.exit(f"{arms[0]} has not finished training")
     for a in SMOKE_ARMS if arm == "smoke" else (arms if arm in PSEUDO else (arm,)):
         missing = [] if arm in ("background-test", "tuep-scan", "final-test") else missing_images(a)
@@ -1393,6 +1428,7 @@ def submit_job(cfg, arm, dry_run, arms=()):
     steps["background-test"] = [f"{me} {a} --background" for a in arms]
     steps["tuep-scan"] = [f"{me} {a} --scan" for a in arms]
     steps["score-last"] = [f"{me} {a} --score --last" for a in arms]
+    steps["dpo-gen"] = [f"{me} {a} --dpo-gen" for a in arms]
     steps["final-test"] = [f"{me} {a} --{m}" for a in arms for m in ("heldout", "background")]
     logs = base_dir(arm == "smoke") / "logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -1423,6 +1459,7 @@ def main_cli():
     mode.add_argument("--heldout", action="store_true", help="score the 62 held-out TUSZ patients (final test)")
     mode.add_argument("--image-check", action="store_true", help="stop if the untrained base ignores the image")
     mode.add_argument("--scan", action="store_true", help="a TUEV model scores the TUEP scan windows; patient summary")
+    mode.add_argument("--dpo-gen", action="store_true", help="the model's rationales on training windows, for DPO review")
     mode.add_argument("--dry-run", action="store_true", help="print the job, submit nothing")
     parser.add_argument("--smoke", action="store_true", help="with --train/--score: 2 steps, 24 windows, under smoke/")
     parser.add_argument("--last", action="store_true", help="with --score/--rationale-eval/--scan: the final checkpoint")
@@ -1430,7 +1467,8 @@ def main_cli():
     global LAST
     LAST = args.last
 
-    if args.train or args.score or args.rationale_eval or args.background or args.heldout or args.scan or args.image_check:
+    if (args.train or args.score or args.rationale_eval or args.background or args.heldout or args.scan or args.image_check
+            or args.dpo_gen):
         if args.arm in ("smoke", *PSEUDO) or args.train and ARMS[args.arm]["recipe"] is None:
             parser.error(f"that mode does not apply to {args.arm}")
         os.environ.setdefault("WANDB_MODE", "offline")
@@ -1446,6 +1484,8 @@ def main_cli():
             image_check(args.arm)
         elif args.scan:
             tuep_scan(args.arm, args.smoke)
+        elif args.dpo_gen:
+            dpo_gen(args.arm, args.smoke)
         else:
             rationale_eval(args.arm, args.smoke)
         return

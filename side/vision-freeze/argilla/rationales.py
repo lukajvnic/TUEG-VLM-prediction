@@ -5,6 +5,7 @@
 # and the first preference pairs for DPO. These are test windows, so their pairs must never enter DPO training;
 # training-window pairs need a generation pass over train windows first
 #   python side/vision-freeze/argilla/rationales.py build LABELS_ROOT records.jsonl  # .venv-rehearsal (imports run.py)
+#   python side/vision-freeze/argilla/rationales.py build-dpo records-dpo.jsonl     # .venv-rehearsal (imports run.py)
 #   python side/vision-freeze/argilla/rationales.py push records.jsonl              # a venv with argilla 2.x
 # push reads ARGILLA_API_URL and ARGILLA_API_KEY, ARGILLA_WORKSPACE (default "argilla", the Space's; the local docker
 # compose makes "default") and, for a private Space, HF_TOKEN
@@ -19,6 +20,10 @@ from pathlib import Path
 
 SIDE = Path(__file__).resolve().parents[1]
 PER_CLASS = 25
+# the DPO review (2026-10-25): the per-annotation models of the DPO base, Qwen3-VL 8B, on training windows
+# (run.py dpo-gen), one Argilla dataset per corpus, "<ds>-dpo"
+DPO_ARMS = [f"gm-8b-{ds}-{q}" for ds, qs in (("tusz", ("fnsz", "gnsz", "cpsz", "absz", "tcsz")), ("tuev", ("spsw", "gped", "pled")),
+                                            ("tuar", ("eyem", "musc", "elec")), ("tuab", ("abnormal",))) for q in qs]
 BEST = {"TUSZ": ("g-8b-tusz", "answer-first"), "TUAB": ("gm-gemma4-e4b-tuab", "explain"),
         "TUAR": ("gm-medgemma15-4b-tuar", "explain"), "TUEV": ("gm-granite-2b-tuev", "explain")}
 GUIDELINES = """Each record is a 20-second EEG window: 25 rows, TUH bipolar montage (left chains above right, then the
@@ -73,6 +78,41 @@ def build(labels_root, out):
     print(f"{len(records)} records ({PER_CLASS * 2} per corpus) -> {out}")
 
 
+def build_dpo(out):
+    # every dpo-gen file of DPO_ARMS that exists: the model's rationale against the teacher's, random order
+    sys.argv = ["run.py"]
+    spec = importlib.util.spec_from_file_location("run", SIDE / "run.py")
+    run = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run)
+
+    rng, records, missing = random.Random(0), [], []
+    for arm in DPO_ARMS:
+        arm = arm if arm in run.ARMS else arm.rsplit("-", 1)[0]  # TUAR eye movement is the corpus's original arm
+        path = SIDE / "results" / f"dpo-gen-{arm}.csv"
+        if not path.exists():
+            missing.append(arm)
+            continue
+        ds = run.dataset_of(arm)
+        for r in read(path):
+            try:
+                model_text = json.loads(r["reply"])["text_rationale"]
+            except (json.JSONDecodeError, KeyError):
+                model_text = r["reply"]
+            model_first = rng.random() < 0.5
+            records.append({
+                "dataset": ds, "group": f"{ds.lower()}-dpo", "id": f"{arm}-{Path(r['path']).stem}",
+                "image": str(SIDE / "images-core" / ds / r["path"]),
+                "question": "Does this window show " + run.prompt_text(arm).split("does this window show ", 1)[1].split("?")[0] + "?",
+                "label": "present" if r["present"] == "true" else "absent",
+                "rationale_a": model_text if model_first else r["teacher"],
+                "rationale_b": r["teacher"] if model_first else model_text,
+                "a_source": "model" if model_first else "teacher", "model": arm})
+    with out.open("w") as f:
+        for record in records:
+            f.write(json.dumps(record) + "\n")
+    print(f"{len(records)} records -> {out}" + (f"; no dpo-gen yet for {', '.join(missing)}" if missing else ""))
+
+
 def push(path):
     import argilla as rg
 
@@ -80,7 +120,7 @@ def push(path):
     client = rg.Argilla(api_url=os.environ["ARGILLA_API_URL"], api_key=os.environ["ARGILLA_API_KEY"],
                         headers={"Authorization": f"Bearer {token}"} if token else {})
     records = [json.loads(line) for line in path.open()]
-    for ds in BEST:
+    for group in sorted({r.get("group", f"{r['dataset'].lower()}-rationales") for r in records}):
         settings = rg.Settings(
             guidelines=GUIDELINES,
             fields=[rg.ImageField(name="eeg", title="EEG window"), rg.TextField(name="question", title="Question"),
@@ -97,10 +137,10 @@ def push(path):
                       rg.TermsMetadataProperty(name="a_source", visible_for_annotators=False),
                       rg.TermsMetadataProperty(name="model", visible_for_annotators=False)],
         )
-        dataset = rg.Dataset(name=f"{ds.lower()}-rationales", workspace=os.environ.get("ARGILLA_WORKSPACE", "argilla"),
-                             settings=settings, client=client)
+        dataset = rg.Dataset(name=group, workspace=os.environ.get("ARGILLA_WORKSPACE", "argilla"), settings=settings,
+                             client=client)
         dataset.create()
-        mine = [r for r in records if r["dataset"] == ds]
+        mine = [r for r in records if r.get("group", f"{r['dataset'].lower()}-rationales") == group]
         dataset.records.log([rg.Record(
             id=r["id"],
             fields={"eeg": "data:image/png;base64," + base64.b64encode(Path(r["image"]).read_bytes()).decode(),
@@ -113,5 +153,7 @@ def push(path):
 if __name__ == "__main__":
     if sys.argv[1] == "build":
         build(Path(sys.argv[2]), Path(sys.argv[3]))
+    elif sys.argv[1] == "build-dpo":
+        build_dpo(Path(sys.argv[2]))
     else:
         push(Path(sys.argv[2]))
