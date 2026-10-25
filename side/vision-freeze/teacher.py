@@ -92,7 +92,7 @@ def smoke_windows(all_windows):
     return picks
 
 
-def run(model, shard, shards, smoke, refs=False):
+def run(model, shard, shards, smoke, refs=False, missing=None):
     import torch
     from PIL import Image
     from transformers import AutoModelForImageTextToText
@@ -106,6 +106,11 @@ def run(model, shard, shards, smoke, refs=False):
     todo = test_windows() if refs else windows()
     todo = smoke_windows(todo) if smoke else todo[shard::shards]
     out = OUT / short(model) / ("smoke.csv" if smoke else f"{'refs-' if refs else ''}shard-{shard:03d}.csv")
+    if missing:  # run-missing: the training windows of these datasets that no shard has a reply for (a window whose
+        # image was rendered after the shards started is not in their lists)
+        replies = replies_of(model, "")
+        todo = [w for w in windows() if w[0] in missing and (w[0], Path(w[1]).name) not in replies]
+        out = OUT / short(model) / "shard-missing.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
     done = {(r["dataset"], r["path"]) for r in read_csv(out)}
     todo = [w for w in todo if (w[0], w[1]) not in done]
@@ -224,6 +229,17 @@ if __name__ == "__main__":
         submit_jobs(args[1], int(args[2]), smoke, refs=args[0] == "submit-refs", only=only)
     elif args[0] in ("run", "run-refs"):
         run(args[1], int(args[2]), int(args[3]), smoke, refs=args[0] == "run-refs")
+    elif args[0] == "run-missing":
+        run(args[1], 0, 1, False, missing=chosen)
+    elif args[0] == "submit-missing":
+        gpus, ram, _ = RESOURCES[args[1]]
+        command = f"python {SIDE}/teacher.py run-missing {args[1]} --datasets={','.join(chosen)}"
+        text = script(f"eeg-vlm-teacher-{short(args[1])}-missing", "01:00:00", ram, config()["train"]["cpus"], "h100:1", command)
+        text = text.replace(str(ROOT / "logs"), str(SIDE / "logs"))
+        if os.environ.get("CC_CLUSTER") == "trillium":
+            text = text.replace("#SBATCH --gres=gpu:", "#SBATCH --gpus-per-node=")
+            text = "\n".join(line for line in text.split("\n") if not line.startswith("#SBATCH --mem="))
+        print(submit(text), "-", f"eeg-vlm-teacher-{short(args[1])}-missing", flush=True)
     elif args[0] == "assemble-refs":
         assemble_refs(args[1], dry_run)
     else:
