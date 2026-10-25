@@ -154,29 +154,31 @@ def replies_of(model, prefix):
     return out
 
 
-def gate(wanted, replies, what):
+def gate(wanted, replies, what, datasets=DATASETS):
     # every window needs a non-empty reply written with the current prompt (TIME_NOTE), or nothing is written
     missing = defaultdict(int)
+    wanted = [w for w in wanted if w[0] in datasets]
     for ds, image, _ in wanted:
         reply, prompt = replies.get((ds, Path(image).name), ("", ""))
         if not reply or TIME_NOTE not in prompt:
             missing[ds] += 1
-    for ds in DATASETS:
+    for ds in datasets:
         total = sum(1 for d, _, _ in wanted if d == ds)
         print(f"{what} {ds}: {total - missing[ds]} of {total} windows have a new reply")
     return sum(missing.values())
 
 
-def assemble(model, dry_run):
+def assemble(model, dry_run, datasets=DATASETS):
     # the new rationales replace the old ones in datasets/<DS>/sft_train.jsonl (the old file is kept as
-    # sft_train-old.jsonl, which the first 8B runs' "rationales": "old" pin reads); refuses unless every window has a
-    # new-prompt reply, so no window silently loses its rationale; --dry-run only reports
+    # sft_train-old.jsonl, which the first 8B runs' "rationales": "old" pin reads); refuses unless every window of the
+    # chosen datasets has a new-prompt reply, so no window silently loses its rationale; --dry-run only reports.
+    # --datasets=TUSZ,TUAR lets the finished datasets go ahead of a slow shard
     wanted, replies = windows(), replies_of(model, "")
-    if gate(wanted, replies, "train") and not dry_run:
+    if gate(wanted, replies, "train", datasets) and not dry_run:
         sys.exit("windows without a new reply: not assembling")
     if dry_run:
         return
-    for ds in DATASETS:
+    for ds in datasets:
         source = ROOT / "datasets" / ds / "sft_train.jsonl"
         backup = ROOT / "datasets" / ds / "sft_train-old.jsonl"
         if not backup.exists():
@@ -215,7 +217,9 @@ if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if a != "--smoke"]
     dry_run = "--dry-run" in args
     only = next((int(a.split("=")[1]) for a in args if a.startswith("--only=")), None)
-    args = [a for a in args if a != "--dry-run" and not a.startswith("--only=")]
+    chosen = next((tuple(a.split("=")[1].split(",")) for a in args if a.startswith("--datasets=")), DATASETS)
+    assert set(chosen) <= set(DATASETS), chosen
+    args = [a for a in args if a != "--dry-run" and not a.startswith(("--only=", "--datasets="))]
     if args[0] in ("submit", "submit-refs"):
         submit_jobs(args[1], int(args[2]), smoke, refs=args[0] == "submit-refs", only=only)
     elif args[0] in ("run", "run-refs"):
@@ -223,4 +227,4 @@ if __name__ == "__main__":
     elif args[0] == "assemble-refs":
         assemble_refs(args[1], dry_run)
     else:
-        assemble(args[1], dry_run)
+        assemble(args[1], dry_run, chosen)

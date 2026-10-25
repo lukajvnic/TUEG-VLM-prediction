@@ -54,6 +54,9 @@ pipeline.db
 checkpoints/
 hf-checkpoints/
 datasets/*/sft_*.jsonl
+datasets/*/sft_train.md5
+# the new teacher on graded test windows: never in the public repo
+datasets/*/references-test.jsonl
 logs/
 wandb/
 preprocessing/logs/

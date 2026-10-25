@@ -207,7 +207,7 @@ LABEL_CODES = {"TUSZ": r"absz|bckg|cpsz|fnsz|gnsz|mysz|spsz|tcsz|tnsz", "TUAR": 
                "TUEV": r"spsw|gped|pled|eyem|artf|bckg", "TUSL": r"bckg|seiz|slow"}
 SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
 AF_ANSWER = '{"present": true, "text_rationale": ""}'  # answer-first scoring: the boolean comes before any text
-RATIONALES = ROOT / "datasets"  # <DS>/sft_{train,val}.jsonl: gemma3:12b's label-conditioned rationales, same windows
+RATIONALES = ROOT / "datasets"  # <DS>/sft_{train,val}.jsonl: the teacher's label-conditioned rationales (Qwen3-VL-32B once teacher.py assemble ran; gemma3:12b in sft_train-old.jsonl), same windows
 # the rationales name the shipped images' referential channels ("EEG F8-REF", "Fp1-LE"); the rerender shows bipolar
 # pairs ("F8-T4"), so channel names are cut to the electrode, which the bipolar row labels contain
 RATIONALE_CHARS = 1200
@@ -348,6 +348,10 @@ DATASET_WHAT = {"TUSZ": "a focal or a generalized seizure", "TUAR": "an eye move
                 "TUEV": "a spike or sharp wave, a GPED or a PLED", "TUAB": "abnormal EEG activity"}
 DATASET_LINES = {"TUSZ": (7347, 1525, 8460), "TUAR": (17138, 1468, 3540), "TUEV": (1005, 335, 354),
                  "TUAB": (2283, 2283, 1200)}  # answer lines, explain lines (estimate: windows with a rationale), test windows
+# on Fir and Nibi every dataset model trains on a 40 GB slice: every base trained within Narval's 40 GB A100s (no CUDA
+# out-of-memory in any Narval or Fir log; peaks of 41-42 GB are the allocator filling the card). The 8B (the DPO model,
+# speed) and the three largest (closest to the limit) keep a whole H100
+WHOLE_H100 = {"8b", "q25-7b", "gemma3-12b", "gemma4-12b"}
 for _short in GRID_MODELS:
     if _short == "minicpm46-1b":
         continue
@@ -356,6 +360,8 @@ for _short in GRID_MODELS:
         _spec = {k: v for k, v in ARMS[f"gm-{_short}-tuar"].items() if k not in ("rationales", "select", "seed")}
         ARMS[_arm] = {**_spec, "dataset": _ds, "splits": "all", "questions": _questions, "question": "all",
                       "epochs": DATASET_EPOCHS[_ds], **({"select": "last"} if _ds in ("TUAR", "TUEV") else {})}
+        if _short not in WHOLE_H100:
+            ARMS[_arm]["fir-gpus"] = "nvidia_h100_80gb_hbm3_3g.40gb:1"
         ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
         _step, _window, _rationale = GRID_SPEED[_short]
         _answers, _explains, _test = DATASET_LINES[_ds]
@@ -1573,7 +1579,7 @@ def submit_job(cfg, arm, dry_run, arms=()):
     if after:
         text = text.replace("#SBATCH", f"#SBATCH --dependency=afterok:{after}\n#SBATCH", 1)
     text = text.replace(str(ROOT / "logs"), str(logs))
-    print(f"{'dry run' if dry_run else submit(text)} - {name}, {TIME[arm]}/{ram}/gpu:{gpus}, log in {logs}")
+    print(f"{'dry run' if dry_run else submit(text)} - {name}, {limit}/{ram}/gpu:{gpus}, log in {logs}")
     if dry_run:
         print(text)
 
