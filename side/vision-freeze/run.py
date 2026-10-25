@@ -1395,7 +1395,8 @@ def submit_job(cfg, arm, dry_run, arms=()):
         sys.exit("no training lines: python side/multilabel-pilot/build.py")
     if arm in SINGLE and len(arms) != 1:
         sys.exit(f"{arm} takes one arm per job (the job asks for that arm's GPU)")
-    if arm in ("score-last", "dpo-gen") and not (out_dir(arms[0]) / "manifest.json").exists():
+    after = os.environ.get("VF_AFTER")  # a job id this one waits for (afterok): dpo-gen queued behind its arm's training
+    if arm in ("score-last", "dpo-gen") and not (out_dir(arms[0]) / "manifest.json").exists() and not after:
         sys.exit(f"{arms[0]} has not finished training")
     for a in SMOKE_ARMS if arm == "smoke" else (arms if arm in PSEUDO else (arm,)):
         missing = [] if arm in ("background-test", "tuep-scan", "final-test") else missing_images(a)
@@ -1440,6 +1441,8 @@ def submit_job(cfg, arm, dry_run, arms=()):
         scoring = arm in PSEUDO or ARMS.get(arm, {}).get("recipe", "train") is None
         gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if scoring else resources.get("fir-gpus", FIR_GPUS[gpus])
     text = script(name, TIME[arm], ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
+    if after:
+        text = text.replace("#SBATCH", f"#SBATCH --dependency=afterok:{after}\n#SBATCH", 1)
     text = text.replace(str(ROOT / "logs"), str(logs))
     print(f"{'dry run' if dry_run else submit(text)} - {name}, {TIME[arm]}/{ram}/gpu:{gpus}, log in {logs}")
     if dry_run:
