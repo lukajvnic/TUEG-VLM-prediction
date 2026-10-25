@@ -206,6 +206,14 @@ SMOKE_ARMS = ("r5-hy-af-strip-w10", "r5-hy-mt-strip")
 LABEL_CODES = {"TUSZ": r"absz|bckg|cpsz|fnsz|gnsz|mysz|spsz|tcsz|tnsz", "TUAR": r"bckg|chew|elec|elpp|eyem|musc|shiv",
                "TUEV": r"spsw|gped|pled|eyem|artf|bckg", "TUSL": r"bckg|seiz|slow"}
 SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+# a class code left in a kept sentence becomes its plain name: Qwen3-VL-32B heads its paragraphs with the code
+# ("**Eyem artifact**:") and names classes by code mid-sentence, which deleting the code turned into "** artifact**:"
+CODE_NAMES = {"absz": "absence seizure", "bckg": "background", "cpsz": "complex partial seizure",
+              "fnsz": "focal seizure", "gnsz": "generalized seizure", "mysz": "myoclonic seizure",
+              "spsz": "simple partial seizure", "tcsz": "tonic-clonic seizure", "tnsz": "tonic seizure",
+              "chew": "chewing", "elec": "electrode", "elpp": "electrode pop", "eyem": "eye movement", "musc": "muscle",
+              "shiv": "shivering", "spsw": "spike or sharp wave", "gped": "GPED", "pled": "PLED", "artf": "artifact",
+              "seiz": "seizure", "slow": "slowing"}
 AF_ANSWER = '{"present": true, "text_rationale": ""}'  # answer-first scoring: the boolean comes before any text
 RATIONALES = ROOT / "datasets"  # <DS>/sft_{train,val}.jsonl: the teacher's label-conditioned rationales (Qwen3-VL-32B once teacher.py assemble ran; gemma3:12b in sft_train-old.jsonl), same windows
 # the rationales name the shipped images' referential channels ("EEG F8-REF", "Fp1-LE"); the rerender shows bipolar
@@ -457,9 +465,10 @@ def strip_label(text, dataset=DATASET):
     out = " ".join(s.strip() for s in keep)
     if dataset in LABEL_CODES:
         codes = LABEL_CODES[dataset]
-        out = re.sub(rf'\s*\(\s*\\?"?({codes})\\?"?\s*\)', "", out, flags=re.I)
-        out = re.sub(rf'\\?"({codes})\\?"\s*', "", out, flags=re.I)
-        out = re.sub(rf"\b({codes})\b", "", out, flags=re.I)
+        out = re.sub(rf'\s*\(\s*\\?"?({codes})\\?"?\s*\)', "", out, flags=re.I)  # "eye movement (eyem)"
+        name = lambda m: CODE_NAMES[m.group(1).lower()]  # noqa: E731
+        out = re.sub(rf'\\?"({codes})\\?"', name, out, flags=re.I)
+        out = re.sub(rf"\b({codes})\b", name, out, flags=re.I)
     return re.sub(r"\s{2,}", " ", out).strip()
 
 
