@@ -24,6 +24,9 @@ DATASETS = ("TUSZ", "TUAR", "TUEV", "TUAB")
 IMAGES = Path(os.environ.get("VF_CORE_ROOT", SIDE / "images-core"))
 OUT = SIDE / "results" / "teacher"
 MAX_NEW_TOKENS = 512  # the old teacher's budget
+# the old prompt never said how long the window is, so teachers placed findings at "30-45 s" or "100-200 s" (10-window
+# tests, 2026-10-25); this sentence, added after the intro for the teacher only (maintainer, 2026-10-25), states it
+TIME_NOTE = "The window is 20 seconds long, with a vertical grid line every second. "
 RESOURCES = {"qwen3-vl:32b-instruct": ("a100:2", "128G", "06:00:00"),
              "qwen3-vl:30b-a3b-instruct": ("a100:2", "128G", "04:00:00"),
              "gemma3:12b": ("a100:1", "64G", "04:00:00")}
@@ -47,7 +50,7 @@ def windows():
             row = labels[f"train/{name}"]
             true = [c for c, v in row.items() if c not in ("path", "ground_truth_rationale") and v.strip().lower() == "true"]
             clause = prompts["rationale"]["label-clauses"][ds].format(labels=", ".join(true))
-            out.append((ds, image, f"{prompts['intro']}{clause} {prompts['rationale']['grounded']}"))
+            out.append((ds, image, f"{prompts['intro']}{TIME_NOTE}{clause} {prompts['rationale']['grounded']}"))
     return out
 
 
@@ -110,6 +113,9 @@ def submit_jobs(model, shards, smoke):
         command = f"python {SIDE}/teacher.py run {model} {shard} {shards}" + (" --smoke" if smoke else "")
         text = script(name, "01:30:00" if smoke else limit, ram, config()["train"]["cpus"], gpus, command)
         text = text.replace(str(ROOT / "logs"), str(SIDE / "logs"))
+        if os.environ.get("CC_CLUSTER") == "trillium":  # whole GPUs by --gpus-per-node, memory comes with the GPU
+            text = text.replace("#SBATCH --gres=gpu:", "#SBATCH --gpus-per-node=")
+            text = "\n".join(line for line in text.split("\n") if not line.startswith("#SBATCH --mem="))
         print(submit(text), "-", name, flush=True)
 
 
