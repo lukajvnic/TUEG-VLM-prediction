@@ -18,7 +18,7 @@
 #   python side/vision-freeze/rerender.py core [N]       # every corpus in the core design (see below), images-core/
 #   python side/vision-freeze/rerender.py tuep-scan [N]  # TUEP test recordings for the spike-detector scan (see below)
 #   python side/vision-freeze/rerender.py heldout [N]    # the final TUSZ test: the 62 patients in no core split
-#   python side/vision-freeze/rerender.py tuar-extra       # TUAR muscle and electrode artifact lines, same windows (data/core/)
+#   python side/vision-freeze/rerender.py extra DS         # one question per class of EXTRA[DS], same windows (data/core/)
 # background: the scored TUSZ test set's background is 97.8% first/last windows of its recording (known-issues,
 # 2026-10-14). This lists, from the same 200 test patients, shipped test windows never scored that are background
 # only and not a recording's first or last window, up to 2 per recording spread through it (seed 0), with each
@@ -76,7 +76,11 @@ QUESTIONS = {"TUAB": ("abnormal", ("abnormal",), "abnormal EEG activity"),
              "TUEV": ("epileptiform", ("spsw", "gped", "pled"),
                       "an epileptiform discharge (a spike or sharp wave, GPED or PLED)"),
              "TUSL": ("slowing", ("slow",), "slowing (focal or generalized)")}
-TUAR_EXTRA = {"musc": "a muscle artifact (MUSC)", "elec": "an electrode artifact (ELEC)"}  # tuar_extra()
+# extra(): one more yes/no question per learnable class, on a corpus's core windows and images (maintainer, 2026-10-25:
+# TUAR asks eye movement, muscle and electrode artifact; TUEV asks spike, GPED and PLED separately)
+EXTRA = {"TUAR": {"musc": "a muscle artifact (MUSC)", "elec": "an electrode artifact (ELEC)"},
+         "TUEV": {"spsw": "a spike or sharp wave (SPSW)", "gped": "a generalized periodic epileptiform discharge (GPED)",
+                  "pled": "a periodic lateralized epileptiform discharge (PLED)"}}
 CORE_IMAGES, CORE_DATA = SIDE / "images-core", DATA / "core"
 # TUEV train/val windows dropped from the core lists: a signal-fingerprint audit (2026-10-14) found 2 TUEV recordings
 # copied into test under other names (007 = 021, 008 = 022, so every 007 and 008 window goes) and 2 patients with
@@ -762,26 +766,25 @@ def tuep_random():
     print(f"test patients also in train/val: {len(shared)} of {len(patients['test'])}")
 
 
-def tuar_extra():
-    # TUAR's other two learnable artifacts as their own questions (maintainer, 2026-10-25: TUAR should cover eye
-    # movement, muscle and electrode artifact, not eye movement alone): the core TUAR windows and images, labelled for
-    # each class from labels.csv, each training split balanced again within missing-row patterns for its own label
+def extra(ds):
+    # each class of EXTRA[ds] as its own question: the core windows and images of the corpus, labelled for that class
+    # from labels.csv, each training split balanced again within missing-row patterns for its own label
     splits, tables = core_splits()
-    labels = {r["path"]: r for r in csv.DictReader((ROOT / "datasets" / "TUAR" / "labels.csv").open())}
+    labels = {r["path"]: r for r in csv.DictReader((ROOT / "datasets" / ds / "labels.csv").open())}
     prompt = config_intro()
-    for cls, what in TUAR_EXTRA.items():
+    for cls, what in EXTRA[ds].items():
         text = f"{prompt}Based only on these waveforms, does this window show {what}? Set present to true only when it does."
-        for split, rows in splits["TUAR"].items():
+        for split, rows in splits[ds].items():
             rows = [(path, labels[path][cls] == "true") for path, _ in rows]
             if split == "train":
-                rows, report = balance(rows, tables["TUAR"])
-                print(f"TUAR {cls} train: missing-row balance, " + ("; ".join(report) or "nothing missing"))
-            with (CORE_DATA / f"TUAR-{cls}-{split}.jsonl").open("w") as f:
+                rows, report = balance(rows, tables[ds])
+                print(f"{ds} {cls} train: missing-row balance, " + ("; ".join(report) or "nothing missing"))
+            with (CORE_DATA / f"{ds}-{cls}-{split}.jsonl").open("w") as f:
                 for path, present in rows:
-                    f.write(json.dumps({"dataset": "TUAR", "question": cls, "instruction": text, "input": "",
+                    f.write(json.dumps({"dataset": ds, "question": cls, "instruction": text, "input": "",
                                         "output": json.dumps({"present": present}),
                                         "images": [f"{split}/{path.split('/', 1)[1]}"]}) + "\n")
-            print(f"TUAR {cls} {split}: {len(rows)} ({sum(x for _, x in rows)} true)")
+            print(f"{ds} {cls} {split}: {len(rows)} ({sum(x for _, x in rows)} true)")
 
 
 def question_of(ds):
@@ -830,8 +833,8 @@ def main():
         tuep_scan(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "tuep-random":
         tuep_random()
-    elif sys.argv[1] == "tuar-extra":
-        tuar_extra()
+    elif sys.argv[1] == "extra":
+        extra(sys.argv[2])
     elif sys.argv[1] == "heldout":
         heldout(int(sys.argv[2]) if len(sys.argv) > 2 else 12)
     elif sys.argv[1] == "sample":

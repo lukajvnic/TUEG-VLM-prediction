@@ -284,20 +284,24 @@ for _short in ZERO_SHOT:
         if f"z-{_short}-{_ds.lower()}" in ARMS:
             _hours = max(1.0, 1.5 * ((_test + 10400 * (_ds == "TUSZ")) * GRID_SPEED[_short][1] + 1200) / 3600)
             TIME[f"z-{_short}-{_ds.lower()}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
-# TUAR's muscle and electrode artifact questions (maintainer, 2026-10-25: TUAR covers eye movement, muscle and electrode,
-# not eye movement alone), on rerender.py tuar-extra's lines: the same windows, images, recipe and epochs as the eye
-# movement arms (gm-<short>-tuar), for every valid grid model, both seeds, and its zero-shot baseline
-TUAR_EXTRA = ("musc", "elec")
+# one question per learnable class (maintainer, 2026-10-25): TUAR asks muscle and electrode artifact beside eye movement,
+# TUEV asks spike, GPED and PLED separately; rerender.py extra's lines, the same windows, images, recipe and epochs as
+# the corpus's grid arms (gm-<short>-tuar / -tuev), for every valid grid model, both seeds, and a zero-shot baseline.
+# TUEV's val sets hold 1-2 positives per class, so its arms keep the final checkpoint ("select": "last")
+EXTRA_QUESTIONS = {"TUAR": ("musc", "elec"), "TUEV": ("spsw", "gped", "pled")}
 for _short in GRID_MODELS:
     if _short == "minicpm46-1b":
         continue
-    for _question in TUAR_EXTRA:
-        _arm = f"gm-{_short}-tuar-{_question}"
-        ARMS[_arm] = {**ARMS[f"gm-{_short}-tuar"], "question": _question, "splits": _question}
-        ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
-        ARMS[f"z-{_short}-tuar-{_question}"] = {**ARMS[f"z-{_short}-tuar"], "question": _question, "splits": _question}
-        TIME[_arm] = TIME[f"{_arm}-s2"] = TIME[f"gm-{_short}-tuar"]
-        TIME[f"z-{_short}-tuar-{_question}"] = TIME[f"z-{_short}-tuar"]
+    for _ds, _questions in EXTRA_QUESTIONS.items():
+        for _question in _questions:
+            _base, _arm = f"gm-{_short}-{_ds.lower()}", f"gm-{_short}-{_ds.lower()}-{_question}"
+            ARMS[_arm] = {**ARMS[_base], "question": _question, "splits": _question,
+                          **({"select": "last"} if _ds == "TUEV" else {})}
+            ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
+            ARMS[f"z-{_short}-{_ds.lower()}-{_question}"] = {**ARMS[f"z-{_short}-{_ds.lower()}"], "question": _question,
+                                                             "splits": _question}
+            TIME[_arm] = TIME[f"{_arm}-s2"] = TIME[_base]
+            TIME[f"z-{_short}-{_ds.lower()}-{_question}"] = TIME[f"z-{_short}-{_ds.lower()}"]
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -651,8 +655,9 @@ def train(settings, arm, smoke):
         trainer.args.learning_rate = VISION_LR
     if recipe == "hybrid":
         trainer.optimizer = hybrid_optimizer(model, training)
-    if order_of(arm) == "rationale-first":
-        # the teacher-forced val metric reads the boolean after the gold rationale, which names the label
+    if order_of(arm) == "rationale-first" or ARMS[arm].get("select") == "last":
+        # rationale-first: the teacher-forced val metric reads the boolean after the gold rationale, which names the
+        # label; "last": a val set too small to choose on
         trainer.args.load_best_model_at_end = False
     if ARMS[arm].get("select") == "auroc":
         select_by_auroc(trainer, processor)
