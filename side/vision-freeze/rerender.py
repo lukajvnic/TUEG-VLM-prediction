@@ -825,6 +825,48 @@ def tusz_types():
             print(f"TUSZ {cls} {split}: {len(rows)} ({sum(x for _, x in rows)} true)")
 
 
+def tuar_all_windows():
+    # TUAR trains on every annotated window of its training recordings (maintainer, 2026-10-25: "go ahead for tuar"),
+    # 16x the capped sample: a window is usable when any annotation row (background included) overlaps it, and its
+    # answer per question comes from the source annotations. New windows are listed in data/tuar-extra-windows.csv for
+    # rendering; returns {question: [(path, present)]} for the training split, missing-row balanced per question
+    edfs, labels_for = sources("TUAR")
+    splits, tables = core_splits()
+    by_edf = defaultdict(dict)
+    for path, _ in splits["TUAR"]["train"]:
+        row = tables["TUAR"][path]
+        by_edf[row["edf"]][int(row["index"])] = (path, row["scan"])
+    rows, extra = [], []
+    for edf, known in sorted(by_edf.items()):
+        scan = next(iter(known.values()))[1]
+        annotation = ROOT / edf.replace(".edf", ".csv")
+        spans = [(float(r["start_time"]), float(r["stop_time"])) for r in csv.DictReader(
+            line for line in annotation.read_text().splitlines() if line.strip() and not line.startswith("#"))]
+        header = __import__("mne").io.read_raw_edf(str(ROOT / edf), preload=False, verbose="ERROR")
+        n = max(1, int(header.n_times / header.info["sfreq"] // 20))
+        for i in range(n):
+            if not any(a < (i + 1) * 20 and b > i * 20 for a, b in spans):
+                continue
+            path = known[i][0] if i in known else f"train/{scan}_{i}.png"
+            labels = set(labels_for(ROOT / edf, i * 20, (i + 1) * 20))
+            rows.append((path, labels, edf, scan, i))
+            if not (CORE_IMAGES / "TUAR" / path).exists():  # new windows, and old ones the earlier balance never rendered
+                extra.append((path, "train", scan, i, edf))
+    with (DATA / "tuar-extra-windows.csv").open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["path", "role", "scan", "index", "edf"])
+        writer.writerows(extra)
+    table = {path: {"edf": edf} for path, _, edf, _, _ in rows}
+    out = {}
+    for question in ("eyem", "musc", "elec"):
+        balanced, report = balance([(path, question in labels) for path, labels, *_ in rows], table)
+        out[question] = balanced
+        print(f"TUAR {question}: {len(balanced)} windows ({sum(x for _, x in balanced)} true) after the missing-row "
+              f"balance ({'; '.join(report) or 'nothing missing'})")
+    print(f"TUAR training windows: {len(rows)} usable, {len(extra)} not yet rendered -> {DATA / 'tuar-extra-windows.csv'}")
+    return out
+
+
 def dataset_all():
     # one model per dataset (maintainer, 2026-10-25: "three separate prompts, but all to train the same model"): each
     # dataset's question lines merged into <DS>-all-{train,val,test}.jsonl, one yes/no line per window and question as
@@ -844,11 +886,16 @@ def dataset_all():
         for path, i in items:
             if labels[i] & (SEIZURES - {"fnsz", "gnsz"}) and not labels[i] & {"fnsz", "gnsz"}:
                 seizure_only.add(f"train/{path.split('/', 1)[1]}")
+    tuar_train = tuar_all_windows()
     for ds, questions in sources.items():
         for split in ("train", "val", "test"):
             rows = []
             for question, stem in questions.items():
-                for r in read_jsonl(CORE_DATA / f"{stem}-{split}.jsonl"):
+                template = read_jsonl(CORE_DATA / f"{stem}-{split}.jsonl")
+                if ds == "TUAR" and split == "train":  # every annotated window, each question's prompt as before
+                    template = [{**template[0], "output": json.dumps({"present": present}), "images": [path]}
+                                for path, present in tuar_train[question]]
+                for r in template:
                     assert r["question"] == question, (stem, r["question"])
                     no_explain = ds == "TUSZ" and r["images"][0] in seizure_only  # names repeat across corpora
                     rows.append({**r, **({"explain": False} if no_explain else {})})

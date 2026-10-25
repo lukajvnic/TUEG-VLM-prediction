@@ -339,10 +339,14 @@ for _arm in [f"gm-8b-tusz-{q}" for q in TUSZ_TYPES] + [f"gm-8b-tuev-{q}" for q i
 # are too small to choose on (maintainer: "do what you originally said")
 DATASET_QUESTIONS = {"TUSZ": ("fnsz", "gnsz"), "TUAR": ("eyem", "musc", "elec"), "TUEV": ("spsw", "gped", "pled"),
                      "TUAB": ("abnormal",)}
-DATASET_EPOCHS = {"TUSZ": 4, "TUAB": 4, "TUAR": 12, "TUEV": 12}
+# TUAR trains on every annotated window of its training recordings (5,722 windows, rerender.py tuar_all_windows): one
+# pass over them costs about what 12 passes over the old 367-window sample did, and its 367 teacher rationales are
+# repeated 4 times so the model still learns their style (maintainer, 2026-10-25: "go ahead for tuar")
+DATASET_EPOCHS = {"TUSZ": 4, "TUAB": 4, "TUAR": 1, "TUEV": 12}
+EXPLAIN_REPEAT = {"TUAR": 4}
 DATASET_WHAT = {"TUSZ": "a focal or a generalized seizure", "TUAR": "an eye movement, muscle or electrode artifact",
                 "TUEV": "a spike or sharp wave, a GPED or a PLED", "TUAB": "abnormal EEG activity"}
-DATASET_LINES = {"TUSZ": (7347, 1525, 8460), "TUAR": (1095, 367, 3540), "TUEV": (1005, 335, 354),
+DATASET_LINES = {"TUSZ": (7347, 1525, 8460), "TUAR": (17138, 1468, 3540), "TUEV": (1005, 335, 354),
                  "TUAB": (2283, 2283, 1200)}  # answer lines, explain lines (estimate: windows with a rationale), test windows
 for _short in GRID_MODELS:
     if _short == "minicpm46-1b":
@@ -500,8 +504,9 @@ def with_rationale(rows, split, arm):
             name = Path(r["images"][0]).name
             if split == "train" and name in source and name not in explained and r.get("explain", True):
                 explained.add(name)
-                out.append({**r, "question": "explain", "instruction": explain_prompt(arm),
-                            "output": json.dumps({"text_rationale": explain(r["images"][0])})})
+                out += [{**r, "question": "explain", "instruction": explain_prompt(arm),
+                         "output": json.dumps({"text_rationale": explain(r["images"][0])})}] * \
+                    EXPLAIN_REPEAT.get(dataset_of(arm), 1)
         return out
     text = rationale_prompt(arm)
     for r in rows:
@@ -713,6 +718,11 @@ def train(settings, arm, smoke):
         return
     resume = main.resume_point(out)
     data = {"train": lines("train", smoke, arm), "validation": lines("val", smoke, arm)}
+    if ARMS[arm].get("questions") and not smoke:  # epochs and repeats assume these exact line files (data/ is not in git)
+        answers = sum(r["question"] != "explain" for r in data["train"])
+        if answers != DATASET_LINES[dataset_of(arm)][0]:
+            sys.exit(f"{arm}: {answers} answer lines, expected {DATASET_LINES[dataset_of(arm)][0]}: copy the current "
+                     f"data/core/{dataset_of(arm)}-all-train.jsonl here first")
     training, epochs = settings["training"], ARMS[arm]["epochs"]
     steps = epochs * math.ceil(len(data["train"]) / (training["batch-size"] * training["gradient-accumulation"]))
     every = 1 if smoke else math.ceil(steps / EVALS)  # save-steps must equal eval-steps for the best-checkpoint reload
