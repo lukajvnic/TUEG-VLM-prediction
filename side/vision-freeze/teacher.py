@@ -25,6 +25,10 @@ from helpers.pipeline import append_row, base_spec, config, read_csv  # noqa: E4
 from helpers.slurm import script, submit  # noqa: E402
 
 DATASETS = ("TUSZ", "TUAR", "TUEV", "TUAB")
+# windows added for the teacher after the first run (rerender.py tuar-teacher-extra: TUAR's 1,080, maintainer
+# 2026-10-25), listed after every original window so the first run's shard lists are unchanged
+EXTRA = {"TUAR": SIDE / "data" / "tuar-teacher-extra.csv"}
+CODES = {"TUAR": ("bckg", "chew", "elec", "elpp", "eyem", "musc", "shiv")}
 IMAGES = Path(os.environ.get("VF_CORE_ROOT", SIDE / "images-core"))
 OUT = SIDE / "results" / "teacher"
 MAX_NEW_TOKENS = 512  # the old teacher's budget
@@ -41,7 +45,8 @@ def short(model):
 
 
 def windows():
-    # (dataset, core image path, prompt) for every window with an old teacher rationale and a core training image
+    # (dataset, core image path, prompt) for every window with an old teacher rationale and a core training image, then
+    # the windows added for the teacher
     prompts = config()["prompts"]
     out = []
     for ds in DATASETS:
@@ -56,6 +61,12 @@ def windows():
             true = [c for c, v in row.items() if c not in ("path", "ground_truth_rationale") and v.strip().lower() == "true"]
             clause = prompts["rationale"]["label-clauses"][ds].format(labels=", ".join(true))
             out.append((ds, image, f"{prompts['intro']}{TIME_NOTE}{clause} {prompts['rationale']['grounded']}"))
+    for ds, table in EXTRA.items():
+        if not table.exists():  # data/ is not in git: without the list the added windows would silently drop out
+            sys.exit(f"{table} is missing: copy it from the repo checkout that ran rerender.py tuar-teacher-extra")
+        for r in read_csv(table):
+            clause = prompts["rationale"]["label-clauses"][ds].format(labels=", ".join(r["labels"].split(";")))
+            out.append((ds, r["path"], f"{prompts['intro']}{TIME_NOTE}{clause} {prompts['rationale']['grounded']}"))
     return out
 
 
@@ -92,7 +103,7 @@ def smoke_windows(all_windows):
     return picks
 
 
-def run(model, shard, shards, smoke, refs=False, missing=None):
+def run(model, shard, shards, smoke, refs=False, missing=None, extra=False):
     import torch
     from PIL import Image
     from transformers import AutoModelForImageTextToText
@@ -104,8 +115,12 @@ def run(model, shard, shards, smoke, refs=False, missing=None):
     spec.loader.exec_module(main)
 
     todo = test_windows() if refs else windows()
+    if extra:  # run-extra: only the windows added for the teacher (EXTRA), sharded over their own list
+        added = {(ds, r["path"]) for ds, table in EXTRA.items() for r in read_csv(table)}
+        todo = [w for w in todo if (w[0], w[1]) in added]
     todo = smoke_windows(todo) if smoke else todo[shard::shards]
-    out = OUT / short(model) / ("smoke.csv" if smoke else f"{'refs-' if refs else ''}shard-{shard:03d}.csv")
+    name = f"refs-shard-{shard:03d}" if refs else f"shard-extra-{shard:03d}" if extra else f"shard-{shard:03d}"
+    out = OUT / short(model) / ("smoke.csv" if smoke else f"{name}.csv")
     if missing:  # run-missing: the training windows of these datasets that no shard has a reply for (a window whose
         # image was rendered after the shards started is not in their lists)
         replies = replies_of(model, "")
@@ -135,14 +150,16 @@ def run(model, shard, shards, smoke, refs=False, missing=None):
             print(f"{n}/{len(todo)} ({(time.time() - started) / n:.1f} s/window)", flush=True)
 
 
-def submit_jobs(model, shards, smoke, refs=False, only=None):
+def submit_jobs(model, shards, smoke, refs=False, only=None, extra=False):
     gpus, ram, limit = RESOURCES[model]
     if os.environ.get("CC_CLUSTER") in ("fir", "nibi", "trillium"):  # 80 GB H100s: a 30-32B teacher fits one
         # (Trillium has no slices, so a 12B teacher takes a whole H100 there too)
         gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if gpus == "a100:1" and os.environ["CC_CLUSTER"] != "trillium" else "h100:1"
     for shard in [0] if smoke else ([only] if only is not None else range(shards)):  # --only N: one dead shard again
-        name = f"eeg-vlm-teacher-{short(model)}-" + ("smoke" if smoke else f"{'refs-' if refs else ''}{shard:03d}")
-        command = f"python {SIDE}/teacher.py {'run-refs' if refs else 'run'} {model} {shard} {shards}" + (" --smoke" if smoke else "")
+        kind = "refs-" if refs else "extra-" if extra else ""
+        name = f"eeg-vlm-teacher-{short(model)}-" + ("smoke" if smoke else f"{kind}{shard:03d}")
+        command = f"python {SIDE}/teacher.py {'run-' + kind[:-1] if kind else 'run'} {model} {shard} {shards}" + \
+            (" --smoke" if smoke else "")
         text = script(name, "01:30:00" if smoke else limit, ram, config()["train"]["cpus"], gpus, command)
         text = text.replace(str(ROOT / "logs"), str(SIDE / "logs"))
         if os.environ.get("CC_CLUSTER") == "trillium":  # whole GPUs by --gpus-per-node, memory comes with the GPU
@@ -196,6 +213,13 @@ def assemble(model, dry_run, datasets=DATASETS):
                 output = json.loads(row["output"])
                 output["text_rationale"] = reply
                 kept.append(json.dumps({**row, "output": json.dumps(output)}))
+        if ds in EXTRA:  # rows for the windows added for the teacher, in the format of the original ones
+            template = json.loads(backup.read_text().splitlines()[0])
+            for r in read_csv(EXTRA[ds]):
+                found = set(r["labels"].split(";"))
+                output = {"text_rationale": replies[(ds, Path(r["path"]).name)][0],
+                          **{f"has_{code}": code in found for code in CODES[ds]}}
+                kept.append(json.dumps({**template, "output": json.dumps(output), "images": [r["path"]]}))
         source.write_text("\n".join(kept) + "\n")
         digest = hashlib.md5(source.read_bytes()).hexdigest()
         (ROOT / "datasets" / ds / "sft_train.md5").write_text(digest + "\n")  # run.py's gate for dataset arms
@@ -225,10 +249,10 @@ if __name__ == "__main__":
     chosen = next((tuple(a.split("=")[1].split(",")) for a in args if a.startswith("--datasets=")), DATASETS)
     assert set(chosen) <= set(DATASETS), chosen
     args = [a for a in args if a != "--dry-run" and not a.startswith(("--only=", "--datasets="))]
-    if args[0] in ("submit", "submit-refs"):
-        submit_jobs(args[1], int(args[2]), smoke, refs=args[0] == "submit-refs", only=only)
-    elif args[0] in ("run", "run-refs"):
-        run(args[1], int(args[2]), int(args[3]), smoke, refs=args[0] == "run-refs")
+    if args[0] in ("submit", "submit-refs", "submit-extra"):
+        submit_jobs(args[1], int(args[2]), smoke, refs=args[0] == "submit-refs", only=only, extra=args[0] == "submit-extra")
+    elif args[0] in ("run", "run-refs", "run-extra"):
+        run(args[1], int(args[2]), int(args[3]), smoke, refs=args[0] == "run-refs", extra=args[0] == "run-extra")
     elif args[0] == "run-missing":
         run(args[1], 0, 1, False, missing=chosen)
     elif args[0] == "submit-missing":

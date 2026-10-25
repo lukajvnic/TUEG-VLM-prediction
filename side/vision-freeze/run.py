@@ -350,14 +350,14 @@ for _arm in [f"gm-8b-tusz-{q}" for q in TUSZ_TYPES] + [f"gm-8b-tuev-{q}" for q i
 DATASET_QUESTIONS = {"TUSZ": ("fnsz", "gnsz"), "TUAR": ("eyem", "musc", "elec"), "TUEV": ("spsw", "gped", "pled"),
                      "TUAB": ("abnormal",)}
 # TUAR trains on every annotated window of its training recordings (5,722 windows, rerender.py tuar_all_windows): one
-# pass over them costs about what 12 passes over the old 367-window sample did, and its 367 teacher rationales are
-# repeated 4 times so the model still learns their style (maintainer, 2026-10-25: "go ahead for tuar")
+# pass over them costs about what 12 passes over the old 367-window sample did (maintainer, 2026-10-25: "go ahead for
+# tuar"). Its explain lines cover 1,440 distinct windows once each, the teacher's 360 plus 1,080 added for it
+# (rerender.py tuar-teacher-extra), the same explain budget as 360 repeated 4 times (maintainer: "okay go ahead")
 DATASET_EPOCHS = {"TUSZ": 4, "TUAB": 4, "TUAR": 1, "TUEV": 12}
-EXPLAIN_REPEAT = {"TUAR": 4}
 DATASET_WHAT = {"TUSZ": "a focal or a generalized seizure", "TUAR": "an eye movement, muscle or electrode artifact",
                 "TUEV": "a spike or sharp wave, a GPED or a PLED", "TUAB": "abnormal EEG activity"}
-DATASET_LINES = {"TUSZ": (7347, 1525, 8460), "TUAR": (17138, 1468, 3540), "TUEV": (1005, 335, 354),
-                 "TUAB": (2283, 2283, 1200)}  # answer lines, explain lines (estimate: windows with a rationale), test windows
+DATASET_LINES = {"TUSZ": (7347, 1525, 8460), "TUAR": (17138, 1440, 3540), "TUEV": (1005, 335, 354),
+                 "TUAB": (2283, 2283, 1200)}  # answer lines, explain lines, test windows
 # on Fir and Nibi every dataset model trains on a 40 GB slice: every base trained within Narval's 40 GB A100s (no CUDA
 # out-of-memory in any Narval or Fir log; peaks of 41-42 GB are the allocator filling the card). The 8B (the DPO model,
 # speed) and the three largest (closest to the limit) keep a whole H100
@@ -384,6 +384,27 @@ for _short in GRID_MODELS:
                                                 "splits": None if _question in ("eyem", "abnormal") else _question}
                 del ARMS[f"{_name}-{_question}"]["questions"]
                 TIME[f"{_name}-{_question}"] = TIME[_name]
+# expert DPO on the four 8B dataset models (maintainer, 2026-10-25: "sure 4 runs one per 8b"): gm-8b-<ds>-all-dpo adds
+# a fresh LoRA, dropout off, to the language model of the trained dataset model (vision tower and projector frozen) and
+# trains it on the neurologist's preferences (argilla/rationales.py export -> DPO_ANSWERS). The reference is the same
+# model with that adapter disabled, so the two agree exactly at step 0. Log-ratios are per-token means: summed ones
+# reward short rationales (review, 2026-10-25). Views gm-8b-<ds>-all-dpo-<q> score it like the dataset model
+DPO_ANSWERS = SIDE / "results" / "dpo-answers.jsonl"
+DPO_SETTINGS = {"beta": 5.0, "alpha": 1.0, "learning-rate": 2e-5, "epochs": 3, "accumulation": 2, "rank": 16,
+                "lora-alpha": 32}
+for _ds, _questions in DATASET_QUESTIONS.items():
+    _from = f"gm-8b-{_ds.lower()}-all"
+    _arm = f"{_from}-dpo"
+    ARMS[_arm] = {**ARMS[_from], "dpo_from": _from}
+    _step, _window, _rationale = GRID_SPEED["8b"]
+    _hours = 1.5 * (2 * 90 * DPO_SETTINGS["epochs"] * _step + DATASET_LINES[_ds][2] * len(_questions) * _window
+                    + 300 * _rationale + 1800) / 3600
+    TIME[_arm] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
+    for _question in _questions:
+        ARMS[f"{_arm}-{_question}"] = {**ARMS[_arm], "view": _arm, "question": _question,
+                                       "splits": None if _question in ("eyem", "abnormal") else _question}
+        del ARMS[f"{_arm}-{_question}"]["questions"]
+        TIME[f"{_arm}-{_question}"] = TIME[_arm]
 SMOKE_LINES, SMOKE_WINDOWS = {"train": 16, "val": 8}, 24
 PROBE = Path(os.environ.get("SCRATCH", "/scratch/luka")) / "rehearsal" / "research" / "probe" / "manifest.csv"
 BOOTSTRAP = 1000
@@ -521,9 +542,8 @@ def with_rationale(rows, split, arm):
             name = Path(r["images"][0]).name
             if split == "train" and name in source and name not in explained and r.get("explain", True):
                 explained.add(name)
-                out += [{**r, "question": "explain", "instruction": explain_prompt(arm),
-                         "output": json.dumps({"text_rationale": explain(r["images"][0])})}] * \
-                    EXPLAIN_REPEAT.get(dataset_of(arm), 1)
+                out.append({**r, "question": "explain", "instruction": explain_prompt(arm),
+                            "output": json.dumps({"text_rationale": explain(r["images"][0])})})
         return out
     text = rationale_prompt(arm)
     for r in rows:
@@ -721,6 +741,8 @@ def train(settings, arm, smoke):
 
     if ARMS[arm].get("view"):
         sys.exit(f"{arm} is a scoring view of {ARMS[arm]['view']}: train that arm")
+    if ARMS[arm].get("dpo_from"):
+        sys.exit(f"{arm} is trained with --dpo")
     if ARMS[arm].get("questions"):  # a dataset arm trains only on the new teacher's rationales (teacher.py assemble)
         folder = RATIONALES / dataset_of(arm)
         digest = hashlib.md5((folder / "sft_train.jsonl").read_bytes()).hexdigest()
@@ -735,11 +757,12 @@ def train(settings, arm, smoke):
         return
     resume = main.resume_point(out)
     data = {"train": lines("train", smoke, arm), "validation": lines("val", smoke, arm)}
-    if ARMS[arm].get("questions") and not smoke:  # epochs and repeats assume these exact line files (data/ is not in git)
+    if ARMS[arm].get("questions") and not smoke:  # epochs assume these exact files (data/ and sft_*.jsonl are not in git)
         answers = sum(r["question"] != "explain" for r in data["train"])
-        if answers != DATASET_LINES[dataset_of(arm)][0]:
-            sys.exit(f"{arm}: {answers} answer lines, expected {DATASET_LINES[dataset_of(arm)][0]}: copy the current "
-                     f"data/core/{dataset_of(arm)}-all-train.jsonl here first")
+        counts, expected = (answers, len(data["train"]) - answers), DATASET_LINES[dataset_of(arm)][:2]
+        if counts != expected:
+            sys.exit(f"{arm}: {counts[0]} answer and {counts[1]} explain lines, expected {expected[0]} and {expected[1]}: "
+                     f"copy the current data/core/{dataset_of(arm)}-all-train.jsonl and sft_train.jsonl here first")
     training, epochs = settings["training"], ARMS[arm]["epochs"]
     steps = epochs * math.ceil(len(data["train"]) / (training["batch-size"] * training["gradient-accumulation"]))
     every = 1 if smoke else math.ceil(steps / EVALS)  # save-steps must equal eval-steps for the best-checkpoint reload
@@ -880,6 +903,15 @@ def load_for_scoring(arm, smoke):
     from transformers import AutoModelForImageTextToText
 
     base = base_spec(config(), model_of(arm))
+    if ARMS[arm].get("dpo_from"):  # the trained dataset model, then the DPO adapter on its language model
+        from peft import PeftModel
+
+        model, processor, _ = load_for_scoring(ARMS[arm]["dpo_from"], smoke)
+        if not (out_dir(arm, smoke) / "manifest.json").exists():
+            sys.exit(f"{out_dir(arm, smoke)} has no manifest.json: DPO has not finished")
+        model = PeftModel.from_pretrained(model, str(out_dir(arm, smoke))).merge_and_unload()
+        model.eval()
+        return model, processor, base
     if ARMS[arm]["recipe"] in ("lora", "hybrid") and LAST:
         # a checkpoint-N dir has the adapter and the processor but no manifest.json, which runner.load requires
         # (score-last-gm-2b-tuar/tuev failed on it, 2026-10-17)
@@ -1198,6 +1230,97 @@ def dpo_windows(arm):
         pool = sorted(p for p in teacher if present.get(p) is value)
         picks += rng.sample(pool, min(half, len(pool)))
     return [(p, present[p], teacher[p]) for p in picks]
+
+
+def dpo_pairs(arm, smoke):
+    # (path, chosen, rejected) for this model from the neurologist's submitted answers: the rationale he preferred
+    # against the other. Ties and "both wrong" give no pair; a correction is kept for the paper, not trained on. Only
+    # the dataset's training windows: the test-side review must never reach DPO. A smoke run pairs the teacher's
+    # rationale (chosen) with the model's from the smoke dpo-gen file, to run the code before any answer exists
+    sft = ARMS[arm]["dpo_from"]
+    if smoke:
+        rows = read_csv(base_dir(True) / "results" / f"dpo-gen-{sft}.csv")
+        pairs = [(r["path"], r["teacher"], reply_text(r["reply"])) for r in rows]
+    else:
+        pairs = [(r["path"], *((r["rationale_a"], r["rationale_b"]) if r["preference"] == "A" else
+                               (r["rationale_b"], r["rationale_a"])))
+                 for r in main.read_jsonl(DPO_ANSWERS) if r["model"] == sft and r.get("preference") in ("A", "B")]
+    training = {r["images"][0] for r in lines("train", False, sft)}
+    outside = [path for path, _, _ in pairs if path not in training]
+    if outside:
+        sys.exit(f"{arm}: {len(outside)} pairs are not {dataset_of(arm)} training windows, e.g. {outside[:3]}")
+    return pairs
+
+
+def reply_text(reply):
+    try:
+        return json.loads(reply)["text_rationale"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return reply
+
+
+def target_logp(model, collator, prompt, output, path):
+    # the summed log-probability of the target's tokens and their count, with gradients when they are on
+    batch = collator([{"instruction": prompt, "input": "", "output": output, "images": [path]}])
+    targets = batch.pop("labels")[0]
+    positions = (targets != -100).nonzero().flatten()
+    keep = len(targets) - int(positions[0]) + 1
+    logits = model(**batch.to(model.device), logits_to_keep=keep, use_cache=False).logits[0].float()
+    logp = logits[positions - 1 - (len(targets) - keep)].log_softmax(-1)
+    return logp.gather(1, targets[positions].to(logp.device)[:, None]).sum(), len(positions)
+
+
+def dpo_train(arm, smoke):
+    import torch
+    import torch.nn.functional as F
+    from peft import LoraConfig, get_peft_model
+
+    out = out_dir(arm, smoke)
+    if (out / "manifest.json").exists():
+        print(f"{out} is already trained (manifest.json exists)", flush=True)
+        return
+    pairs = dpo_pairs(arm, smoke)
+    if not pairs:
+        sys.exit(f"{arm}: no preference pairs for {ARMS[arm]['dpo_from']} in {DPO_ANSWERS}")
+
+    settings, sft = DPO_SETTINGS, ARMS[arm]["dpo_from"]
+    model, processor, base = load_for_scoring(sft, smoke)
+    language, _ = main.runner.lora_targets(model)
+    model = get_peft_model(model, LoraConfig(r=settings["rank"], lora_alpha=settings["lora-alpha"], lora_dropout=0.0,
+                                             bias="none", task_type="CAUSAL_LM", target_modules=language))
+    model.eval()  # no dropout anywhere, so the policy equals the reference at step 0
+    collator, prompt = main.DataCollator(processor, image_root(arm), base), explain_prompt(arm)
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=settings["learning-rate"],
+                                  weight_decay=0.0)
+    rng, log = random.Random(ARMS[arm].get("seed", 0)), []
+    print(f"{arm}: DPO on {len(pairs)} pairs of {sft} -> {out}, {settings}", flush=True)
+
+    for epoch in range(1 if smoke else settings["epochs"]):
+        order = rng.sample(pairs, len(pairs))
+        wins, margins = 0, []
+        for n, (path, chosen, rejected) in enumerate(order, 1):
+            targets = [json.dumps({"text_rationale": CHANNEL.sub(r"\1", text)}) for text in (chosen, rejected)]
+            with torch.no_grad(), model.disable_adapter():
+                reference = [target_logp(model, collator, prompt, t, path) for t in targets]
+            policy = [target_logp(model, collator, prompt, t, path) for t in targets]
+            ratios = [(p - r) / tokens for (p, tokens), (r, _) in zip(policy, reference)]
+            margin = ratios[0] - ratios[1]
+            loss = -F.logsigmoid(settings["beta"] * margin) - settings["alpha"] * policy[0][0] / policy[0][1]
+            (loss / settings["accumulation"]).backward()
+            if n % settings["accumulation"] == 0 or n == len(order):
+                optimizer.step()
+                optimizer.zero_grad()
+            wins += float(margin) > 0
+            margins.append(float(margin))
+        log.append({"epoch": epoch + 1, "reward_accuracy": round(wins / len(order), 4),
+                    "margin": round(float(np.mean(margins)), 5)})
+        print(json.dumps(log[-1]), flush=True)
+
+    print(f"peak GPU memory {torch.cuda.max_memory_reserved() / 1e9:.1f} GB", flush=True)
+    model.save_pretrained(out)
+    processor.save_pretrained(out)
+    manifest = {"arm": arm, **ARMS[arm], "pairs": len(pairs), "settings": settings, "log": log, "smoke": smoke}
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 def dpo_gen(arm, smoke):
@@ -1556,7 +1679,10 @@ def submit_job(cfg, arm, dry_run, arms=()):
                 [f"{me} {a} --train --smoke"] * bool(ARMS[a].get("smoke-first")) + [f"{me} {a} --{m}" for m in modes(a)]
              for a in ARMS}
     for a in ARMS:
-        if ARMS[a].get("questions"):
+        if ARMS[a].get("dpo_from") and ARMS[a].get("questions"):
+            views = [f"{a}-{q}" for q in ARMS[a]["questions"]]
+            steps[a] = [f"{me} {a} --dpo"] + [f"{me} {v} --score" for v in views] + [f"{me} {a} --rationale-eval"]
+        elif ARMS[a].get("questions"):
             views = [f"{a}-{q}" for q in ARMS[a]["questions"]]
             # the 8B dataset models feed DPO: their review rationales are written right after training, in the same job
             steps[a] = ([f"{me} {views[0]} --image-check"] * bool(ARMS[a].get("image-check")) +
@@ -1609,6 +1735,7 @@ def main_cli():
     mode.add_argument("--image-check", action="store_true", help="stop if the untrained base ignores the image")
     mode.add_argument("--scan", action="store_true", help="a TUEV model scores the TUEP scan windows; patient summary")
     mode.add_argument("--dpo-gen", action="store_true", help="the model's rationales on training windows, for DPO review")
+    mode.add_argument("--dpo", action="store_true", help="expert DPO on a trained 8B dataset model (gm-8b-<ds>-all-dpo)")
     mode.add_argument("--dry-run", action="store_true", help="print the job, submit nothing")
     parser.add_argument("--smoke", action="store_true", help="with --train/--score: 2 steps, 24 windows, under smoke/")
     parser.add_argument("--last", action="store_true", help="with --score/--rationale-eval/--scan: the final checkpoint")
@@ -1617,7 +1744,7 @@ def main_cli():
     LAST = args.last
 
     if (args.train or args.score or args.rationale_eval or args.background or args.heldout or args.scan or args.image_check
-            or args.dpo_gen):
+            or args.dpo_gen or args.dpo):
         if args.arm in ("smoke", *PSEUDO) or args.train and ARMS[args.arm]["recipe"] is None:
             parser.error(f"that mode does not apply to {args.arm}")
         os.environ.setdefault("WANDB_MODE", "offline")
@@ -1635,6 +1762,8 @@ def main_cli():
             tuep_scan(args.arm, args.smoke)
         elif args.dpo_gen:
             dpo_gen(args.arm, args.smoke)
+        elif args.dpo:
+            dpo_train(args.arm, args.smoke)
         else:
             rationale_eval(args.arm, args.smoke)
         return

@@ -825,11 +825,9 @@ def tusz_types():
             print(f"TUSZ {cls} {split}: {len(rows)} ({sum(x for _, x in rows)} true)")
 
 
-def tuar_all_windows():
-    # TUAR trains on every annotated window of its training recordings (maintainer, 2026-10-25: "go ahead for tuar"),
-    # 16x the capped sample: a window is usable when any annotation row (background included) overlaps it, and its
-    # answer per question comes from the source annotations. New windows are listed in data/tuar-extra-windows.csv for
-    # rendering; returns {question: [(path, present)]} for the training split, missing-row balanced per question
+def tuar_rows():
+    # every window of the 145 core TUAR training recordings that an annotation row (background included) overlaps:
+    # (path, TUH labels from the source annotations, edf, scan, index), and those without a core image yet
     edfs, labels_for = sources("TUAR")
     splits, tables = core_splits()
     by_edf = defaultdict(dict)
@@ -852,6 +850,14 @@ def tuar_all_windows():
             rows.append((path, labels, edf, scan, i))
             if not (CORE_IMAGES / "TUAR" / path).exists():  # new windows, and old ones the earlier balance never rendered
                 extra.append((path, "train", scan, i, edf))
+    return rows, extra
+
+
+def tuar_all_windows():
+    # TUAR trains on every annotated window of its training recordings (maintainer, 2026-10-25: "go ahead for tuar"),
+    # 16x the capped sample; a window's answer per question comes from the source annotations. New windows are listed
+    # in data/tuar-extra-windows.csv for rendering; returns {question: [(path, present)]}, missing-row balanced
+    rows, extra = tuar_rows()
     with (DATA / "tuar-extra-windows.csv").open("w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["path", "role", "scan", "index", "edf"])
@@ -865,6 +871,42 @@ def tuar_all_windows():
               f"balance ({'; '.join(report) or 'nothing missing'})")
     print(f"TUAR training windows: {len(rows)} usable, {len(extra)} not yet rendered -> {DATA / 'tuar-extra-windows.csv'}")
     return out
+
+
+TUAR_RATIONALE_WINDOWS = 1440
+
+
+def tuar_teacher_extra():
+    # TUAR's explain lines cover 1,440 distinct windows once each instead of 360 four times (maintainer, 2026-10-25:
+    # "okay go ahead"): the 1,080 windows added for the teacher are a random sample (seed 0) of the training windows
+    # that have all three questions and no rationale, stratified by their (eyem, musc, elec) answers in proportion to
+    # that pool. Written to data/tuar-teacher-extra.csv with each window's TUH labels for the teacher's prompt
+    labels = {path: found for path, found, *_ in tuar_rows()[0]}
+    answers = defaultdict(dict)
+    for r in read_jsonl(CORE_DATA / "TUAR-all-train.jsonl"):
+        answers[r["images"][0]][r["question"]] = json.loads(r["output"])["present"]
+    old = ROOT / "datasets" / "TUAR" / "sft_train-old.jsonl"  # the list before any window was added
+    source = old if old.exists() else ROOT / "datasets" / "TUAR" / "sft_train.jsonl"
+    covered = {f"train/{Path(r['images'][0]).name}" for r in read_jsonl(source)} & set(answers)
+    pool = sorted(p for p in answers if len(answers[p]) == 3 and p not in covered)
+    strata = defaultdict(list)
+    for p in pool:
+        strata[tuple(answers[p][q] for q in ("eyem", "musc", "elec"))].append(p)
+    need = TUAR_RATIONALE_WINDOWS - len(covered)
+    quota = {k: need * len(v) / len(pool) for k, v in strata.items()}
+    counts = {k: int(q) for k, q in quota.items()}
+    for k in sorted(quota, key=lambda k: (counts[k] - quota[k], k))[:need - sum(counts.values())]:  # largest remainder
+        counts[k] += 1
+    rng = random.Random(0)
+    picks = sorted(p for k in sorted(strata) for p in rng.sample(strata[k], counts[k]))
+    codes = ("bckg", "chew", "elec", "elpp", "eyem", "musc", "shiv")
+    with (DATA / "tuar-teacher-extra.csv").open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["path", "labels"])
+        writer.writerows([p, ";".join(c for c in codes if c in labels[p])] for p in picks)
+    print(f"TUAR: {len(covered)} windows with a rationale, {len(pool)} without (all three questions); {len(picks)} "
+          f"added -> {DATA / 'tuar-teacher-extra.csv'}; per (eyem, musc, elec): "
+          + ", ".join(f"{''.join(str(int(x)) for x in k)} {counts[k]}/{len(strata[k])}" for k in sorted(strata)))
 
 
 def dataset_all():
@@ -956,6 +998,8 @@ def main():
         extra(sys.argv[2])
     elif sys.argv[1] == "tusz-types":
         tusz_types()
+    elif sys.argv[1] == "tuar-teacher-extra":
+        tuar_teacher_extra()
     elif sys.argv[1] == "dataset-all":
         dataset_all()
     elif sys.argv[1] == "heldout":
