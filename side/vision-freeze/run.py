@@ -1272,7 +1272,6 @@ def target_logp(model, collator, prompt, output, path):
 
 def dpo_train(arm, smoke):
     import torch
-    import torch.nn.functional as F
     from peft import LoraConfig, get_peft_model
 
     out = out_dir(arm, smoke)
@@ -1300,13 +1299,19 @@ def dpo_train(arm, smoke):
         wins, margins = 0, []
         for n, (path, chosen, rejected) in enumerate(order, 1):
             targets = [json.dumps({"text_rationale": CHANNEL.sub(r"\1", text)}) for text in (chosen, rejected)]
-            with torch.no_grad(), model.disable_adapter():
-                reference = [target_logp(model, collator, prompt, t, path) for t in targets]
-            policy = [target_logp(model, collator, prompt, t, path) for t in targets]
-            ratios = [(p - r) / tokens for (p, tokens), (r, _) in zip(policy, reference)]
-            margin = ratios[0] - ratios[1]
-            loss = -F.logsigmoid(settings["beta"] * margin) - settings["alpha"] * policy[0][0] / policy[0][1]
-            (loss / settings["accumulation"]).backward()
+            with torch.no_grad():
+                with model.disable_adapter():
+                    reference = [target_logp(model, collator, prompt, t, path) for t in targets]
+                policy = [target_logp(model, collator, prompt, t, path) for t in targets]
+            margin = sum(sign * float(p - r) / tokens for sign, (p, tokens), (r, _) in zip((1, -1), policy, reference))
+            # the gradient of -log sigmoid(beta * margin) is -beta * sigmoid(-beta * margin) * d(margin): with that weight
+            # fixed, the chosen and rejected terms back-propagate one at a time, so only one graph is held (both at
+            # once peaked at 81.9 GB of an 80 GB H100 in the smoke, 2026-10-25)
+            weight = settings["beta"] * float(torch.sigmoid(torch.tensor(-settings["beta"] * margin)))
+            for sign, target in zip((1, -1), targets):
+                logp, tokens = target_logp(model, collator, prompt, target, path)
+                loss = -sign * weight * logp / tokens - (settings["alpha"] * logp / tokens if sign == 1 else 0)
+                (loss / settings["accumulation"]).backward()
             if n % settings["accumulation"] == 0 or n == len(order):
                 optimizer.step()
                 optimizer.zero_grad()
