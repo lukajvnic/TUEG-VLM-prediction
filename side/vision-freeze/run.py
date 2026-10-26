@@ -647,7 +647,11 @@ def init_frozen_language(settings):
 def keyword_input():
     # PEFT's modules_to_save wrapper takes its input positionally (forward(self, x, ...)), and Gemma 3/4 call their
     # vision tower with keywords only (vision_tower(pixel_values=...)): a keyword-only call passes its first keyword
-    # on as that input. Qwen, LLaVA and Granite pass the input positionally and are unaffected
+    # on as that input when it is the module's first parameter, else None goes there and the keyword stays one. Gemma
+    # 3n calls embed_vision(inputs_embeds=...), whose first parameter is input_ids: passed positionally, the soft tokens
+    # became embedding indices (2026-10-25). Qwen, LLaVA and Granite pass the input positionally and are unaffected
+    import inspect
+
     from peft.utils.other import AuxiliaryTrainingWrapper
 
     forward = AuxiliaryTrainingWrapper.forward
@@ -657,7 +661,8 @@ def keyword_input():
     def patched(self, *args, **kwargs):
         if not args:
             key = next(k for k in kwargs if k != "adapter_names")
-            args = (kwargs.pop(key),)
+            first = next(iter(inspect.signature(self.original_module.forward).parameters))
+            args = (kwargs.pop(key),) if key == first else (None,)
         return forward(self, *args, **kwargs)
 
     patched.keyword_input = True
