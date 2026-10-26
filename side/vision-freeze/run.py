@@ -1715,6 +1715,8 @@ def submit_job(cfg, arm, dry_run, arms=()):
         # starts within minutes where a whole H100 waits behind ~950 jobs (2026-10-18)
         scoring = arm in PSEUDO or ARMS.get(arm, {}).get("recipe", "train") is None
         gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if scoring else resources.get("fir-gpus", FIR_GPUS[gpus])
+    if os.environ.get("VF_GPUS"):  # a different GPU for this submission (e.g. a whole H100 to fit a short window)
+        gpus = os.environ["VF_GPUS"]
     limit = TIME[arm]
     if os.environ.get("VF_LIMIT"):  # a shorter limit (e.g. to fit before a maintenance window); training resumes after
         limit = os.environ["VF_LIMIT"]
