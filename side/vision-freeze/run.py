@@ -193,8 +193,8 @@ for _short in ZERO_SHOT:
                                                 if _ds == "TUSZ" else {}),
                                              "eval-format": "answer-first" if _ds == "TUSZ" else "explain"}
 # pseudo-arms: jobs that evaluate finished arms; the single ones take one arm per job and ask for its GPU
-PSEUDO = ("rationale-eval", "background-test", "tuep-scan", "score-last", "final-test", "dpo-gen")
-SINGLE = ("tuep-scan", "score-last", "final-test", "dpo-gen")
+PSEUDO = ("rationale-eval", "background-test", "tuep-scan", "score-last", "score-step", "final-test", "dpo-gen")
+SINGLE = ("tuep-scan", "score-last", "score-step", "final-test", "dpo-gen")
 RATIONALE_EVAL_WINDOWS = 300  # stratified 150 seizure / 150 not, from the probe's test windows, seed 0
 DPO_WINDOWS = 30  # training windows per question for the expert DPO review (dpo_gen): half with the class, seed 0
 # TUAB has one question, so 90 windows to match TUAR's and TUEV's three (maintainer, 2026-10-25: "lets up tuab")
@@ -261,6 +261,8 @@ TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4e
         # the scan (5,867 windows at 0.4-1.5 s) and the detectors (503 steps) need 1-3 h; short limits backfill sooner
         "background-test": "06:00:00", "s-2b-tuev": "03:00:00", "s-4b-tuev": "03:00:00", "tuep-scan": "03:00:00",
         "score-last": "04:00:00", "dpo-gen": "02:00:00",
+        # score-step: one model's views from one checkpoint; TUSZ's 2 x 8,460 windows at 0.13-0.17 s/window (1.6B)
+        "score-step": "03:00:00",
         # held-out (5,929) and interior background (4,471) windows at the measured 0.14-0.69 s/window, plus loading
         "final-test": "03:00:00",
         # round 6, at ~13 s/step on the slice: TUAB 1,142 steps, TUEP 1,045, TUAR 557 and TUEV 549, then 354-3,540
@@ -353,7 +355,10 @@ DATASET_QUESTIONS = {"TUSZ": ("fnsz", "gnsz"), "TUAR": ("eyem", "musc", "elec"),
 # pass over them costs about what 12 passes over the old 367-window sample did (maintainer, 2026-10-25: "go ahead for
 # tuar"). Its explain lines cover 1,440 distinct windows once each, the teacher's 360 plus 1,080 added for it
 # (rerender.py tuar-teacher-extra), the same explain budget as 360 repeated 4 times (maintainer: "okay go ahead")
-DATASET_EPOCHS = {"TUSZ": 4, "TUAB": 4, "TUAR": 1, "TUEV": 12}
+# TUSZ 4 -> 3 epochs for runs that start after 2026-10-26 (maintainer: "do what you can to eliminate overfitting in
+# future tusz runs"): in the first finished runs val loss is highest at epochs 3.2-4.0 and the kept checkpoints sit at
+# 2.4-3.2. The 8 TUSZ runs that started with 4 are redone at the end if time allows
+DATASET_EPOCHS = {"TUSZ": 3, "TUAB": 4, "TUAR": 1, "TUEV": 12}
 DATASET_WHAT = {"TUSZ": "a focal or a generalized seizure", "TUAR": "an eye movement, muscle or electrode artifact",
                 "TUEV": "a spike or sharp wave, a GPED or a PLED", "TUAB": "abnormal EEG activity"}
 DATASET_LINES = {"TUSZ": (7347, 1525, 8460), "TUAR": (17138, 1440, 3540), "TUEV": (1005, 335, 354),
@@ -426,15 +431,22 @@ def base_dir(smoke):
 
 # --last scores a run's final checkpoint instead of the one load_best_model_at_end kept: on TUAR/TUEV's tiny val sets
 # (31 / 16 lines) every eval of some runs tied at BA <= 0.5 and the Trainer kept the first (~20% of training), so the
-# scored model was undertrained (review, 2026-10-17). Results then go to <file>-<arm>-last.csv
+# scored model was undertrained (review, 2026-10-17). Results then go to <file>-<arm>-last.csv. --step N scores
+# checkpoint-N instead (the overfitting check: an earlier checkpoint against the scored one), to <file>-<arm>-stepN.csv
 LAST = False
+STEP = None
 
 
 def tag(arm):
-    return f"{arm}-last" if LAST else arm
+    return f"{arm}-last" if LAST else f"{arm}-step{STEP}" if STEP else arm
 
 
 def model_dir(arm, smoke=False):
+    if STEP:
+        checkpoint = out_dir(arm, smoke) / f"checkpoint-{STEP}"
+        assert checkpoint.is_dir(), f"{checkpoint} does not exist"
+        print(f"scoring checkpoint {checkpoint}", flush=True)
+        return checkpoint
     if not LAST:
         return out_dir(arm, smoke)
     checkpoints = sorted(out_dir(arm, smoke).glob("checkpoint-*"), key=lambda d: int(d.name.split("-")[1]))
@@ -917,7 +929,7 @@ def load_for_scoring(arm, smoke):
         model = PeftModel.from_pretrained(model, str(out_dir(arm, smoke))).merge_and_unload()
         model.eval()
         return model, processor, base
-    if ARMS[arm]["recipe"] in ("lora", "hybrid") and LAST:
+    if ARMS[arm]["recipe"] in ("lora", "hybrid") and (LAST or STEP):
         # a checkpoint-N dir has the adapter and the processor but no manifest.json, which runner.load requires
         # (score-last-gm-2b-tuar/tuev failed on it, 2026-10-17)
         from peft import PeftModel
@@ -1657,10 +1669,12 @@ def submit_job(cfg, arm, dry_run, arms=()):
         sys.exit(f"{name} is already queued or running")
     if not (SOURCE / "perclass-train.jsonl").exists():
         sys.exit("no training lines: python side/multilabel-pilot/build.py")
-    if arm in SINGLE and len(arms) != 1:
-        sys.exit(f"{arm} takes one arm per job (the job asks for that arm's GPU)")
+    if arm in SINGLE and len(arms) != 1 and not (arm == "score-step" and len({out_dir(a) for a in arms}) == 1):
+        sys.exit(f"{arm} takes one arm per job (the job asks for that arm's GPU), or for score-step one model's views")
+    if arm == "score-step" and not (STEP and (out_dir(arms[0]) / f"checkpoint-{STEP}").is_dir()):
+        sys.exit(f"score-step needs --step N with an existing {out_dir(arms[0])}/checkpoint-N")
     after = os.environ.get("VF_AFTER")  # a job id this one waits for (afterok): dpo-gen queued behind its arm's training
-    if arm in ("score-last", "dpo-gen") and not (out_dir(arms[0]) / "manifest.json").exists() and not after:
+    if arm in ("score-last", "score-step", "dpo-gen") and not (out_dir(arms[0]) / "manifest.json").exists() and not after:
         sys.exit(f"{arms[0]} has not finished training")
     for a in SMOKE_ARMS if arm == "smoke" else (arms if arm in PSEUDO else (arm,)):
         missing = [] if arm in ("background-test", "tuep-scan", "final-test") else missing_images(a)
@@ -1704,6 +1718,7 @@ def submit_job(cfg, arm, dry_run, arms=()):
     steps["background-test"] = [f"{me} {a} --background" for a in arms]
     steps["tuep-scan"] = [f"{me} {a} --scan" for a in arms]
     steps["score-last"] = [f"{me} {a} --score --last" for a in arms]
+    steps["score-step"] = [f"{me} {a} --score --step {STEP}" for a in arms]
     steps["dpo-gen"] = [f"{me} {a} --dpo-gen" for a in arms]
     steps["final-test"] = [f"{me} {a} --{m}" for a in arms for m in ("heldout", "background")]
     logs = base_dir(arm == "smoke") / "logs"
@@ -1753,9 +1768,10 @@ def main_cli():
     mode.add_argument("--dry-run", action="store_true", help="print the job, submit nothing")
     parser.add_argument("--smoke", action="store_true", help="with --train/--score: 2 steps, 24 windows, under smoke/")
     parser.add_argument("--last", action="store_true", help="with --score/--rationale-eval/--scan: the final checkpoint")
+    parser.add_argument("--step", type=int, help="with --score or score-step: checkpoint-N instead of the kept one")
     args = parser.parse_args()
-    global LAST
-    LAST = args.last
+    global LAST, STEP
+    LAST, STEP = args.last, args.step
 
     if (args.train or args.score or args.rationale_eval or args.background or args.heldout or args.scan or args.image_check
             or args.dpo_gen or args.dpo):
