@@ -732,6 +732,20 @@ def hybridize(model, lora):
     return model
 
 
+def split_memory():
+    # a base split over several GPUs (round 8's 2-GPU bases): GPU 0 also holds the image side's fp32 copy with its
+    # gradients and Adam states, the image activations and (tied embeddings) the output head, so it takes ~20% of the
+    # weights and the last GPU the rest. Split evenly, Qwen3-VL 32B ran out of memory on GPU 0 at its second step
+    # (77.8 of 79 GB, Trillium debug job 1183963). One GPU: no change
+    import torch
+
+    n = torch.cuda.device_count()
+    if n < 2:
+        return {}
+    total = [torch.cuda.get_device_properties(d).total_memory for d in range(n)]
+    return {"max_memory": {d: int(t * (0.2 if d == 0 else 0.9)) for d, t in enumerate(total)}}
+
+
 def init_hybrid(settings):
     import torch
     from transformers import AutoModelForImageTextToText
@@ -739,7 +753,11 @@ def init_hybrid(settings):
     base = settings["base"]
     source = main.resolve_model(base["repo"])
     processor = main.runner.load_processor(source, base, False)
-    model = AutoModelForImageTextToText.from_pretrained(source, dtype=torch.bfloat16, device_map="auto")
+    model = AutoModelForImageTextToText.from_pretrained(source, dtype=torch.bfloat16, device_map="auto", **split_memory())
+    if len(set(getattr(model, "hf_device_map", {}).values())) > 1:
+        print(f"split over GPUs: {sorted(set(model.hf_device_map.values()), key=str)}, "
+              f"{sum(d == 0 for d in model.hf_device_map.values())} of {len(model.hf_device_map)} modules on GPU 0",
+              flush=True)
     model.config.use_cache = False
     model.config.keys_to_ignore_at_inference = main.EVAL_IGNORE
     model.enable_input_require_grads()
