@@ -158,8 +158,15 @@ GRID_BIG = {"gemma3-27b": ("gemma3:27b", 1), "medgemma-27b": ("medgemma:27b", 1)
             "q35-35b-a3b": ("qwen3.5:35b-a3b", 2), "q35-27b": ("qwen3.5:27b", 2), "32b": ("qwen3-vl:32b-instruct", 2),
             "q25-32b": ("qwen2.5vl:32b", 2), "llava-next-34b": ("llava:34b", 2)}
 GRID_EXTRA.update({short: model for short, (model, _) in GRID_BIG.items()})
+# Qwen3.5 trains on Killarney's L40S (2026-10-28): its linear attention needs flash-linear-attention's kernels to run at
+# a usable speed (the torch fallback took 41.6 s/step for 27B on 2 H100s), and fla refuses its backward on Hopper GPUs
+# under Triton 3.7.1 (wrong gradients, fla #640; the wheelhouse has 3.6.0, PyPI nothing newer). On an L40S fla matched
+# the fallback (output 5.9e-3, gradients < 1e-2 relative error) at 18.7x its speed. 35B-A3B (72 GB) takes a whole node
+KILLARNEY_GPUS = {"q35-27b": "l40s:3", "q35-35b-a3b": "l40s:4"}
 GRID_MODELS.update({short: (model, {"gpus": f"h100:{n}", "ram": f"{128 * n}G", "fir-gpus": f"h100:{n}", "h100s": n,
-                                    "big": True, "image-check": True}) for short, (model, n) in GRID_BIG.items()})
+                                    "big": True, "image-check": True,
+                                    **({"killarney-gpus": KILLARNEY_GPUS[short]} if short in KILLARNEY_GPUS else {})})
+                    for short, (model, n) in GRID_BIG.items()})
 # gm-: TUAB, TUAR and TUEV in the multitask format (each window's answer line plus a separate "explain" line). Every
 # line of these corpora has a teacher rationale, so answer-first at weight 1 drowned the answer token (~1 in 150
 # target tokens): the g- answer-first runs scored AUROC 0.49-0.79 against round 6's 0.78-0.97, with train loss near
@@ -1821,6 +1828,8 @@ def submit_job(cfg, arm, dry_run, arms=()):
     if os.environ.get("CC_CLUSTER") == "killarney":  # PAICE (2026-10-28): per-GPU jobs on L40S 48 GB or H100, no slices
         # every base below 13B trained within a 40 GB A100 or slice, so L40S; the round-8 bases take H100s as elsewhere
         gpus = f"h100:{1 if scoring else resources.get('h100s', 1)}" if big else "l40s:1"
+        if resources.get("killarney-gpus") and not scoring:  # Qwen3.5: L40S, where fla's backward is right
+            gpus = resources["killarney-gpus"]
         ram = "128G" if big and scoring else ram
     if os.environ.get("VF_GPUS"):  # a different GPU for this submission (e.g. a whole H100 to fit a short window)
         gpus = os.environ["VF_GPUS"]
