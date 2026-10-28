@@ -304,12 +304,12 @@ GRID_SPEED.update({short: (14.0, 1.0, 10) for short in ("minicpm46-1b", "glm-ocr
 # four dataset runs took 5.3-10.4 h on Trillium) times each base's compute against it (language parameters x tokens,
 # plus the image side): Gemma sees 252-256 image tokens, Mistral 1,045, Qwen3-VL and LLaVA-NeXT ~2,350, Qwen2.5-VL
 # 3,072, InternVL3 3,328. The MoE bases count their active parameters with the 8B's speed as a floor. Few-token bases
-# cost more than their tokens say: Gemma 3 27B's smoke steps ran 1.6x the 8B's first steps (2026-10-28, debug job
-# 1183917), so a base's factor is at least half its parameter ratio. Unmeasured, so 1.5x more on top of the walltime's
-# own margin
+# cost more than their tokens say, and big ones less: against the 8B's first steps (~12 s), the smokes ran Gemma 3
+# 27B at 1.6x (debug job 1183917), InternVL3 14B at 1.9x (1183933) and Qwen3-VL 32B on two GPUs at 1.45x (1184144).
+# The rest are guesses from those three. Not steady-state speeds, so 1.5x more on top of the walltime's own margin
 BIG_COMPUTE = {"gemma3-27b": 1.6, "medgemma-27b": 1.6, "gemma4-26b": 1.3, "mistral32-24b": 2.0, "mistral31-24b": 2.0,
                "ministral3-14b": 1.3, "internvl3-14b": 2.0, "llava-13b": 1.0, "gemma4-31b": 2.0, "30b-a3b": 1.5,
-               "q35-35b-a3b": 1.5, "q35-27b": 3.0, "32b": 3.5, "q25-32b": 4.5, "llava-next-34b": 3.5}
+               "q35-35b-a3b": 1.5, "q35-27b": 2.5, "32b": 2.0, "q25-32b": 2.5, "llava-next-34b": 2.0}
 GRID_SPEED.update({short: (1.5 * 6.5 * f, 1.5 * 0.3 * f, 1.5 * 4.0 * f) for short, f in BIG_COMPUTE.items()})
 GRID_LINES = {"TUSZ": (8760, 8460), "TUAB": (2283, 1200), "TUEP": (826, 1084), "TUAR": (367, 3540), "TUEV": (335, 354)}
 for _short, (_step, _window, _rationale) in GRID_SPEED.items():
@@ -735,8 +735,8 @@ def hybridize(model, lora):
 def split_memory():
     # a base split over several GPUs (round 8's 2-GPU bases): GPU 0 also holds the image side's fp32 copy with its
     # gradients and Adam states, the image activations and (tied embeddings) the output head, so it takes ~20% of the
-    # weights and the last GPU the rest. Split evenly, Qwen3-VL 32B ran out of memory on GPU 0 at its second step
-    # (77.8 of 79 GB, Trillium debug job 1183963). One GPU: no change
+    # weights and the last GPU the rest. Measured on Qwen3-VL 32B's 2-GPU smoke (Trillium debug job 1184144): 30.3 GB
+    # allocated on GPU 0, 59.6 GB on GPU 1. One GPU: no change
     import torch
 
     n = torch.cuda.device_count()
