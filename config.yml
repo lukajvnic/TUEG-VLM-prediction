@@ -265,6 +265,13 @@ bases:
   qwen3-vl:8b-instruct: {repo: Qwen/Qwen3-VL-8B-Instruct}
   qwen3-vl:30b-a3b-instruct: {repo: Qwen/Qwen3-VL-30B-A3B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}
   qwen3-vl:32b-instruct: {repo: Qwen/Qwen3-VL-32B-Instruct, gpus: 3, ram: 192G, time: '48:00:00'}
+  # round 8 (2026-10-28): bases over 12B for the fine-tune grid only. Ministral 3 ships FP8 weights; its BF16 repo is
+  # the same model. Qwen3.5's template opens a thinking block unless enable_thinking is false
+  internvl3:14b: {repo: OpenGVLab/InternVL3-14B-hf}
+  medgemma:27b: {repo: google/medgemma-27b-it}
+  ministral3:14b: {repo: mistralai/Ministral-3-14B-Instruct-2512-BF16}
+  qwen3.5:27b: {repo: Qwen/Qwen3.5-27B, template-kwargs: {enable_thinking: false}}
+  qwen3.5:35b-a3b: {repo: Qwen/Qwen3.5-35B-A3B, template-kwargs: {enable_thinking: false}}
 
 prompts:
   intro: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. "

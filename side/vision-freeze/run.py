@@ -143,6 +143,23 @@ GRID_FIR = {"internvl3-1b": "internvl3:1b", "internvl3-2b": "internvl3:2b", "int
 GRID_EXTRA.update(GRID_FIR)
 GRID_MODELS.update({short: (model, {"gpus": "a100:1", "ram": "64G", "fir-gpus": "nvidia_h100_80gb_hbm3_3g.40gb:1",
                                     "image-check": True}) for short, model in GRID_FIR.items()})
+# round 8 (2026-10-28, maintainer: "what are all the big models we can finetune ... i want to finetune them"): every
+# base over 12B that our loader, collator and hybrid recipe take as they are (image side, LoRA targets and each chat
+# template's answer span checked on the meta device). The number is the H100s a training job takes: one when the bf16
+# weights plus the image side's fp32 copy and optimizer state stay near 65 GB (Gemma 3 27B: 63 GB), two above that
+# (Qwen3-VL 32B: 78 GB; device_map="auto" splits the layers). Trillium takes 1 GPU or a whole node, so the two-GPU ones
+# run on Fir. Scoring holds no optimizer state and takes one whole H100 (the largest, Qwen3.5-35B-A3B, is 72 GB).
+# Left out: InternVL3 38B (its 6B vision tower trained in full needs ~110 GB of optimizer state), the 72-90B bases and
+# Llama 4 (2-4 H100s each and ~10x the 8B's compute), Aya Vision 32B and Llama 3.2 90B (licences not accepted)
+GRID_BIG = {"gemma3-27b": ("gemma3:27b", 1), "medgemma-27b": ("medgemma:27b", 1), "gemma4-26b": ("gemma4:26b", 1),
+            "mistral32-24b": ("mistral-small3.2:24b", 1), "mistral31-24b": ("mistral-small3.1:24b", 1),
+            "ministral3-14b": ("ministral3:14b", 1), "internvl3-14b": ("internvl3:14b", 1), "llava-13b": ("llava:13b", 1),
+            "gemma4-31b": ("gemma4:31b", 2), "30b-a3b": ("qwen3-vl:30b-a3b-instruct", 2),
+            "q35-35b-a3b": ("qwen3.5:35b-a3b", 2), "q35-27b": ("qwen3.5:27b", 2), "32b": ("qwen3-vl:32b-instruct", 2),
+            "q25-32b": ("qwen2.5vl:32b", 2), "llava-next-34b": ("llava:34b", 2)}
+GRID_EXTRA.update({short: model for short, (model, _) in GRID_BIG.items()})
+GRID_MODELS.update({short: (model, {"gpus": f"h100:{n}", "ram": f"{128 * n}G", "fir-gpus": f"h100:{n}", "h100s": n,
+                                    "big": True, "image-check": True}) for short, (model, n) in GRID_BIG.items()})
 # gm-: TUAB, TUAR and TUEV in the multitask format (each window's answer line plus a separate "explain" line). Every
 # line of these corpora has a teacher rationale, so answer-first at weight 1 drowned the answer token (~1 in 150
 # target tokens): the g- answer-first runs scored AUROC 0.49-0.79 against round 6's 0.78-0.97, with train loss near
@@ -244,7 +261,7 @@ GPUS, RAM = "a100_3g.20gb:1", "40G"
 # Fir (2026-10-18), the second site for Narval's Oct 27 - Nov 3 outage, runs the same jobs on H100s ($CC_CLUSTER picks
 # it). A 2b arm peaks near 20 GB, so Narval's 20 GB slice becomes a 40 GB one; the full-A100 arms peak at ~42 GB, too
 # close to 40, so they get a whole H100
-FIR_GPUS = {"a100_3g.20gb:1": "nvidia_h100_80gb_hbm3_3g.40gb:1", "a100:1": "h100:1"}
+FIR_GPUS = {"a100_3g.20gb:1": "nvidia_h100_80gb_hbm3_3g.40gb:1", "a100:1": "h100:1", "h100:1": "h100:1", "h100:2": "h100:2"}
 # measured in round 1: freeze 13.1 s/step, scoring 0.60 s/window (~1.4 h for 8,460); 4 epochs of the pilot lines =
 # 1,080 steps (~4 h), of the "more" lines = 4,664 steps (~17 h); 5 checkpoint saves of ~8 GB on top
 TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4ep": "10:00:00",
@@ -283,6 +300,15 @@ GRID_SPEED.update({short: (20.0, 1.0, 12) for short in ("llava-7b", "llava-llama
 GRID_SPEED["gemma3-12b"] = GRID_SPEED["gemma4-12b"] = (26.0, 1.5, 15)
 GRID_SPEED.update({short: (14.0, 1.0, 10) for short in GRID_FIR})  # unmeasured: the 4b-class guess
 GRID_SPEED.update({short: (14.0, 1.0, 10) for short in ("minicpm46-1b", "glm-ocr")})
+# the big bases (round 8), unmeasured: the 8B's whole-H100 speed (6.5 s/step, 0.3 s/window, 4 s per rationale; its
+# four dataset runs took 5.3-10.4 h on Trillium) times each base's compute against it (language parameters x tokens,
+# plus the image side): Gemma sees 252-256 image tokens, Mistral 1,045, Qwen3-VL and LLaVA-NeXT ~2,350, Qwen2.5-VL
+# 3,072, InternVL3 3,328. The MoE bases count their active parameters with the 8B's speed as a floor. Unmeasured, so
+# 1.5x more on top of the walltime's own margin
+BIG_COMPUTE = {"gemma3-27b": 0.6, "medgemma-27b": 0.6, "gemma4-26b": 1.0, "mistral32-24b": 1.3, "mistral31-24b": 1.3,
+               "ministral3-14b": 1.0, "internvl3-14b": 2.0, "llava-13b": 0.5, "gemma4-31b": 0.7, "30b-a3b": 1.0,
+               "q35-35b-a3b": 1.0, "q35-27b": 3.0, "32b": 3.4, "q25-32b": 4.3, "llava-next-34b": 3.3}
+GRID_SPEED.update({short: (1.5 * 6.5 * f, 1.5 * 0.3 * f, 1.5 * 4.0 * f) for short, f in BIG_COMPUTE.items()})
 GRID_LINES = {"TUSZ": (8760, 8460), "TUAB": (2283, 1200), "TUEP": (826, 1084), "TUAR": (367, 3540), "TUEV": (335, 354)}
 for _short, (_step, _window, _rationale) in GRID_SPEED.items():
     for _ds, (_train, _test) in GRID_LINES.items():
@@ -297,7 +323,8 @@ for _arm in SEED_2:
 for _short in ZERO_SHOT:
     for _ds, (_, _test) in GRID_LINES.items():
         if f"z-{_short}-{_ds.lower()}" in ARMS:
-            _hours = max(1.0, 1.5 * ((_test + 10400 * (_ds == "TUSZ")) * GRID_SPEED[_short][1] + 1200) / 3600)
+            _hours = max(1.0, 1.5 * ((_test + 10400 * (_ds == "TUSZ")) * GRID_SPEED[_short][1] + 1200
+                                     + 300 * GRID_SPEED[_short][2] * (_short in GRID_BIG)) / 3600)  # a big base's rationales
             TIME[f"z-{_short}-{_ds.lower()}"] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
 # one question per learnable class (maintainer, 2026-10-25): TUAR asks muscle and electrode artifact beside eye movement,
 # TUEV asks spike, GPED and PLED separately; rerender.py extra's lines, the same windows, images, recipe and epochs as
@@ -366,7 +393,7 @@ DATASET_LINES = {"TUSZ": (7347, 1525, 8460), "TUAR": (17138, 1440, 3540), "TUEV"
 # on Fir and Nibi every dataset model trains on a 40 GB slice: every base trained within Narval's 40 GB A100s (no CUDA
 # out-of-memory in any Narval or Fir log; peaks of 41-42 GB are the allocator filling the card). The 8B (the DPO model,
 # speed) and the three largest (closest to the limit) keep a whole H100
-WHOLE_H100 = {"8b", "q25-7b", "gemma3-12b", "gemma4-12b"}
+WHOLE_H100 = {"8b", "q25-7b", "gemma3-12b", "gemma4-12b", *GRID_BIG}
 for _short in GRID_MODELS:
     if _short == "minicpm46-1b":
         continue
@@ -826,6 +853,9 @@ def train(settings, arm, smoke):
 
     trainer.train(resume_from_checkpoint=resume)
     print(f"peak GPU memory {torch.cuda.max_memory_reserved() / 1e9:.1f} GB", flush=True)
+    for device in range(torch.cuda.device_count()):  # reserved counts the allocator's cache; allocated is the need
+        print(f"cuda:{device} peak {torch.cuda.max_memory_allocated(device) / 1e9:.1f} GB allocated, "
+              f"{torch.cuda.max_memory_reserved(device) / 1e9:.1f} GB reserved", flush=True)
     trainer.save_model()
     processor.save_pretrained(out)
 
@@ -1725,20 +1755,30 @@ def submit_job(cfg, arm, dry_run, arms=()):
     logs.mkdir(parents=True, exist_ok=True)
     resources = ARMS.get(arms[0] if arm in SINGLE else arm, {})
     gpus, ram = resources.get("gpus", GPUS), resources.get("ram", RAM)
+    scoring = arm in PSEUDO or ARMS.get(arm, {}).get("recipe", "train") is None
+    big = any(ARMS.get(a, {}).get("big") for a in (arms or (arm,)))  # a base over 12B (round 8)
     if os.environ.get("CC_CLUSTER") in ("fir", "nibi", "rorqual"):  # Nibi and Rorqual have Fir's H100s and slice names
-        # scoring holds no optimizer state (the largest base, 12B, is ~24 GB in bf16), so it takes a 40 GB slice, which
-        # starts within minutes where a whole H100 waits behind ~950 jobs (2026-10-18)
-        scoring = arm in PSEUDO or ARMS.get(arm, {}).get("recipe", "train") is None
-        gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if scoring else resources.get("fir-gpus", FIR_GPUS[gpus])
+        # scoring holds no optimizer state (the largest grid base below 13B is ~24 GB in bf16), so it takes a 40 GB
+        # slice, which starts within minutes where a whole H100 waits behind ~950 jobs (2026-10-18); a big base's needs
+        # a whole H100
+        slice_ = "h100:1" if big else "nvidia_h100_80gb_hbm3_3g.40gb:1"
+        gpus = slice_ if scoring else resources.get("fir-gpus", FIR_GPUS[gpus])
+        ram = "128G" if big and scoring else ram
     if os.environ.get("VF_GPUS"):  # a different GPU for this submission (e.g. a whole H100 to fit a short window)
         gpus = os.environ["VF_GPUS"]
     limit = TIME[arm]
     if os.environ.get("VF_LIMIT"):  # a shorter limit (e.g. to fit before a maintenance window); training resumes after
         limit = os.environ["VF_LIMIT"]
+    hours = (int(limit.split("-")[0]) * 24 if "-" in limit else 0) + int(limit.split("-")[-1].split(":")[0])
     if os.environ.get("CC_CLUSTER") == "trillium":  # whole H100s only, 24 h at most (jobs resume when resubmitted)
-        hours = (int(limit.split("-")[0]) * 24 if "-" in limit else 0) + int(limit.split("-")[-1].split(":")[0])
+        if resources.get("h100s", 1) > 1 and not scoring:
+            sys.exit(f"{arm} trains on {resources['h100s']} H100s and Trillium takes 1 GPU or a whole node: submit it on Fir")
         gpus, limit = "h100:1", limit if hours < 24 else "1-00:00:00"
+    elif big and hours >= 24:  # a big base's run goes in 24 h chunks (more partitions; the watchers resubmit on timeout)
+        limit = "1-00:00:00"
     text = script(name, limit, ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
+    if big:  # less fragmentation where the weights leave ~15 GB of a card
+        text = text.replace("export PYTHONUNBUFFERED=1", "export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\nexport PYTHONUNBUFFERED=1")
     if os.environ.get("CC_CLUSTER") == "trillium":
         text = text.replace("#SBATCH --gres=gpu:", "#SBATCH --gpus-per-node=")
         text = "\n".join(line for line in text.split("\n") if not line.startswith("#SBATCH --mem="))
