@@ -152,19 +152,23 @@ GRID_MODELS.update({short: (model, {"gpus": "a100:1", "ram": "64G", "fir-gpus": 
 # Left out: InternVL3 38B (its 6B vision tower trained in full needs ~110 GB of optimizer state), the 72-90B bases and
 # Llama 4 (2-4 H100s each and ~10x the 8B's compute), Aya Vision 32B and Llama 3.2 90B (licences not accepted).
 # Qwen2.5-VL 72B joined the same day (maintainer: "lets do qwen2.5 72B"): 161 GB static, so four H100s, or three of
-# TamIA's H200s in its packs
+# TamIA's H200s in its packs. Then Qwen3-VL 235B-A22B (481 GB) and Qwen3.5 122B-A10B (253 GB) (maintainer: "lets do
+# both 235 and 122"), on TamIA's H200s: 6 and 4 per training run, since device_map's balanced split with GPU 0's 20% cap
+# leaves layers on the CPU with one fewer; 4 and 3 per zero-shot arm. The counts below are H100s
 GRID_BIG = {"gemma3-27b": ("gemma3:27b", 1), "medgemma-27b": ("medgemma:27b", 1), "gemma4-26b": ("gemma4:26b", 1),
             "mistral32-24b": ("mistral-small3.2:24b", 1), "mistral31-24b": ("mistral-small3.1:24b", 1),
             "ministral3-14b": ("ministral3:14b", 1), "internvl3-14b": ("internvl3:14b", 1), "llava-13b": ("llava:13b", 1),
             "gemma4-31b": ("gemma4:31b", 2), "30b-a3b": ("qwen3-vl:30b-a3b-instruct", 2),
             "q35-35b-a3b": ("qwen3.5:35b-a3b", 2), "q35-27b": ("qwen3.5:27b", 2), "32b": ("qwen3-vl:32b-instruct", 2),
             "q25-32b": ("qwen2.5vl:32b", 2), "llava-next-34b": ("llava:34b", 2),
-            "q25-72b": ("qwen2.5vl:72b", 4)}
+            "q25-72b": ("qwen2.5vl:72b", 4), "235b-a22b": ("qwen3-vl:235b-a22b-instruct", 8),
+            "q35-122b-a10b": ("qwen3.5:122b-a10b", 6)}
 GRID_EXTRA.update({short: model for short, (model, _) in GRID_BIG.items()})
 # Qwen3.5 trains on Killarney's L40S (2026-10-28): its linear attention needs flash-linear-attention's kernels to run at
 # a usable speed (the torch fallback took 41.6 s/step for 27B on 2 H100s), and fla refuses its backward on Hopper GPUs
 # under Triton 3.7.1 (wrong gradients, fla #640; the wheelhouse has 3.6.0, PyPI nothing newer). On an L40S fla matched
-# the fallback (output 5.9e-3, gradients < 1e-2 relative error) at 18.7x its speed. 35B-A3B (72 GB) takes a whole node
+# the fallback (output 5.9e-3, gradients < 1e-2 relative error) at 18.7x its speed. 35B-A3B (72 GB) takes a whole node.
+# 122B-A10B fits no L40S node, so it trains on Hopper with the fallback (hopper_linear_attention)
 KILLARNEY_GPUS = {"q35-27b": "l40s:3", "q35-35b-a3b": "l40s:4"}
 GRID_MODELS.update({short: (model, {"gpus": f"h100:{n}", "ram": f"{128 * n}G", "fir-gpus": f"h100:{n}", "h100s": n,
                                     "big": True, "image-check": True,
@@ -320,7 +324,8 @@ GRID_SPEED.update({short: (14.0, 1.0, 10) for short in ("minicpm46-1b", "glm-ocr
 BIG_COMPUTE = {"gemma3-27b": 1.6, "medgemma-27b": 1.6, "gemma4-26b": 1.3, "mistral32-24b": 2.0, "mistral31-24b": 2.0,
                "ministral3-14b": 1.3, "internvl3-14b": 2.0, "llava-13b": 1.0, "gemma4-31b": 2.0, "30b-a3b": 1.5,
                "q35-35b-a3b": 1.5, "q35-27b": 2.5, "32b": 2.0, "q25-32b": 2.5, "llava-next-34b": 2.0,
-               "q25-72b": 5.0}  # 72B, a guess: Qwen2.5-VL 32B measured 26 s/step (2.7x) on TamIA, 72B 2.3x its language
+               "q25-72b": 5.0,  # 72B, a guess: Qwen2.5-VL 32B measured 26 s/step (2.7x) on TamIA, 72B 2.3x its language
+               "235b-a22b": 3.0, "q35-122b-a10b": 4.0}  # guesses: 22B active against 32B's 14.7 s/step; 27B's fallback 41.6
 GRID_SPEED.update({short: (1.5 * 6.5 * f, 1.5 * 0.3 * f, 1.5 * 4.0 * f) for short, f in BIG_COMPUTE.items()})
 GRID_LINES = {"TUSZ": (8760, 8460), "TUAB": (2283, 1200), "TUEP": (826, 1084), "TUAR": (367, 3540), "TUEV": (335, 354)}
 for _short, (_step, _window, _rationale) in GRID_SPEED.items():
@@ -669,6 +674,22 @@ def drop_softcap(model):
             text.final_logit_softcapping = 1e6
 
 
+def hopper_linear_attention(model):
+    # fla's gated delta rule raises in its backward on Hopper GPUs with Triton 3.4-3.7.1 (wrong gradients, fla #640):
+    # there Qwen3.5's linear-attention layers train on transformers' own torch kernel, as on Fir (no fla)
+    import sys
+
+    import torch
+
+    if torch.cuda.get_device_capability()[0] != 9:
+        return
+    layers = [m for m in model.modules() if hasattr(m, "chunk_gated_delta_rule")]
+    for layer in layers:
+        layer.chunk_gated_delta_rule = sys.modules[type(layer).__module__].torch_chunk_gated_delta_rule
+    if layers:
+        print(f"Hopper: {len(layers)} linear-attention layers on the torch kernel", flush=True)
+
+
 def init_frozen_language(settings):
     # every weight frozen, then the vision tower (patch embedding, blocks, merger, deepstack mergers) unfrozen in fp32:
     # a 1e-5 step is below bf16's resolution for most weights, so bf16 weights would barely move
@@ -773,6 +794,7 @@ def init_hybrid(settings):
     model.config.keys_to_ignore_at_inference = main.EVAL_IGNORE
     model.enable_input_require_grads()
     drop_softcap(model)
+    hopper_linear_attention(model)
     model = hybridize(model, settings["lora"])
     vision = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" in n)
     lora = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" not in n)
