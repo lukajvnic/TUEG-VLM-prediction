@@ -1818,6 +1818,10 @@ def submit_job(cfg, arm, dry_run, arms=()):
         slice_ = "h100:1" if big else "nvidia_h100_80gb_hbm3_3g.40gb:1"
         gpus = slice_ if scoring else resources.get("fir-gpus", FIR_GPUS[gpus])
         ram = "128G" if big and scoring else ram
+    if os.environ.get("CC_CLUSTER") == "killarney":  # PAICE (2026-10-28): per-GPU jobs on L40S 48 GB or H100, no slices
+        # every base below 13B trained within a 40 GB A100 or slice, so L40S; the round-8 bases take H100s as elsewhere
+        gpus = f"h100:{1 if scoring else resources.get('h100s', 1)}" if big else "l40s:1"
+        ram = "128G" if big and scoring else ram
     if os.environ.get("VF_GPUS"):  # a different GPU for this submission (e.g. a whole H100 to fit a short window)
         gpus = os.environ["VF_GPUS"]
     limit = TIME[arm]
@@ -1833,6 +1837,8 @@ def submit_job(cfg, arm, dry_run, arms=()):
     text = script(name, limit, ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
     if big:  # less fragmentation where the weights leave ~15 GB of a card
         text = text.replace("export PYTHONUNBUFFERED=1", "export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\nexport PYTHONUNBUFFERED=1")
+    if os.environ.get("CC_CLUSTER") in ("killarney", "tamia", "vulcan"):  # PAICE runs on its own allocation
+        text = text.replace("#SBATCH --account=def-milad777", "#SBATCH --account=aip-milad777")
     if os.environ.get("CC_CLUSTER") == "trillium":
         text = text.replace("#SBATCH --gres=gpu:", "#SBATCH --gpus-per-node=")
         text = "\n".join(line for line in text.split("\n") if not line.startswith("#SBATCH --mem="))
