@@ -1416,6 +1416,40 @@ def dpo_gen(arm, smoke):
             print(f"{n}/{len(todo)} ({(time.time() - started) / n:.1f} s/window)", flush=True)
 
 
+def review_gen(arm, smoke):
+    # the dataset model's explain-format rationale on its corpus's review windows (rerender.py review: training-patient
+    # windows in no core list, so no model saw a rationale for them), for the expert review of the top models (Yousif,
+    # 2026-10-27). Same prompt and constrained decoding as dpo_gen, one row per window so a stopped run resumes; on a Mac
+    # it runs on the GPU (MPS), and while the file VF_PAUSE names exists it waits between windows
+    import torch
+
+    windows = [(r["path"], r["present"]) for r in read_csv(SIDE / "data" / "core" / f"{dataset_of(arm)}-review.csv")]
+    windows = windows[:2] if smoke else windows
+    out = base_dir(smoke) / "results" / f"review-gen-{tag(arm)}.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    done = {r["path"] for r in read_csv(out)}
+    todo = [w for w in windows if w[0] not in done]
+    if not todo:
+        print(f"arm {arm}: all {len(windows)} review windows done -> {out}", flush=True)
+        return
+
+    model, processor, base = load_for_scoring(arm, smoke)
+    if not torch.cuda.is_available() and torch.backends.mps.is_available() and model.device.type != "mps":
+        model = model.to("mps")
+    model.eval()
+    prompt, prefix_fn = explain_prompt(arm), main.runner.enforcer(processor, eval_structure("explain"))
+    pause = os.environ.get("VF_PAUSE")
+    started = time.time()
+    print(f"arm {arm}: review generation on {len(todo)} windows ({model.device}) -> {out}", flush=True)
+    for n, (path, present) in enumerate(todo, 1):
+        while pause and Path(pause).exists():
+            time.sleep(30)
+        reply = generate_reply(model, processor, main.runner, prefix_fn, prompt, image_root(arm) / path)
+        append_row(out, ["path", "present", "reply"], [path, present, reply])
+        if n % 10 == 0 or n == len(todo):
+            print(f"{n}/{len(todo)} ({(time.time() - started) / n:.1f} s/window)", flush=True)
+
+
 def summarise_rationale(arm, fmt, path):
     rows = list({r["path"]: r for r in read_csv(path)}.values())
     nll = np.array([float(r["reference_nll"]) for r in rows])
@@ -1824,6 +1858,7 @@ def main_cli():
     mode.add_argument("--image-check", action="store_true", help="stop if the untrained base ignores the image")
     mode.add_argument("--scan", action="store_true", help="a TUEV model scores the TUEP scan windows; patient summary")
     mode.add_argument("--dpo-gen", action="store_true", help="the model's rationales on training windows, for DPO review")
+    mode.add_argument("--review-gen", action="store_true", help="the model's rationales on its corpus's review windows")
     mode.add_argument("--dpo", action="store_true", help="expert DPO on a trained 8B dataset model (gm-8b-<ds>-all-dpo)")
     mode.add_argument("--dry-run", action="store_true", help="print the job, submit nothing")
     parser.add_argument("--smoke", action="store_true", help="with --train/--score: 2 steps, 24 windows, under smoke/")
@@ -1834,7 +1869,7 @@ def main_cli():
     LAST, STEP = args.last, args.step
 
     if (args.train or args.score or args.rationale_eval or args.background or args.heldout or args.scan or args.image_check
-            or args.dpo_gen or args.dpo):
+            or args.dpo_gen or args.dpo or args.review_gen):
         if args.arm in ("smoke", *PSEUDO) or args.train and ARMS[args.arm]["recipe"] is None:
             parser.error(f"that mode does not apply to {args.arm}")
         os.environ.setdefault("WANDB_MODE", "offline")
@@ -1852,6 +1887,8 @@ def main_cli():
             tuep_scan(args.arm, args.smoke)
         elif args.dpo_gen:
             dpo_gen(args.arm, args.smoke)
+        elif args.review_gen:
+            review_gen(args.arm, args.smoke)
         elif args.dpo:
             dpo_train(args.arm, args.smoke)
         else:
