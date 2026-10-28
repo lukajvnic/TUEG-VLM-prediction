@@ -272,6 +272,7 @@ bases:
   ministral3:14b: {repo: mistralai/Ministral-3-14B-Instruct-2512-BF16}
   qwen3.5:27b: {repo: Qwen/Qwen3.5-27B, template-kwargs: {enable_thinking: false}}
   qwen3.5:35b-a3b: {repo: Qwen/Qwen3.5-35B-A3B, template-kwargs: {enable_thinking: false}}
+  qwen2.5vl:72b: {repo: Qwen/Qwen2.5-VL-72B-Instruct}
 
 prompts:
   intro: "This image is a multi-channel EEG waveform plot: time runs along the horizontal axis and each row is the signal from one electrode channel. "

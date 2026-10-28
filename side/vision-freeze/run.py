@@ -150,13 +150,16 @@ GRID_MODELS.update({short: (model, {"gpus": "a100:1", "ram": "64G", "fir-gpus": 
 # (Qwen3-VL 32B: 78 GB; device_map="auto" splits the layers). Trillium takes 1 GPU or a whole node, so the two-GPU ones
 # run on Fir. Scoring holds no optimizer state and takes one whole H100 (the largest, Qwen3.5-35B-A3B, is 72 GB).
 # Left out: InternVL3 38B (its 6B vision tower trained in full needs ~110 GB of optimizer state), the 72-90B bases and
-# Llama 4 (2-4 H100s each and ~10x the 8B's compute), Aya Vision 32B and Llama 3.2 90B (licences not accepted)
+# Llama 4 (2-4 H100s each and ~10x the 8B's compute), Aya Vision 32B and Llama 3.2 90B (licences not accepted).
+# Qwen2.5-VL 72B joined the same day (maintainer: "lets do qwen2.5 72B"): 161 GB static, so four H100s, or three of
+# TamIA's H200s in its packs
 GRID_BIG = {"gemma3-27b": ("gemma3:27b", 1), "medgemma-27b": ("medgemma:27b", 1), "gemma4-26b": ("gemma4:26b", 1),
             "mistral32-24b": ("mistral-small3.2:24b", 1), "mistral31-24b": ("mistral-small3.1:24b", 1),
             "ministral3-14b": ("ministral3:14b", 1), "internvl3-14b": ("internvl3:14b", 1), "llava-13b": ("llava:13b", 1),
             "gemma4-31b": ("gemma4:31b", 2), "30b-a3b": ("qwen3-vl:30b-a3b-instruct", 2),
             "q35-35b-a3b": ("qwen3.5:35b-a3b", 2), "q35-27b": ("qwen3.5:27b", 2), "32b": ("qwen3-vl:32b-instruct", 2),
-            "q25-32b": ("qwen2.5vl:32b", 2), "llava-next-34b": ("llava:34b", 2)}
+            "q25-32b": ("qwen2.5vl:32b", 2), "llava-next-34b": ("llava:34b", 2),
+            "q25-72b": ("qwen2.5vl:72b", 4)}
 GRID_EXTRA.update({short: model for short, (model, _) in GRID_BIG.items()})
 # Qwen3.5 trains on Killarney's L40S (2026-10-28): its linear attention needs flash-linear-attention's kernels to run at
 # a usable speed (the torch fallback took 41.6 s/step for 27B on 2 H100s), and fla refuses its backward on Hopper GPUs
@@ -316,7 +319,8 @@ GRID_SPEED.update({short: (14.0, 1.0, 10) for short in ("minicpm46-1b", "glm-ocr
 # The rest are guesses from those three. Not steady-state speeds, so 1.5x more on top of the walltime's own margin
 BIG_COMPUTE = {"gemma3-27b": 1.6, "medgemma-27b": 1.6, "gemma4-26b": 1.3, "mistral32-24b": 2.0, "mistral31-24b": 2.0,
                "ministral3-14b": 1.3, "internvl3-14b": 2.0, "llava-13b": 1.0, "gemma4-31b": 2.0, "30b-a3b": 1.5,
-               "q35-35b-a3b": 1.5, "q35-27b": 2.5, "32b": 2.0, "q25-32b": 2.5, "llava-next-34b": 2.0}
+               "q35-35b-a3b": 1.5, "q35-27b": 2.5, "32b": 2.0, "q25-32b": 2.5, "llava-next-34b": 2.0,
+               "q25-72b": 5.0}  # 72B, a guess: Qwen2.5-VL 32B measured 26 s/step (2.7x) on TamIA, 72B 2.3x its language
 GRID_SPEED.update({short: (1.5 * 6.5 * f, 1.5 * 0.3 * f, 1.5 * 4.0 * f) for short, f in BIG_COMPUTE.items()})
 GRID_LINES = {"TUSZ": (8760, 8460), "TUAB": (2283, 1200), "TUEP": (826, 1084), "TUAR": (367, 3540), "TUEV": (335, 354)}
 for _short, (_step, _window, _rationale) in GRID_SPEED.items():
