@@ -170,8 +170,11 @@ GRID_EXTRA.update({short: model for short, (model, _) in GRID_BIG.items()})
 # the fallback (output 5.9e-3, gradients < 1e-2 relative error) at 18.7x its speed. 35B-A3B (72 GB) takes a whole node.
 # 122B-A10B fits no L40S node, so it trains on Hopper with the fallback (hopper_linear_attention)
 KILLARNEY_GPUS = {"q35-27b": "l40s:3", "q35-35b-a3b": "l40s:4"}
+# scoring takes one H100 unless the bf16 weights outgrow it (2026-10-29): the 72B on a whole 4-H100 node (Fir's whole
+# nodes start sooner than 3 GPUs), the 122B on 4, the 235B on 8
+SCORE_H100S = {"q25-72b": 4, "q35-122b-a10b": 4, "235b-a22b": 8}
 GRID_MODELS.update({short: (model, {"gpus": f"h100:{n}", "ram": f"{128 * n}G", "fir-gpus": f"h100:{n}", "h100s": n,
-                                    "big": True, "image-check": True,
+                                    "big": True, "image-check": True, "score-h100s": SCORE_H100S.get(short, 1),
                                     **({"killarney-gpus": KILLARNEY_GPUS[short]} if short in KILLARNEY_GPUS else {})})
                     for short, (model, n) in GRID_BIG.items()})
 # gm-: TUAB, TUAR and TUEV in the multitask format (each window's answer line plus a separate "explain" line). Every
@@ -275,7 +278,7 @@ GPUS, RAM = "a100_3g.20gb:1", "40G"
 # Fir (2026-10-18), the second site for Narval's Oct 27 - Nov 3 outage, runs the same jobs on H100s ($CC_CLUSTER picks
 # it). A 2b arm peaks near 20 GB, so Narval's 20 GB slice becomes a 40 GB one; the full-A100 arms peak at ~42 GB, too
 # close to 40, so they get a whole H100
-FIR_GPUS = {"a100_3g.20gb:1": "nvidia_h100_80gb_hbm3_3g.40gb:1", "a100:1": "h100:1", "h100:1": "h100:1", "h100:2": "h100:2"}
+FIR_GPUS = {"a100_3g.20gb:1": "nvidia_h100_80gb_hbm3_3g.40gb:1", "a100:1": "h100:1", "h100:1": "h100:1", "h100:2": "h100:2", "h100:4": "h100:4", "h100:6": "h100:6", "h100:8": "h100:8"}
 # measured in round 1: freeze 13.1 s/step, scoring 0.60 s/window (~1.4 h for 8,460); 4 epochs of the pilot lines =
 # 1,080 steps (~4 h), of the "more" lines = 4,664 steps (~17 h); 5 checkpoint saves of ~8 GB on top
 TIME = {"freeze": "08:00:00", "lora": "08:00:00", "base": "03:00:00", "freeze-4ep": "10:00:00",
@@ -1844,19 +1847,20 @@ def submit_job(cfg, arm, dry_run, arms=()):
     gpus, ram = resources.get("gpus", GPUS), resources.get("ram", RAM)
     scoring = arm in PSEUDO or ARMS.get(arm, {}).get("recipe", "train") is None
     big = any(ARMS.get(a, {}).get("big") for a in (arms or (arm,)))  # a base over 12B (round 8)
+    score_h100s = max(ARMS.get(a, {}).get("score-h100s", 1) for a in (arms or (arm,)))
     if os.environ.get("CC_CLUSTER") in ("fir", "nibi", "rorqual"):  # Nibi and Rorqual have Fir's H100s and slice names
         # scoring holds no optimizer state (the largest grid base below 13B is ~24 GB in bf16), so it takes a 40 GB
         # slice, which starts within minutes where a whole H100 waits behind ~950 jobs (2026-10-18); a big base's needs
         # a whole H100
-        slice_ = "h100:1" if big else "nvidia_h100_80gb_hbm3_3g.40gb:1"
+        slice_ = f"h100:{score_h100s}" if big else "nvidia_h100_80gb_hbm3_3g.40gb:1"
         gpus = slice_ if scoring else resources.get("fir-gpus", FIR_GPUS[gpus])
-        ram = "128G" if big and scoring else ram
+        ram = f"{128 * score_h100s}G" if big and scoring else ram
     if os.environ.get("CC_CLUSTER") == "killarney":  # PAICE (2026-10-28): per-GPU jobs on L40S 48 GB or H100, no slices
         # every base below 13B trained within a 40 GB A100 or slice, so L40S; the round-8 bases take H100s as elsewhere
-        gpus = f"h100:{1 if scoring else resources.get('h100s', 1)}" if big else "l40s:1"
+        gpus = f"h100:{score_h100s if scoring else resources.get('h100s', 1)}" if big else "l40s:1"
         if resources.get("killarney-gpus") and not scoring:  # Qwen3.5: L40S, where fla's backward is right
             gpus = resources["killarney-gpus"]
-        ram = "128G" if big and scoring else ram
+        ram = f"{128 * score_h100s}G" if big and scoring else ram
     if os.environ.get("VF_GPUS"):  # a different GPU for this submission (e.g. a whole H100 to fit a short window)
         gpus = os.environ["VF_GPUS"]
     limit = TIME[arm]
