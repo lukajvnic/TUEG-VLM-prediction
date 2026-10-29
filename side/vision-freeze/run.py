@@ -1868,9 +1868,10 @@ def submit_job(cfg, arm, dry_run, arms=()):
         limit = os.environ["VF_LIMIT"]
     hours = (int(limit.split("-")[0]) * 24 if "-" in limit else 0) + int(limit.split("-")[-1].split(":")[0])
     if os.environ.get("CC_CLUSTER") == "trillium":  # whole H100s only, 24 h at most (jobs resume when resubmitted)
-        if resources.get("h100s", 1) > 1 and not scoring:
-            sys.exit(f"{arm} trains on {resources['h100s']} H100s and Trillium takes 1 GPU or a whole node: submit it on Fir")
-        gpus, limit = "h100:1", limit if hours < 24 else "1-00:00:00"
+        n = score_h100s if scoring else resources.get("h100s", 1)
+        if n not in (1, 4):
+            sys.exit(f"{arm} takes {n} H100s and Trillium takes 1 GPU or a whole node of 4: submit it on Fir")
+        gpus, limit = f"h100:{n}", limit if hours < 24 else "1-00:00:00"
     elif big and hours >= 24:  # a big base's run goes in 24 h chunks (more partitions; the watchers resubmit on timeout)
         limit = "1-00:00:00"
     text = script(name, limit, ram, cfg["train"]["cpus"], gpus, " && ".join(steps[arm]))
