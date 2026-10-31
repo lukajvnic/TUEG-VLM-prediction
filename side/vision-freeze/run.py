@@ -1863,6 +1863,8 @@ def submit_job(cfg, arm, dry_run, arms=()):
         ram = f"{128 * score_h100s}G" if big and scoring else ram
     if os.environ.get("VF_GPUS"):  # a different GPU for this submission (e.g. a whole H100 to fit a short window)
         gpus = os.environ["VF_GPUS"]
+    if os.environ.get("VF_RAM"):  # less memory where a node has under 512 GiB (Rorqual's H100 nodes: 512,000 MB)
+        ram = os.environ["VF_RAM"]
     limit = TIME[arm]
     if os.environ.get("VF_LIMIT"):  # a shorter limit (e.g. to fit before a maintenance window); training resumes after
         limit = os.environ["VF_LIMIT"]
