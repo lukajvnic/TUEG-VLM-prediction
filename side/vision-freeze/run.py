@@ -273,6 +273,7 @@ SEIZURES = ("absz", "cpsz", "fnsz", "gnsz", "mysz", "spsz", "tcsz", "tnsz")
 ANSWER = '{"present": true}'  # the scored row's answer: only the logits before its boolean are read
 VISION_LR = 1e-5  # full fine-tune of a ViT: ViTST 2e-5, TimeMaster 2e-6; NeuroCanvas does not report one
 EVALS = 5
+BLIND_SPREAD, BLIND_AUROC = 0.1, 0.6  # watch_image_use: a margin std under 0.1 logit, every val AUROC in 0.4-0.6
 SCORE_BATCH = 4  # test windows per forward (Qwen; score_batch)
 GPUS, RAM = "a100_3g.20gb:1", "40G"
 # Fir (2026-10-18), the second site for Narval's Oct 27 - Nov 3 outage, runs the same jobs on H100s ($CC_CLUSTER picks
@@ -415,6 +416,13 @@ DATASET_LINES = {"TUSZ": (7347, 1525, 8460), "TUAR": (17138, 1440, 3540), "TUEV"
 # out-of-memory in any Narval or Fir log; peaks of 41-42 GB are the allocator filling the card). The 8B (the DPO model,
 # speed) and the three largest (closest to the limit) keep a whole H100
 WHOLE_H100 = {"8b", "q25-7b", "gemma3-12b", "gemma4-12b", *GRID_BIG}
+# a dataset model that stops answering from the image (watch_image_use) is retrained once with the next recipe:
+# gm-<model>-<ds>-all-b halves the language LoRA's and the vision tower's learning rates and warms up over 10% of the
+# steps, -c halves them again with seed 2. Bases of 70B and up start on b, as published recipes halve the learning rate
+# between 26B and 72B (maintainer, 2026-11-01; reports/Big VLM finetuning collapse fixes.md)
+RECIPES = {"b": {"learning-rate": 1e-4, "vision-lr": 5e-6, "warmup": 0.1},
+           "c": {"learning-rate": 5e-5, "vision-lr": 2.5e-6, "warmup": 0.1, "seed": 2}}
+START_ON_B = ("q25-72b", "q35-122b-a10b", "235b-a22b")
 for _short in GRID_MODELS:
     if _short == "minicpm46-1b":
         continue
@@ -422,15 +430,18 @@ for _short in GRID_MODELS:
         _arm = f"gm-{_short}-{_ds.lower()}-all"
         _spec = {k: v for k, v in ARMS[f"gm-{_short}-tuar"].items() if k not in ("rationales", "select", "seed")}
         ARMS[_arm] = {**_spec, "dataset": _ds, "splits": "all", "questions": _questions, "question": "all",
-                      "epochs": DATASET_EPOCHS[_ds], **({"select": "last"} if _ds in ("TUAR", "TUEV") else {})}
+                      "epochs": DATASET_EPOCHS[_ds], **({"select": "last"} if _ds in ("TUAR", "TUEV") else {}),
+                      **(RECIPES["b"] if _short in START_ON_B else {})}
         if _short not in WHOLE_H100:
             ARMS[_arm]["fir-gpus"] = "nvidia_h100_80gb_hbm3_3g.40gb:1"
         ARMS[f"{_arm}-s2"] = {**ARMS[_arm], "seed": 2}
+        for _recipe, _settings in RECIPES.items():
+            ARMS[f"{_arm}-{_recipe}"] = {**ARMS[_arm], **_settings}
         _step, _window, _rationale = GRID_SPEED[_short]
         _answers, _explains, _test = DATASET_LINES[_ds]
         _hours = 1.5 * (math.ceil((_answers + _explains) * DATASET_EPOCHS[_ds] / 8) * _step
                         + _test * len(_questions) * _window + 300 * _rationale + 1800) / 3600
-        for _name in (_arm, f"{_arm}-s2"):
+        for _name in (_arm, f"{_arm}-s2", *(f"{_arm}-{r}" for r in RECIPES)):
             TIME[_name] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
             for _question in _questions:
                 ARMS[f"{_name}-{_question}"] = {**ARMS[_name], "view": _name, "question": _question,
@@ -684,7 +695,7 @@ def hopper_linear_attention(model):
 
     import torch
 
-    if torch.cuda.get_device_capability()[0] != 9:
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9:  # (a local rehearsal has no CUDA)
         return
     layers = [m for m in model.modules() if hasattr(m, "chunk_gated_delta_rule")]
     for layer in layers:
@@ -801,7 +812,8 @@ def init_hybrid(settings):
     model = hybridize(model, settings["lora"])
     vision = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" in n)
     lora = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" not in n)
-    print(f"trainable: vision tower {vision / 1e6:.0f}M (fp32, lr {VISION_LR}), language LoRA {lora / 1e6:.0f}M", flush=True)
+    print(f"trainable: vision tower {vision / 1e6:.0f}M (fp32, lr {settings['training']['vision-lr']}), "
+          f"language LoRA {lora / 1e6:.0f}M (lr {settings['training']['learning-rate']})", flush=True)
     return model, processor
 
 
@@ -810,8 +822,8 @@ def hybrid_optimizer(model, training):
 
     vision = [p for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" in n]
     lora = [p for n, p in model.named_parameters() if p.requires_grad and "modules_to_save" not in n]
-    return torch.optim.AdamW([{"params": vision, "lr": VISION_LR}, {"params": lora, "lr": training["learning-rate"]}],
-                             weight_decay=training["weight-decay"])
+    return torch.optim.AdamW([{"params": vision, "lr": training["vision-lr"]},
+                              {"params": lora, "lr": training["learning-rate"]}], weight_decay=training["weight-decay"])
 
 
 def start_wandb(settings, data, resume, smoke):
@@ -823,7 +835,8 @@ def start_wandb(settings, data, resume, smoke):
     id_file = out / "wandb-id"
     run_id = id_file.read_text().strip() if resume and id_file.exists() else None
     logged = {k: settings[k] for k in ("model", "dataset", "experiment", "target", "base", "lora", "training")}
-    logged.update({"train_rows": len(data["train"]), "val_rows": len(data["validation"]), "vision_lr": VISION_LR})
+    logged.update({"train_rows": len(data["train"]), "val_rows": len(data["validation"]),
+                   "vision_lr": settings["training"]["vision-lr"]})
     logs = base_dir(smoke) / "logs"
     logs.mkdir(parents=True, exist_ok=True)
 
@@ -855,6 +868,8 @@ def train(settings, arm, smoke):
     if (out / "manifest.json").exists():  # a resubmitted job whose scoring was cut off: go straight to scoring
         print(f"{out} is already trained (manifest.json exists)", flush=True)
         return
+    if (out / "stopped.json").exists():  # watch_image_use stopped it; a resubmission must not resume it
+        sys.exit(f"{arm} was stopped at 40% of training ({out / 'stopped.json'}): {next_recipe(arm)}")
     resume = main.resume_point(out)
     data = {"train": lines("train", smoke, arm), "validation": lines("val", smoke, arm)}
     if ARMS[arm].get("questions") and not smoke:  # epochs assume these exact files (data/ and sft_*.jsonl are not in git)
@@ -866,7 +881,10 @@ def train(settings, arm, smoke):
     training, epochs = settings["training"], ARMS[arm]["epochs"]
     steps = epochs * math.ceil(len(data["train"]) / (training["batch-size"] * training["gradient-accumulation"]))
     every = 1 if smoke else math.ceil(steps / EVALS)  # save-steps must equal eval-steps for the best-checkpoint reload
-    settings["training"] = {**training, "epochs": epochs, "eval-steps": every, "save-steps": every}
+    settings["training"] = training = {**training, "epochs": epochs, "eval-steps": every, "save-steps": every,
+                                       "learning-rate": ARMS[arm].get("learning-rate", training["learning-rate"]),
+                                       "warmup-ratio": ARMS[arm].get("warmup", training["warmup-ratio"]),
+                                       "vision-lr": ARMS[arm].get("vision-lr", VISION_LR)}
 
     print(f"{model_of(arm)} on {dataset_of(arm)} '{question_of(arm)}', arm {arm} {ARMS[arm]}: {len(data['train'])} train / "
           f"{len(data['validation'])} val lines, {steps} steps, eval every {every}, images {image_root(arm)} -> {out}",
@@ -904,6 +922,8 @@ def train(settings, arm, smoke):
         select_by_auroc(trainer, processor)
     if ARMS[arm].get("weight", 1) > 1:
         trainer = weighted(trainer, processor, data, ARMS[arm]["weight"], first=order_of(arm) != "rationale-first")
+    if ARMS[arm].get("questions") and ARMS[arm].get("select") != "auroc":
+        watch_image_use(trainer, processor, data["validation"], out)
     if smoke:
         trainer.args.max_steps = 2
 
@@ -912,6 +932,8 @@ def train(settings, arm, smoke):
     for device in range(torch.cuda.device_count()):  # reserved counts the allocator's cache; allocated is the need
         print(f"cuda:{device} peak {torch.cuda.max_memory_allocated(device) / 1e9:.1f} GB allocated, "
               f"{torch.cuda.max_memory_reserved(device) / 1e9:.1f} GB reserved", flush=True)
+    if (out / "stopped.json").exists():
+        sys.exit(f"STOPPED {arm}: image-blind at 20% and 40% of training ({out / 'stopped.json'}): {next_recipe(arm)}")
     trainer.save_model()
     processor.save_pretrained(out)
 
@@ -919,7 +941,7 @@ def train(settings, arm, smoke):
     manifest = json.loads((out / "manifest.json").read_text())
     root = image_root(arm)  # under /project when VF_RENDER_ROOT / VF_CORE_ROOT move it out of the repo
     manifest.update({"arm": arm, **ARMS[arm], "image_root": str(root.relative_to(ROOT) if root.is_relative_to(ROOT) else root),
-                     "question": question_of(arm), "smoke": smoke, "vision_lr": VISION_LR if recipe in ("freeze", "hybrid") else None})
+                     "question": question_of(arm), "smoke": smoke, "vision_lr": training["vision-lr"] if recipe in ("freeze", "hybrid") else None})
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     run.finish()
 
@@ -951,6 +973,80 @@ def select_by_auroc(trainer, processor):
 
     trainer.compute_metrics, trainer.preprocess_logits_for_metrics = compute, margins
     trainer.args.metric_for_best_model = "label_auroc"
+
+
+def watch_image_use(trainer, processor, validation, out):
+    # a dataset model that gives every image the same answer (17 of 45 big-base runs by 2026-10-31) stops at 40% of
+    # training. Each evaluation logs, per question, the std ("spread") and the val AUROC of the answer's true-minus-false
+    # margin, taken in fp32 from the output layer's input: in bf16, logits of magnitude 16-32 move in steps of 0.125,
+    # the whole range of a collapsed run. Blind: every spread under BLIND_SPREAD and every AUROC within BLIND_AUROC
+    # of 0.5 on either side (a ranking far below 0.5 reads the image too). Blind at the first two evaluations (20% and
+    # 40%) writes stopped.json and stops the run. TUEV's 1-2 val positives per question give no AUROC, so it never
+    # counts as blind. The argmax balanced accuracy that keeps the checkpoint is computed as before
+    import torch
+    from transformers import EvalPrediction, TrainerCallback
+
+    head = trainer.model.get_output_embeddings()
+    if head is None:
+        print("image check: no output layer to read, the run is not watched", flush=True)
+        return
+    words = main.boolean_token_ids(processor.tokenizer)
+    true, false = sorted(words["true"]), sorted(words["false"])
+    ids = torch.tensor(true + false)
+    questions = [r["question"] for r in validation]
+    argmax_metrics = main.label_metrics(words)
+    hidden = {}
+    head.register_forward_hook(lambda module, args, output: None if module.training else hidden.update(h=args[0]))
+
+    def preprocess(logits, labels):
+        logits = logits[0] if isinstance(logits, tuple) else logits
+        h, margins = hidden.pop("h", None), torch.full((len(labels),), float("nan"))
+        if h is None or h.shape[:2] != labels.shape:  # the head did not see this batch's positions: no margins, no stop
+            return logits.argmax(-1), margins.to(logits.device)
+        weight = head.weight[ids.to(head.weight.device)].float()
+        for row in range(len(labels)):
+            found = torch.isin(labels[row], ids.to(labels.device)).nonzero().flatten()
+            if len(found):  # the answer's boolean is the first one, predicted from the position before it
+                z = weight @ h[row, int(found[0]) - 1].to(weight.device).float()
+                margins[row] = (torch.logsumexp(z[:len(true)], 0) - torch.logsumexp(z[len(true):], 0)).item()
+        return logits.argmax(-1), margins.to(logits.device)
+
+    def compute(prediction):
+        argmax, margins = prediction.predictions
+        metrics = argmax_metrics(EvalPrediction(predictions=argmax, label_ids=prediction.label_ids))
+        first = [row[np.isin(row, ids.numpy())] for row in prediction.label_ids]
+        truth = np.array([len(f) > 0 and f[0] in words["true"] for f in first])
+        blind, report = True, []
+        for question in dict.fromkeys(questions):
+            rows = [i for i, q in enumerate(questions) if q == question and not np.isnan(margins[i])]
+            spread = metrics[f"spread_{question}"] = float(np.std(margins[rows])) if rows else float("nan")
+            if 3 <= truth[rows].sum() <= len(rows) - 3:
+                metrics[f"auroc_{question}"] = auroc(margins[rows], truth[rows])
+            off = abs(metrics.get(f"auroc_{question}", 1.0) - 0.5)  # no AUROC (too few positives): not blind
+            blind = blind and spread < BLIND_SPREAD and off < BLIND_AUROC - 0.5
+            report.append(f"{question} spread {spread:.3f} AUROC {metrics.get(f'auroc_{question}', float('nan')):.2f}")
+        metrics["image_blind"] = float(blind)
+        print(f"image check: {', '.join(report)}{' -> blind' if blind else ''}", flush=True)
+        return metrics
+
+    class StopIfBlind(TrainerCallback):
+        def on_evaluate(self, args, state, control, **kwargs):
+            checks = [h for h in state.log_history if "eval_image_blind" in h]
+            if len(checks) == 2 and all(h["eval_image_blind"] for h in checks):
+                (out / "stopped.json").write_text(json.dumps(checks, indent=2) + "\n")
+                control.should_training_stop = True
+
+    trainer.compute_metrics, trainer.preprocess_logits_for_metrics = compute, preprocess
+    trainer.add_callback(StopIfBlind())
+
+
+def next_recipe(arm):
+    # the run to train after a stop: A, then -b, then -c (a base that starts on b goes to -c)
+    stem = re.sub(r"-[bc]$", "", arm)
+    if arm.endswith("-c"):
+        return "-c was the last recipe: report the cell as collapsed"
+    on_b = arm.endswith("-b") or ARMS[arm].get("learning-rate") == RECIPES["b"]["learning-rate"]
+    return f"train {stem}-c" if on_b else f"train {stem}-b"
 
 
 def weighted(base, processor, data, weight, first=False):
