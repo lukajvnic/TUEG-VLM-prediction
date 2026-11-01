@@ -1041,12 +1041,10 @@ def watch_image_use(trainer, processor, validation, out):
 
 
 def next_recipe(arm):
-    # the run to train after a stop: A, then -b, then -c (a base that starts on b goes to -c)
-    stem = re.sub(r"-[bc]$", "", arm)
+    # the run to train after a stop: -c is the one last try (from A or -b), and a stopped -c is reported as collapsed
     if arm.endswith("-c"):
         return "-c was the last recipe: report the cell as collapsed"
-    on_b = arm.endswith("-b") or ARMS[arm].get("learning-rate") == RECIPES["b"]["learning-rate"]
-    return f"train {stem}-c" if on_b else f"train {stem}-b"
+    return f"train {re.sub(r'-b$', '', arm)}-c"
 
 
 def weighted(base, processor, data, weight, first=False):
@@ -1722,7 +1720,12 @@ def score_windows(arm, smoke, todo, labels, out):
 
 def image_check(arm):
     # the untrained base on 8 of the arm's test windows (4 with the class, 4 without): a P(true) that is the same for all
-    # of them means the image never reaches the model (MiniCPM-V 4.6, 2026-10-19), so the job stops before training
+    # of them means the image never reaches the model (MiniCPM-V 4.6, 2026-10-19), so the job stops before training.
+    # A resubmitted chunk whose training already saved a checkpoint skips it: the check passed before the first step,
+    # and it costs a full load of the base (2 h for the 72B on Rorqual's /scratch on 2026-11-01)
+    if any(out_dir(arm).glob("checkpoint-*")) or (out_dir(arm) / "manifest.json").exists():
+        print(f"image check skipped: {out_dir(arm)} already has training checkpoints", flush=True)
+        return
     import torch
 
     labels = truth(arm)
