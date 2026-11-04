@@ -166,9 +166,10 @@ GRID_BIG = {"gemma3-27b": ("gemma3:27b", 1), "medgemma-27b": ("medgemma:27b", 1)
 GRID_EXTRA.update({short: model for short, (model, _) in GRID_BIG.items()})
 # Qwen3.5 trains on Killarney's L40S (2026-10-28): its linear attention needs flash-linear-attention's kernels to run at
 # a usable speed (the torch fallback took 41.6 s/step for 27B on 2 H100s), and fla refuses its backward on Hopper GPUs
-# under Triton 3.7.1 (wrong gradients, fla #640; the wheelhouse has 3.6.0, PyPI nothing newer). On an L40S fla matched
+# under Triton 3.7.1 (wrong gradients, fla #640; the wheelhouse has 3.6.0, PyPI has 3.7.1). On an L40S fla matched
 # the fallback (output 5.9e-3, gradients < 1e-2 relative error) at 18.7x its speed. 35B-A3B (72 GB) takes a whole node.
-# 122B-A10B fits no L40S node, so it trains on Hopper with the fallback (hopper_linear_attention)
+# 122B-A10B fits no L40S node, so it trains on Hopper: on fla where the venv has Triton 3.7.1, else on the fallback
+# (hopper_linear_attention)
 KILLARNEY_GPUS = {"q35-27b": "l40s:3", "q35-35b-a3b": "l40s:4"}
 # scoring takes one H100 unless the bf16 weights outgrow it (2026-10-29): the 72B on a whole 4-H100 node (Fir's whole
 # nodes start sooner than 3 GPUs), the 122B on 4, the 235B on 8
@@ -274,6 +275,7 @@ ANSWER = '{"present": true}'  # the scored row's answer: only the logits before 
 VISION_LR = 1e-5  # full fine-tune of a ViT: ViTST 2e-5, TimeMaster 2e-6; NeuroCanvas does not report one
 EVALS = 5
 BLIND_SPREAD, BLIND_AUROC = 0.1, 0.6  # watch_image_use: a margin std under 0.1 logit, every val AUROC in 0.4-0.6
+SAVE_BEFORE_END = 20 * 60  # save_before_end, seconds; a 72B checkpoint (11 GB) took 0.5-2 min to write on Rorqual
 SCORE_BATCH = 4  # test windows per forward (Qwen; score_batch)
 GPUS, RAM = "a100_3g.20gb:1", "40G"
 # Fir (2026-10-18), the second site for Narval's Oct 27 - Nov 3 outage, runs the same jobs on H100s ($CC_CLUSTER picks
@@ -689,15 +691,24 @@ def drop_softcap(model):
 
 
 def hopper_linear_attention(model):
-    # fla's gated delta rule raises in its backward on Hopper GPUs with Triton 3.4-3.7.1 (wrong gradients, fla #640):
-    # there Qwen3.5's linear-attention layers train on transformers' own torch kernel, as on Fir (no fla)
+    # fla's gated delta rule raises in its backward on Hopper GPUs with Triton 3.4 to 3.7.0 (wrong gradients, fla #640):
+    # there Qwen3.5's linear-attention layers train on transformers' own torch kernel. With Triton 3.7.1 (PyPI's wheel,
+    # known-issues.md) the layer on fla matched the torch kernels on an H100 at 11x their speed, so it keeps fla
     import sys
 
     import torch
 
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9:  # (a local rehearsal has no CUDA)
         return
+    try:
+        from fla.utils import TRITON_ABOVE_3_7_1
+    except ImportError:  # no fla: the layers are on the torch kernel already
+        TRITON_ABOVE_3_7_1 = False
     layers = [m for m in model.modules() if hasattr(m, "chunk_gated_delta_rule")]
+    if TRITON_ABOVE_3_7_1:
+        if layers:
+            print(f"Hopper: {len(layers)} linear-attention layers keep fla (Triton >= 3.7.1)", flush=True)
+        return
     for layer in layers:
         layer.chunk_gated_delta_rule = sys.modules[type(layer).__module__].torch_chunk_gated_delta_rule
     if layers:
@@ -926,6 +937,7 @@ def train(settings, arm, smoke):
         watch_image_use(trainer, processor, data["validation"], out)
     if smoke:
         trainer.args.max_steps = 2
+    save_before_end(trainer)
 
     trainer.train(resume_from_checkpoint=resume)
     print(f"peak GPU memory {torch.cuda.max_memory_reserved() / 1e9:.1f} GB", flush=True)
@@ -1038,6 +1050,28 @@ def watch_image_use(trainer, processor, validation, out):
 
     trainer.compute_metrics, trainer.preprocess_logits_for_metrics = compute, preprocess
     trainer.add_callback(StopIfBlind())
+
+
+def save_before_end(trainer):
+    # one checkpoint SAVE_BEFORE_END before the job's limit, so a chunk cut off between evals (every 20% of training)
+    # resumes from there: gm-q25-72b-tuev-all's first chunk redid 302 steps (~3.3 h) from checkpoint-1616. Training goes
+    # on until Slurm stops it (a stop here would write manifest.json for an unfinished run) and the watchers resubmit
+    # on TIMEOUT. The Trainer always keeps the newest and the best checkpoint, so the best-checkpoint reload is unchanged
+    from transformers import TrainerCallback
+
+    end = int(os.environ.get("SLURM_JOB_END_TIME", 0))
+    if not end:  # (a local rehearsal has no limit)
+        return
+
+    class SaveBeforeEnd(TrainerCallback):
+        saved = False
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if not self.saved and time.time() > end - SAVE_BEFORE_END:
+                self.saved = control.should_save = True
+                print(f"{(end - time.time()) / 60:.0f} min to the limit: saving checkpoint-{state.global_step}", flush=True)
+
+    trainer.add_callback(SaveBeforeEnd())
 
 
 def next_recipe(arm):
