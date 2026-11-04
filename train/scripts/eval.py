@@ -149,7 +149,10 @@ def load(spec):
             {"rationale_first": spec.get("rationale-first", False)}
         print(f"loading {source} via custom family {base['family']}" + (f" + {checkpoint}" if checkpoint else ""), flush=True)
         return CustomFamily(base["family"], source, checkpoint), None, manifest
-    model = AutoModelForImageTextToText.from_pretrained(source, dtype=torch.bfloat16, device_map="auto",
+    # on a Mac the whole model goes on the GPU: "auto" offloads part of it when other jobs hold memory, and PEFT's
+    # adapter loading then fails on the offloaded modules (Gemma 4 E2B, 2026-10-27)
+    place = {"": "mps"} if not torch.cuda.is_available() and torch.backends.mps.is_available() else "auto"
+    model = AutoModelForImageTextToText.from_pretrained(source, dtype=torch.bfloat16, device_map=place,
                                                         trust_remote_code=remote)
     if "checkpoint" not in spec:
         print(f"loading {source} (no adapter)", flush=True)
@@ -204,13 +207,70 @@ class Enforcer:
     """One schema, fresh TokenEnforcer state per generation. The TokenEnforcer caches an allowed-token tensor for
     every token prefix it is asked about and never evicts, so a single prefix function reused over thousands of
     images grew until the host-RAM limit killed 52 predict tasks after 1-24 h (2026-09-28). Building the
-    prefix function is cheap once the tokenizer table is cached; the parser is immutable and shared."""
+    prefix function is cheap once the tokenizer table is cached; the parser is immutable and shared.
+    Inside a string escape (after a backslash) lm-format-enforcer 0.11.3 has no shortcut and walks the whole token
+    tree in Python at every step: 22.6 s per fine-tuned Gemma reply with 3+ \\u escapes, which the json.dumps
+    training targets taught it to write (2026-11-03). Those steps are kept here across generations, under a key of
+    everything the walk reads (escape_key), at most ESCAPE_KEYS of them."""
 
     def __init__(self, tokenizer_data, parser, build):
         self.tokenizer_data, self.parser, self.build = tokenizer_data, parser, build
+        self.escapes = {}
+        self.reach = max(map(len, tokenizer_data.tokenizer_tree.tokens_to_strs.values())) + 1
 
     def fresh(self):
-        return self.build(self.tokenizer_data, self.parser)
+        prefix_fn = self.build(self.tokenizer_data, self.parser)
+        token_enforcer = prefix_fn.token_enforcer
+        compute = token_enforcer._compute_allowed_tokens
+
+        def cached(state_tokens, state):
+            key = escape_key(state.parser, self.reach)
+            if key in self.escapes:
+                state.allowed_tokens = self.escapes[key]
+                return
+            compute(state_tokens, state)
+            if key is not None and len(self.escapes) < ESCAPE_KEYS:
+                self.escapes[key] = state.allowed_tokens
+
+        token_enforcer._compute_allowed_tokens = cached
+        return prefix_fn
+
+
+ESCAPE_KEYS = 512  # a cached step holds up to ~3 MB of token ids on Gemma's 262k vocabulary
+
+
+def escape_key(parser, reach):
+    # the state of a free-text JSON string inside an escape, from everything the enforcer's walk can read: the escape
+    # parser's progress, the string's length limits as far as one token reaches (`reach` characters), the enclosing
+    # objects' progress and the parser's counters. None for any other state, which takes the stock path
+    from lmformatenforcer import JsonSchemaParser
+    from lmformatenforcer.characterlevelparser import SequenceParser, StringParser, UnionParser
+    from lmformatenforcer.jsonschemaparser import ObjectParsingState, StringParsingState
+
+    def shape(p):
+        if type(p) is StringParser:
+            return p.target_str
+        if type(p) in (UnionParser, SequenceParser):
+            parts = tuple(shape(q) for q in p.parsers)
+            return None if None in parts else (type(p).__name__, parts)
+        return None
+
+    if type(parser) is not JsonSchemaParser or len(parser.object_stack) < 3:
+        return None
+    *objects, string, escape = parser.object_stack
+    if (type(string) is not StringParsingState or not string.seen_opening_quote or string.seen_closing_quote
+            or string.allowed_strings or string.regex_parser or any(type(o) is not ObjectParsingState for o in objects)):
+        return None
+    progress = shape(escape)
+    if progress is None:
+        return None
+    done = len(string.parsed_string)
+    room = None if string.max_length is None else min(string.max_length - done, reach)
+    short = None if string.min_length is None else max(0, min(string.min_length - done, reach))
+    return (progress, room, short, done > 0, string.require_opening_quote, string.require_closing_quote,
+            tuple((id(o.schema_object), o.current_stage, tuple(o.existing_keys), o.current_key, o.is_dictionary)
+                  for o in objects),
+            parser.num_consecutive_whitespaces, parser.last_parsed_string, parser.last_non_whitespace_character)
 
 
 def generate(model, processor, image_path, text, prefix_fn, temperature=None):
