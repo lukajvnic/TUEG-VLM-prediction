@@ -450,6 +450,22 @@ for _short in GRID_MODELS:
                                                 "splits": None if _question in ("eyem", "abnormal") else _question}
                 del ARMS[f"{_name}-{_question}"]["questions"]
                 TIME[f"{_name}-{_question}"] = TIME[_name]
+# data scaling (maintainer, 2026-11-05: "for one model, retrain it 10 times, each with 10%, 20%, 30%, etc. of the
+# data"; TUEV and the same epochs picked the same day): gm-2b-tuev-all-f<N> is the 2B's TUEV dataset model on N% of
+# its training patients (patient_subset) for the same 12 epochs, so a 10% run trains for a tenth of the steps. Val and
+# test stay whole and there is no rationale eval. gm-2b-tuev-all is the 100% point
+for _fraction in range(10, 100, 10):
+    _arm = f"gm-2b-tuev-all-f{_fraction}"
+    ARMS[_arm] = {**ARMS["gm-2b-tuev-all"], "fraction": _fraction / 100}
+    _step, _window, _ = GRID_SPEED["2b"]
+    _answers, _explains, _test = DATASET_LINES["TUEV"]
+    _hours = 1.5 * (math.ceil((_answers + _explains) * _fraction / 100 * DATASET_EPOCHS["TUEV"] / 8) * _step
+                    + _test * len(DATASET_QUESTIONS["TUEV"]) * _window + 1800) / 3600
+    TIME[_arm] = f"{int(_hours // 24)}-{int(_hours % 24):02d}:{int(_hours % 1 * 60):02d}:00"
+    for _question in DATASET_QUESTIONS["TUEV"]:
+        ARMS[f"{_arm}-{_question}"] = {**ARMS[_arm], "view": _arm, "question": _question, "splits": _question}
+        del ARMS[f"{_arm}-{_question}"]["questions"]
+        TIME[f"{_arm}-{_question}"] = TIME[_arm]
 # expert DPO on the four 8B dataset models (maintainer, 2026-10-25: "sure 4 runs one per 8b"): gm-8b-<ds>-all-dpo adds
 # a fresh LoRA, dropout off, to the language model of the trained dataset model (vision tower and projector frozen) and
 # trains it on the neurologist's preferences (argilla/rationales.py export -> DPO_ANSWERS). The reference is the same
@@ -538,13 +554,34 @@ def dataset_lines(arm, split):
     return main.read_jsonl(folder / f"{name}-{split}.jsonl")
 
 
-def lines(split, smoke, arm="freeze"):
+def patient_subset(rows, fraction):
+    # a data-scaling arm's share of the training patients: patients grouped by the questions they have a positive
+    # window for, each group in a seeded order, and the first round(fraction x group size) of each group, so every
+    # subset holds the smaller ones and keeps its share of the rare events (TUEV: 26 spike windows from 19 patients)
+    events = defaultdict(set)
+    for r in rows:
+        events[Path(r["images"][0]).name.split("_")[0]] |= {r["question"]} if json.loads(r["output"])["present"] else set()
+    groups = defaultdict(list)
+    for patient in sorted(events):
+        groups[tuple(sorted(events[patient]))].append(patient)
+
+    keep = set()
+    for group in groups.values():
+        random.Random(0).shuffle(group)
+        keep |= set(group[:round(fraction * len(group))])
+    print(f"data scaling: {len(keep)} of {len(events)} training patients ({fraction:.0%})", flush=True)
+    return [r for r in rows if Path(r["images"][0]).name.split("_")[0] in keep]
+
+
+def lines(split, smoke, arm="freeze", whole=False):
     if ARMS[arm]["lines"] in ("dataset", "core"):
         rows = dataset_lines(arm, ARMS[arm].get("train", "train") if split == "train" else split)
     elif ARMS[arm]["lines"] == "more" and split == "train":
         rows = main.read_jsonl(MORE)
     else:
         rows = [r for r in main.read_jsonl(SOURCE / f"perclass-{split}.jsonl") if r["question"] == QUESTION]
+    if split == "train" and ARMS[arm].get("fraction") and not whole:  # a data-scaling arm: its share of the patients
+        rows = patient_subset(rows, ARMS[arm]["fraction"])
     if ARMS[arm].get("target") == "rationale":
         rows = with_rationale(rows, split, arm)
     return rows[:SMOKE_LINES[split]] if smoke else rows
@@ -884,8 +921,9 @@ def train(settings, arm, smoke):
     resume = main.resume_point(out)
     data = {"train": lines("train", smoke, arm), "validation": lines("val", smoke, arm)}
     if ARMS[arm].get("questions") and not smoke:  # epochs assume these exact files (data/ and sft_*.jsonl are not in git)
-        answers = sum(r["question"] != "explain" for r in data["train"])
-        counts, expected = (answers, len(data["train"]) - answers), DATASET_LINES[dataset_of(arm)][:2]
+        full = lines("train", smoke, arm, whole=True) if ARMS[arm].get("fraction") else data["train"]
+        answers = sum(r["question"] != "explain" for r in full)
+        counts, expected = (answers, len(full) - answers), DATASET_LINES[dataset_of(arm)][:2]
         if counts != expected:
             sys.exit(f"{arm}: {counts[0]} answer and {counts[1]} explain lines, expected {expected[0]} and {expected[1]}: "
                      f"copy the current data/core/{dataset_of(arm)}-all-train.jsonl and sft_train.jsonl here first")
@@ -1965,7 +2003,7 @@ def submit_job(cfg, arm, dry_run, arms=()):
             steps[a] = ([f"{me} {views[0]} --image-check"] * bool(ARMS[a].get("image-check")) +
                         [f"{me} {a} --train --smoke"] * bool(ARMS[a].get("smoke-first")) + [f"{me} {a} --train"] +
                         [f"{me} {a} --dpo-gen"] * (model_of(a) == "qwen3-vl:8b-instruct" and not ARMS[a].get("seed")) +
-                        [f"{me} {v} --score" for v in views] + [f"{me} {a} --rationale-eval"])
+                        [f"{me} {v} --score" for v in views] + [f"{me} {a} --rationale-eval"] * (not ARMS[a].get("fraction")))
     steps["smoke"] = [f"{me} {a} --{m} --smoke" for a in SMOKE_ARMS for m in modes(a)]
     steps["rationale-eval"] = [f"{me} {a} --rationale-eval" for a in arms]
     steps["background-test"] = [f"{me} {a} --background" for a in arms]
