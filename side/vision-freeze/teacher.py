@@ -8,12 +8,13 @@
 #   python side/vision-freeze/teacher.py assemble MODEL [--dry-run]     # refuses unless every window has a new reply
 #   python side/vision-freeze/teacher.py submit-refs MODEL SHARDS        # test-side references (the graded windows)
 #   python side/vision-freeze/teacher.py assemble-refs MODEL [--dry-run]
-#   python side/vision-freeze/teacher.py loc-list                        # TUEV prompts with the annotated locations
-#   python side/vision-freeze/teacher.py submit-loc MODEL SHARDS [--smoke]
-#   python side/vision-freeze/teacher.py assemble-loc MODEL [--dry-run]
+#   python side/vision-freeze/teacher.py loc-list [--datasets=TUSZ,TUAR]  # prompts with the annotated locations (TUEV)
+#   python side/vision-freeze/teacher.py submit-loc MODEL SHARDS [--smoke] [--datasets=TUSZ]
+#   python side/vision-freeze/teacher.py assemble-loc MODEL [--dry-run] [--datasets=TUSZ]
 import csv
 import hashlib
 import json
+import math
 import os
 import random
 import sys
@@ -42,12 +43,24 @@ TIME_NOTE = "The window is 20 seconds long, with a vertical grid line every seco
 # localization judge found the teacher places its findings little better than the label implies, having never been
 # told where the events are. loc-list gives TUEV's training windows that have an annotated event a prompt that also
 # lists each event's channels and seconds; it reads the .rec files, so it runs where they are, and its CSV travels by
-# scp like the rest of data/. assemble-loc writes datasets/TUEV/sft_train-loc.jsonl, which gm-2b-tuev-all-loc trains on
-LOC = SIDE / "data" / "tuev-teacher-loc.csv"
+# scp like the rest of data/. assemble-loc writes datasets/TUEV/sft_train-loc.jsonl, which gm-2b-tuev-all-loc trains on.
+# TUSZ and TUAR too (maintainer, 2026-11-06: 10 bases retrained on all three annotated corpora), from their .csv
+# channel annotations; their prompts are the first teacher run's own prompts (results/teacher shards) with the location
+# sentences added, since labels.csv differs between checkouts and the label clause must not change
 LOC_NOTE = "Annotated locations, in seconds from the left edge of the window: "
+TEACHER = "qwen3-vl:32b-instruct"
+REFERENCE_FREE = {"A1-T3", "T4-A2"}  # the tcp_ar_a / tcp_le_a montages have no ear references, so 20 channels
 RESOURCES = {"qwen3-vl:32b-instruct": ("a100:2", "128G", "06:00:00"),
              "qwen3-vl:30b-a3b-instruct": ("a100:2", "128G", "04:00:00"),
              "gemma3:12b": ("a100:1", "64G", "04:00:00")}
+
+
+def loc_path(ds):
+    return SIDE / "data" / f"{ds.lower()}-teacher-loc.csv"
+
+
+def loc_prefix(ds):
+    return "loc-" if ds == "TUEV" else f"loc-{ds.lower()}-"  # TUEV keeps its first run's file names
 
 
 def short(model):
@@ -117,31 +130,75 @@ def listed(items):
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def locations(found):
+def locations(found, ds="TUEV", montage=None):
     # "gped on all channels at 0-20 s. spsw on FP1-F7 and F7-T3 at 4-5 s." from (channel, start s, stop s, label) in
-    # window time; seconds are TUEV's 1 s epochs, and channels with the same seconds are listed together, top to bottom
+    # window time; seconds are 1 s bins (TUEV's epochs), and channels with the same seconds are listed together, top to
+    # bottom; "all channels" means every channel of the recording's montage (montage: its channel list)
     import annotate
 
+    montage = montage or annotate.TUEV_CHANNELS
     seconds = defaultdict(lambda: defaultdict(set))
     for ch, a, b, label in found:
         seconds[label][ch] |= {k for k in range(20) if a < k + 1 and b > k}
     parts = []
-    for label in [c for c in annotate.TUEV_CODES.values() if c in seconds]:
+    order = annotate.TUEV_CODES.values() if ds == "TUEV" else annotate.ORDER
+    for label in [c for c in order if c in seconds]:
         groups = defaultdict(list)
-        for ch in annotate.TUEV_CHANNELS:
+        for ch in montage:
             if seconds[label].get(ch):
                 groups[tuple(sorted(seconds[label][ch]))].append(ch)
         for ks, chs in groups.items():
-            where = "all channels" if len(chs) == len(annotate.TUEV_CHANNELS) else listed(chs)
+            where = "all channels" if len(chs) == len(montage) else listed(chs)
             parts.append(f"{label} on {where} at {spans(ks)}")
     return LOC_NOTE + ". ".join(parts) + "."
 
 
-def loc_list():
+def loc_list_annotated(ds):
+    # data/<ds>-teacher-loc.csv for TUSZ / TUAR: every window of the dataset model's training split (data/core/<DS>-all-
+    # train.jsonl) that has a teacher rationale and an annotated event, its prompt from the first teacher run with the
+    # event locations before the instructions
+    import annotate
+
+    grounded = config()["prompts"]["rationale"]["grounded"]
+    first = replies_of(TEACHER, "")
+    table = {}  # path -> its recording and index, from every window table of the corpus (TUSZ's span three)
+    for path in [*sorted((SIDE / "data").glob("*.csv")), *sorted(annotate.CORE_DATA.glob("*-windows.csv"))]:
+        rows = read_csv(path)
+        if rows and {"path", "index", "edf"} <= set(rows[0]):
+            table.update({r["path"]: r for r in rows if r["edf"].startswith(f"datasets/{ds}/")})
+    scans = {r["scan"]: r["edf"] for r in table.values()}  # a window outside the tables (TUAR's teacher extras): its
+    # scan's recording, and the index from its name (<patient>_<scan>_<index>)
+    trained = {json.loads(line)["images"][0] for line in open(annotate.CORE_DATA / f"{ds}-all-train.jsonl")}
+    rows, wanted = [], [w for w in windows() if w[0] == ds and w[1] in trained]  # the dataset model's explain windows
+    for _, path, _ in wanted:
+        reply, prompt = first.get((ds, Path(path).name), ("", ""))
+        if not reply or not prompt.endswith(f" {grounded}"):
+            sys.exit(f"{ds} {path}: no first-run reply with the current instructions in {OUT / short(TEACHER)}")
+        scan, index = Path(path).stem.rsplit("_", 1)
+        start, edf = int(index) * 20, table[path]["edf"] if path in table else scans[scan]
+        found = [(ch, max(a, start) - start, min(b, start + 20) - start, label)
+                 for ch, a, b, label in annotate.events(ds, edf) if a < start + 20 and b > start]
+        montage = [ch for ch in annotate.TUEV_CHANNELS if "_a/" not in edf or ch not in REFERENCE_FREE]
+        found = [f for f in found if f[0] in montage]
+        if not found:
+            continue
+        head = prompt.removesuffix(f" {grounded}")
+        rows.append([ds, path, f"{head} {locations(found, ds, montage)} Place each finding at its annotated channels and "
+                               f"times. {grounded}"])
+    with loc_path(ds).open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["dataset", "path", "prompt"])
+        writer.writerows(rows)
+    print(f"{len(rows)} of {len(wanted)} {ds} dataset-model rationale windows have an annotated event -> {loc_path(ds)}")
+
+
+def loc_list(ds="TUEV"):
     # data/tuev-teacher-loc.csv: every TUEV training window (the 335 of data/core/TUEV-all-train.jsonl) with an annotated
     # event, and the teacher prompt with the event locations between the label clause and the instructions
     import annotate
 
+    if ds != "TUEV":
+        return loc_list_annotated(ds)
     prompts = config()["prompts"]
     table = {r["path"]: r for r in read_csv(annotate.CORE_DATA / "TUEV-windows.csv")}
     labels = {r["path"]: r for r in read_csv(ROOT / "datasets" / "TUEV" / "labels.csv")}
@@ -157,17 +214,17 @@ def loc_list():
         clause = prompts["rationale"]["label-clauses"]["TUEV"].format(labels=", ".join(true))
         rows.append(["TUEV", path, f"{prompts['intro']}{TIME_NOTE}{clause} {locations(found)} Place each finding at its "
                                    f"annotated channels and times. {prompts['rationale']['grounded']}"])
-    with LOC.open("w", newline="") as f:
+    with loc_path("TUEV").open("w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["dataset", "path", "prompt"])
         writer.writerows(rows)
-    print(f"{len(rows)} of {len(paths)} TUEV training windows have an annotated event -> {LOC}")
+    print(f"{len(rows)} of {len(paths)} TUEV training windows have an annotated event -> {loc_path('TUEV')}")
 
 
-def loc_windows():
-    if not LOC.exists():  # data/ is not in git
-        sys.exit(f"{LOC} is missing: run teacher.py loc-list where the TUEV .rec files are and copy it here")
-    return [(r["dataset"], r["path"], r["prompt"]) for r in read_csv(LOC)]
+def loc_windows(ds="TUEV"):
+    if not loc_path(ds).exists():  # data/ is not in git
+        sys.exit(f"{loc_path(ds)} is missing: run teacher.py loc-list where the {ds} annotations are and copy it here")
+    return [(r["dataset"], r["path"], r["prompt"]) for r in read_csv(loc_path(ds))]
 
 
 def smoke_windows(all_windows):
@@ -181,7 +238,7 @@ def smoke_windows(all_windows):
     return picks
 
 
-def run(model, shard, shards, smoke, refs=False, missing=None, extra=False, loc=False):
+def run(model, shard, shards, smoke, refs=False, missing=None, extra=False, loc=False, ds="TUEV"):
     import torch
     from PIL import Image
     from transformers import AutoModelForImageTextToText
@@ -192,14 +249,14 @@ def run(model, shard, shards, smoke, refs=False, missing=None, extra=False, loc=
     main = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(main)
 
-    todo = loc_windows() if loc else test_windows() if refs else windows()
+    todo = loc_windows(ds) if loc else test_windows() if refs else windows()
     if extra:  # run-extra: only the windows added for the teacher (EXTRA), sharded over their own list
         added = {(ds, r["path"]) for ds, table in EXTRA.items() for r in read_csv(table)}
         todo = [w for w in todo if (w[0], w[1]) in added]
     todo = (todo[:3] if loc else smoke_windows(todo)) if smoke else todo[shard::shards]
     name = f"refs-shard-{shard:03d}" if refs else f"shard-extra-{shard:03d}" if extra else \
-        f"loc-shard-{shard:03d}" if loc else f"shard-{shard:03d}"
-    out = OUT / short(model) / (f"{'loc-' * loc}smoke.csv" if smoke else f"{name}.csv")
+        f"{loc_prefix(ds)}shard-{shard:03d}" if loc else f"shard-{shard:03d}"
+    out = OUT / short(model) / (f"{loc_prefix(ds) * loc}smoke.csv" if smoke else f"{name}.csv")
     if missing:  # run-missing: the training windows of these datasets that no shard has a reply for (a window whose
         # image was rendered after the shards started is not in their lists)
         replies = replies_of(model, "")
@@ -229,17 +286,21 @@ def run(model, shard, shards, smoke, refs=False, missing=None, extra=False, loc=
             print(f"{n}/{len(todo)} ({(time.time() - started) / n:.1f} s/window)", flush=True)
 
 
-def submit_jobs(model, shards, smoke, refs=False, only=None, extra=False, loc=False):
+def submit_jobs(model, shards, smoke, refs=False, only=None, extra=False, loc=False, ds="TUEV"):
     gpus, ram, limit = RESOURCES[model]
     limit = "02:00:00" if loc else limit  # 335 windows at most, over several shards
+    if loc and ds != "TUEV":  # TUSZ 1,525 / TUAR 1,440 windows at most: 30 s each (two A100s; one H100 took 15.5 s)
+        hours = 1.5 * math.ceil(len(loc_windows(ds)) / shards) * 30 / 3600 + 0.5
+        limit = f"{int(hours):02d}:{int(hours % 1 * 60):02d}:00"
     if os.environ.get("CC_CLUSTER") in ("fir", "nibi", "trillium"):  # 80 GB H100s: a 30-32B teacher fits one
         # (Trillium has no slices, so a 12B teacher takes a whole H100 there too)
         gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if gpus == "a100:1" and os.environ["CC_CLUSTER"] != "trillium" else "h100:1"
     for shard in [0] if smoke else ([only] if only is not None else range(shards)):  # --only N: one dead shard again
-        kind = "refs-" if refs else "extra-" if extra else "loc-" if loc else ""
+        kind = "refs-" if refs else "extra-" if extra else loc_prefix(ds) if loc else ""
         name = f"eeg-vlm-teacher-{short(model)}-" + (f"{kind}smoke" if smoke else f"{kind}{shard:03d}")
-        command = f"python {SIDE}/teacher.py {'run-' + kind[:-1] if kind else 'run'} {model} {shard} {shards}" + \
-            (" --smoke" if smoke else "")
+        verb = "run-loc" if loc else f"run-{kind[:-1]}" if kind else "run"
+        command = f"python {SIDE}/teacher.py {verb} {model} {shard} {shards}" + (" --smoke" if smoke else "") + \
+            (f" --datasets={ds}" if loc and ds != "TUEV" else "")
         text = script(name, "01:30:00" if smoke else limit, ram, config()["train"]["cpus"], gpus, command)
         text = text.replace(str(ROOT / "logs"), str(SIDE / "logs"))
         if os.environ.get("CC_CLUSTER") == "trillium":  # whole GPUs by --gpus-per-node, memory comes with the GPU
@@ -321,19 +382,19 @@ def assemble_refs(model, dry_run):
         print(f"{ds}: {len(rows)} test references -> {target} (md5 {hashlib.md5(target.read_bytes()).hexdigest()})")
 
 
-def assemble_loc(model, dry_run):
-    # datasets/TUEV/sft_train-loc.jsonl: the assembled rationales (sft_train.jsonl, pinned by sft_train.md5) with every
+def assemble_loc(model, dry_run, ds="TUEV"):
+    # datasets/<DS>/sft_train-loc.jsonl: the assembled rationales (sft_train.jsonl, pinned by sft_train.md5) with every
     # loc-list window's rationale replaced by its location-prompt reply; refuses unless each has a reply to its exact
     # prompt, so no window keeps an old rationale by accident
-    wanted, replies = loc_windows(), replies_of(model, "loc-")
+    wanted, replies = loc_windows(ds), replies_of(model, loc_prefix(ds))
     missing = [w for w in wanted if replies.get((w[0], Path(w[1]).name), ("", ""))[1] != w[2]
                or not replies[w[0], Path(w[1]).name][0]]
-    print(f"loc TUEV: {len(wanted) - len(missing)} of {len(wanted)} windows have a reply to their location prompt")
+    print(f"loc {ds}: {len(wanted) - len(missing)} of {len(wanted)} windows have a reply to their location prompt")
     if missing and not dry_run:
         sys.exit("windows without a location reply: not assembling")
     if dry_run:
         return
-    folder = ROOT / "datasets" / "TUEV"
+    folder = ROOT / "datasets" / ds
     digest = hashlib.md5((folder / "sft_train.jsonl").read_bytes()).hexdigest()
     if digest != (folder / "sft_train.md5").read_text().strip():
         sys.exit(f"{folder / 'sft_train.jsonl'} is not the assembled new-teacher file (md5 {digest})")
@@ -344,14 +405,14 @@ def assemble_loc(model, dry_run):
         name = Path(row["images"][0]).name
         if name in names:
             output = json.loads(row["output"])
-            output["text_rationale"] = replies["TUEV", name][0]
+            output["text_rationale"] = replies[ds, name][0]
             row, replaced = {**row, "output": json.dumps(output)}, replaced + 1
         kept.append(json.dumps(row))
     if replaced != len(names):
         sys.exit(f"{replaced} of {len(names)} location windows are in {folder / 'sft_train.jsonl'}: not assembling")
     target = folder / "sft_train-loc.jsonl"
     target.write_text("\n".join(kept) + "\n")
-    print(f"TUEV: {replaced} of {len(kept)} rationales replaced -> {target} (md5 {hashlib.md5(target.read_bytes()).hexdigest()})")
+    print(f"{ds}: {replaced} of {len(kept)} rationales replaced -> {target} (md5 {hashlib.md5(target.read_bytes()).hexdigest()})")
 
 
 if __name__ == "__main__":
@@ -362,16 +423,23 @@ if __name__ == "__main__":
     chosen = next((tuple(a.split("=")[1].split(",")) for a in args if a.startswith("--datasets=")), DATASETS)
     assert set(chosen) <= set(DATASETS), chosen
     args = [a for a in args if a != "--dry-run" and not a.startswith(("--only=", "--datasets="))]
+    located = chosen if any(a.startswith("--datasets=") for a in sys.argv) else ("TUEV",)  # the loc commands' corpora
+    assert set(located) <= {"TUSZ", "TUAR", "TUEV"}, located
     if args[0] == "loc-list":
-        loc_list()
+        for ds in located:
+            loc_list(ds)
     elif args[0] == "assemble-loc":
-        assemble_loc(args[1], dry_run)
-    elif args[0] in ("submit", "submit-refs", "submit-extra", "submit-loc"):
-        submit_jobs(args[1], int(args[2]), smoke, refs=args[0] == "submit-refs", only=only, extra=args[0] == "submit-extra",
-                    loc=args[0] == "submit-loc")
-    elif args[0] in ("run", "run-refs", "run-extra", "run-loc"):
-        run(args[1], int(args[2]), int(args[3]), smoke, refs=args[0] == "run-refs", extra=args[0] == "run-extra",
-            loc=args[0] == "run-loc")
+        for ds in located:
+            assemble_loc(args[1], dry_run, ds)
+    elif args[0] == "submit-loc":
+        for ds in located:
+            submit_jobs(args[1], int(args[2]), smoke, only=only, loc=True, ds=ds)
+    elif args[0] in ("submit", "submit-refs", "submit-extra"):
+        submit_jobs(args[1], int(args[2]), smoke, refs=args[0] == "submit-refs", only=only, extra=args[0] == "submit-extra")
+    elif args[0] == "run-loc":
+        run(args[1], int(args[2]), int(args[3]), smoke, loc=True, ds=located[0])
+    elif args[0] in ("run", "run-refs", "run-extra"):
+        run(args[1], int(args[2]), int(args[3]), smoke, refs=args[0] == "run-refs", extra=args[0] == "run-extra")
     elif args[0] == "run-missing":
         run(args[1], 0, 1, False, missing=chosen)
     elif args[0] == "submit-missing":

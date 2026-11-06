@@ -480,6 +480,23 @@ for _question in DATASET_QUESTIONS["TUEV"]:
                                                "question": _question, "splits": _question}
     del ARMS[f"gm-2b-tuev-all-loc-{_question}"]["questions"]
     TIME[f"gm-2b-tuev-all-loc-{_question}"] = TIME["gm-2b-tuev-all-loc"]
+# and on 10 bases (maintainer, 2026-11-06): the 10 best by mean test AUROC over TUSZ, TUAR and TUEV among the bases with
+# all three done, with Qwen3-VL 32B (the teacher itself) swapped for LLaVA-NeXT Mistral 7B. Each base's dataset model of
+# those three corpora on the location rationales (teacher.py loc-list / assemble-loc --datasets=TUSZ,TUAR,TUEV), with
+# the recipe of its finished cell (all A but LLaVA-NeXT's TUEV, finished on -b). TUAB labels whole recordings, so it has
+# no locations to give
+LOC_BASES = ("8b", "30b-a3b", "smolvlm2-22b", "internvl3-1b", "lfm2vl-16b", "gemma4-e2b", "internvl3-2b", "medgemma-27b",
+             "granite-2b", "llava-next-7b")
+LOC_RECIPE = {("llava-next-7b", "TUEV"): "-b"}
+for _short in LOC_BASES:
+    for _ds in ("TUSZ", "TUAR", "TUEV"):
+        _base, _arm = f"gm-{_short}-{_ds.lower()}-all{LOC_RECIPE.get((_short, _ds), '')}", f"gm-{_short}-{_ds.lower()}-all-loc"
+        ARMS[_arm] = {**ARMS[_base], "rationales": "loc"}
+        TIME[_arm] = TIME[_base]
+        for _question in DATASET_QUESTIONS[_ds]:
+            ARMS[f"{_arm}-{_question}"] = {**ARMS[_arm], "view": _arm, "question": _question, "splits": _question}
+            del ARMS[f"{_arm}-{_question}"]["questions"]
+            TIME[f"{_arm}-{_question}"] = TIME[_arm]
 # expert DPO on the four 8B dataset models (maintainer, 2026-10-25: "sure 4 runs one per 8b"): gm-8b-<ds>-all-dpo adds
 # a fresh LoRA, dropout off, to the language model of the trained dataset model (vision tower and projector frozen) and
 # trains it on the neurologist's preferences (argilla/rationales.py export -> DPO_ANSWERS). The reference is the same
