@@ -466,6 +466,18 @@ for _fraction in range(10, 100, 10):
         ARMS[f"{_arm}-{_question}"] = {**ARMS[_arm], "view": _arm, "question": _question, "splits": _question}
         del ARMS[f"{_arm}-{_question}"]["questions"]
         TIME[f"{_arm}-{_question}"] = TIME[_arm]
+# location-aware teacher (maintainer, 2026-11-06: "lets get a little one of these running on a 2b model"):
+# gm-2b-tuev-all-loc is the 2B's TUEV dataset model trained on the rationales the teacher wrote when its prompt also
+# gave each event's annotated channels and seconds (teacher.py loc-list / assemble-loc -> datasets/TUEV/
+# sft_train-loc.jsonl, 312 of the 335 windows; the 23 with no annotated event keep their rationale). Everything else,
+# the rationale eval included, is gm-2b-tuev-all's
+ARMS["gm-2b-tuev-all-loc"] = {**ARMS["gm-2b-tuev-all"], "rationales": "loc"}
+TIME["gm-2b-tuev-all-loc"] = TIME["gm-2b-tuev-all"]
+for _question in DATASET_QUESTIONS["TUEV"]:
+    ARMS[f"gm-2b-tuev-all-loc-{_question}"] = {**ARMS["gm-2b-tuev-all-loc"], "view": "gm-2b-tuev-all-loc",
+                                               "question": _question, "splits": _question}
+    del ARMS[f"gm-2b-tuev-all-loc-{_question}"]["questions"]
+    TIME[f"gm-2b-tuev-all-loc-{_question}"] = TIME["gm-2b-tuev-all-loc"]
 # expert DPO on the four 8B dataset models (maintainer, 2026-10-25: "sure 4 runs one per 8b"): gm-8b-<ds>-all-dpo adds
 # a fresh LoRA, dropout off, to the language model of the trained dataset model (vision tower and projector frozen) and
 # trains it on the neurologist's preferences (argilla/rationales.py export -> DPO_ANSWERS). The reference is the same
@@ -635,7 +647,9 @@ def with_rationale(rows, split, arm):
     order = spec.get("order", "rationale-first")
     # "rationales": "old" pins an arm to the rationales it trained on once teacher.py assemble has replaced them
     # (sft_<split>-old.jsonl): the first 8B per-annotation runs, so their dpo-gen pairs show the teacher they learned from
-    name = f"sft_{split}-old.jsonl" if spec.get("rationales") == "old" else f"sft_{split}.jsonl"
+    # "loc": the location-aware teacher's (train only; train() refuses to start without the file)
+    name = f"sft_{split}-old.jsonl" if spec.get("rationales") == "old" else \
+        f"sft_{split}-loc.jsonl" if spec.get("rationales") == "loc" else f"sft_{split}.jsonl"
     if not (RATIONALES / dataset / name).exists():
         name = f"sft_{split}.jsonl"
     source = {Path(r["images"][0]).name: json.loads(r["output"])["text_rationale"]
@@ -912,6 +926,11 @@ def train(settings, arm, smoke):
             sys.exit(f"{arm}: {folder / 'sft_train.jsonl'} is not the assembled new-teacher file (md5 {digest}, expected "
                      f"{expected}): copy the new file and its sft_train.md5 here first")
         print(f"teacher rationales: {folder / 'sft_train.jsonl'} md5 {digest}", flush=True)
+        if ARMS[arm].get("rationales") == "loc":
+            if not (folder / "sft_train-loc.jsonl").exists():
+                sys.exit(f"{arm}: {folder / 'sft_train-loc.jsonl'} is missing: run teacher.py assemble-loc first")
+            print(f"location-teacher rationales: {folder / 'sft_train-loc.jsonl'} md5 "
+                  f"{hashlib.md5((folder / 'sft_train-loc.jsonl').read_bytes()).hexdigest()}", flush=True)
     out = Path(settings["output-dir"])
     if (out / "manifest.json").exists():  # a resubmitted job whose scoring was cut off: go straight to scoring
         print(f"{out} is already trained (manifest.json exists)", flush=True)
