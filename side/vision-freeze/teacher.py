@@ -292,7 +292,7 @@ def submit_jobs(model, shards, smoke, refs=False, only=None, extra=False, loc=Fa
     if loc and ds != "TUEV":  # TUSZ 1,525 / TUAR 1,440 windows at most: 30 s each (two A100s; one H100 took 15.5 s)
         hours = 1.5 * math.ceil(len(loc_windows(ds)) / shards) * 30 / 3600 + 0.5
         limit = f"{int(hours):02d}:{int(hours % 1 * 60):02d}:00"
-    if os.environ.get("CC_CLUSTER") in ("fir", "nibi", "trillium"):  # 80 GB H100s: a 30-32B teacher fits one
+    if os.environ.get("CC_CLUSTER") in ("fir", "nibi", "rorqual", "trillium"):  # 80 GB H100s: a 30-32B teacher fits one
         # (Trillium has no slices, so a 12B teacher takes a whole H100 there too)
         gpus = "nvidia_h100_80gb_hbm3_3g.40gb:1" if gpus == "a100:1" and os.environ["CC_CLUSTER"] != "trillium" else "h100:1"
     for shard in [0] if smoke else ([only] if only is not None else range(shards)):  # --only N: one dead shard again
