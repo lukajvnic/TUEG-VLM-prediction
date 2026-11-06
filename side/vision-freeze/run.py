@@ -453,8 +453,10 @@ for _short in GRID_MODELS:
 # data scaling (maintainer, 2026-11-05: "for one model, retrain it 10 times, each with 10%, 20%, 30%, etc. of the
 # data"; TUEV and the same epochs picked the same day): gm-2b-tuev-all-f<N> is the 2B's TUEV dataset model on N% of
 # its training patients (patient_subset) for the same 12 epochs, so a 10% run trains for a tenth of the steps. Val and
-# test stay whole and there is no rationale eval. gm-2b-tuev-all is the 100% point
-for _fraction in range(10, 100, 10):
+# test stay whole and there is no rationale eval. f100 is the 100% point (maintainer, 2026-11-06: "rerun it"):
+# gm-2b-tuev-all trained on Nibi on 2026-10-25 with older code and scored below f60 and f80, so the curve's last
+# point is retrained beside the others on Narval (all patients, the same lines in the same order)
+for _fraction in range(10, 101, 10):
     _arm = f"gm-2b-tuev-all-f{_fraction}"
     ARMS[_arm] = {**ARMS["gm-2b-tuev-all"], "fraction": _fraction / 100}
     _step, _window, _ = GRID_SPEED["2b"]
